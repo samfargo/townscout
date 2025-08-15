@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    image: townscout-api:latest
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8080}
+    env_file: .env
+    depends_on:
+      - redis
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./:/app
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"] 
