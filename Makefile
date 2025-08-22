@@ -1,11 +1,12 @@
 PY=PYTHONPATH=. .venv/bin/python
 STATES=massachusetts new-hampshire rhode-island connecticut maine
+CATEGORIES=chipotle costco airports
 
-.PHONY: help init pbf pois minutes minutes-full minutes-par merge geojson tiles csv all clean delta boundaries crime-rates test
+.PHONY: help init pbf pois anchors anchors-fresh t-hex d-anchor clean test serve clear-cache
 
 help:  ## Show this help message
-	@echo "TownScout MVP - Available targets:"
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@echo "TownScout Anchor-Based Pipeline - Available targets:"
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 init:  ## Initialize virtual environment and install dependencies
 	@if command -v python3.12 >/dev/null 2>&1; then \
@@ -14,71 +15,87 @@ init:  ## Initialize virtual environment and install dependencies
 		python3 -m venv .venv; \
 	fi && . .venv/bin/activate && pip install -r requirements.txt
 
+# ========== ANCHOR-BASED PIPELINE ==========
+
 pbf:  ## Download OSM PBF extracts for all states
 	$(PY) src/01_download_osm_extracts.py
 
-pois:  ## Extract POI data from PBF files
+pois:  ## Extract POI data from PBF files (legacy format, still needed for D_anchor)
 	$(PY) src/02_extract_pois_from_pbf.py
 
-boundaries:  ## Download TIGER/Line municipal boundaries
-	$(PY) src/08_download_boundaries.py
+anchors:  ## Build anchor points for drive and walk networks (uses cached networks)
+	@echo "Building anchors for Massachusetts..."
+	$(PY) src/build_anchors_modular.py --pbf data/osm/massachusetts.osm.pbf --out out/anchors
+	@echo "✅ Anchors complete. Check out/anchors/anchors_map.html for QA visualization."
 
-minutes:  ## Compute travel times (delta by default; falls back to full if needed)
-	@set -e; \
-	if [ -s data/deltas/poi_delta.csv ]; then \
-		echo "Delta file found. Checking for existing minutes..."; \
-		ok=1; \
-		for s in $(STATES); do \
-			[ -f data/minutes/$$s_r7.parquet ] && [ -f data/minutes/$$s_r8.parquet ] || ok=0; \
-		done; \
-		if [ $$ok -eq 1 ]; then \
-			echo "Applying delta recompute (default)"; \
-			$(PY) src/03b_delta_recompute.py; \
-			$(PY) src/04_merge_states.py; \
-			$(PY) src/05_h3_to_geojson.py; \
-			$(PY) src/06_build_tiles.py; \
-		else \
-			echo "Minutes outputs missing; running full recompute"; \
-			$(PY) src/03_compute_minutes_per_state.py; \
-		fi; \
-	else \
-		echo "No delta file; running full recompute"; \
-		$(PY) src/03_compute_minutes_per_state.py; \
-	fi
+anchors-fresh:  ## Build anchor points from scratch (clears network cache first)
+	@echo "Building anchors from scratch (clearing cache)..."
+	$(PY) src/build_anchors_modular.py --pbf data/osm/massachusetts.osm.pbf --out out/anchors --clear-cache
+	@echo "✅ Fresh anchors complete. Check out/anchors/anchors_map.html for QA visualization."
 
-minutes-full:  ## Force full recompute of travel times for all states
-	$(PY) src/03_compute_minutes_per_state.py
+clear-cache:  ## Clear cached network files to force rebuild
+	@echo "Clearing network cache..."
+	rm -f out/anchors/network_*.pkl
+	@echo "✅ Network cache cleared. Next 'make anchors' will rebuild networks."
 
-minutes-par:  ## Compute travel times (parallel processing)
-	$(PY) src/03a_parallel_driver.py
+t-hex: anchors ## Precompute Hex→Anchor travel times (T_hex matrix) and generate anchor indices
+	@echo "Computing T_hex (Hex→Anchor) for Massachusetts..."
+	@mkdir -p data/minutes
+	$(PY) src/precompute_t_hex.py \
+		--pbf data/osm/massachusetts.osm.pbf \
+		--anchors out/anchors/anchors_drive.parquet \
+		--mode drive \
+		--res 8 \
+		--cutoff 90 \
+		--batch 200 \
+		--anchor-index-out out/anchors/anchor_index_drive.parquet \
+		--out data/minutes/massachusetts_hex_to_anchor_drive.parquet
+	$(PY) src/precompute_t_hex.py \
+		--pbf data/osm/massachusetts.osm.pbf \
+		--anchors out/anchors/anchors_walk.parquet \
+		--mode walk \
+		--res 8 \
+		--cutoff 30 \
+		--batch 200 \
+		--anchor-index-out out/anchors/anchor_index_walk.parquet \
+		--out data/minutes/massachusetts_hex_to_anchor_walk.parquet
+	@echo "✅ T_hex matrices complete."
 
-crime-rates:  ## Enrich H3 hexes with crime rate data
-	$(PY) src/09_enrich_crime_rates.py
+d-anchor: t-hex ## Precompute Anchor→Category travel times (D_anchor matrix)
+	@echo "Computing D_anchor (Anchor→Category) for Massachusetts..."
+	$(PY) src/precompute_d_anchor.py \
+		--pbf data/osm/massachusetts.osm.pbf \
+		--anchors out/anchors/anchors_drive.parquet \
+		--mode drive \
+		--state massachusetts \
+		--categories $(CATEGORIES) \
+		--anchor-index out/anchors/anchor_index_drive.parquet \
+		--out data/minutes/massachusetts_anchor_to_category_drive.parquet
+	$(PY) src/precompute_d_anchor.py \
+		--pbf data/osm/massachusetts.osm.pbf \
+		--anchors out/anchors/anchors_walk.parquet \
+		--mode walk \
+		--state massachusetts \
+		--categories $(CATEGORIES) \
+		--anchor-index out/anchors/anchor_index_walk.parquet \
+		--out data/minutes/massachusetts_anchor_to_category_walk.parquet
+	@echo "✅ D_anchor matrices complete."
 
-merge:  ## Merge state results into national datasets
-	$(PY) src/04_merge_states.py
+serve:  ## Start the runtime tile server
+	@echo "Starting TownScout runtime tile server..."
+	@echo "Access at: http://localhost:8080/health"
+	@echo "Use /tiles/criteria endpoint for dynamic queries"
+	TS_DATA_DIR=data/minutes TS_ANCHOR_DIR=out/anchors TS_STATE=massachusetts $(PY) src/runtime_tiles.py
 
-geojson:  ## Convert H3 data to GeoJSON
-	$(PY) src/05_h3_to_geojson.py
+# ========== SHORTCUTS ==========
 
-tiles:  ## Build vector tiles (requires tippecanoe & pmtiles CLI)
-	$(PY) src/06_build_tiles.py
+all: pbf pois anchors t-hex d-anchor  ## Run complete anchor-based pipeline
 
-csv:  ## Export CSV files for Pro feature
-	$(PY) src/07_export_csv.py
+quick: anchors t-hex d-anchor serve  ## Skip downloads, build anchors and serve
 
-test:  ## Run validation tests for crime rate integration
-	$(PY) src/test_crime_integration.py
-
-all: pbf pois boundaries minutes-full crime-rates merge geojson tiles  ## Run complete pipeline
-
-delta:  ## Apply POI deltas and rebuild merged, geojson, and tiles
-	$(PY) src/03b_delta_recompute.py
-	$(PY) src/04_merge_states.py
-	$(PY) src/09_enrich_crime_rates.py
-	$(PY) src/05_h3_to_geojson.py
-	$(PY) src/06_build_tiles.py
+fresh: clear-cache anchors t-hex d-anchor  ## Clear cache and rebuild everything
 
 clean:  ## Clean generated data files
-	rm -rf data/osm/*.pbf data/poi/*.parquet data/minutes/*.parquet data/boundaries/
-	rm -rf state_tiles/*.parquet tiles/*.geojson tiles/*.mbtiles tiles/*.pmtiles 
+	rm -rf data/osm/*.pbf data/poi/*.parquet data/minutes/*.parquet
+	rm -rf out/anchors/*.parquet out/anchors/*.html out/anchors/*.pkl
+	rm -rf state_tiles/*.parquet tiles/*.geojson tiles/*.mbtiles tiles/*.pmtiles

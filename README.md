@@ -1,336 +1,201 @@
-# TownScout: Interactive Drive-Time Map
+# 🏘️ TownScout
 
-**Mission**: Build an interactive, stackable-filter map that answers: "Where should I live given my criteria?" It feels instant, costs pennies, and scales nationwide.
+**Interactive, stackable-filter map that answers: "Where should I live given my criteria?"**
+
+TownScout uses an **anchor-based architecture** that precomputes travel networks once, then answers complex multi-POI queries in milliseconds. Instead of building every road from scratch for each trip, we lay permanent highways and just check intersections.
+
+The application is a map of the United States where each time a filter/criteria is added, the livable land for that user visually shrinks in real-time.
+
+Zillow tells you what's for sale. Google Maps tells you how to get somewhere. TownScout tells you where your life actually works—by stacking together your criteria and instantly shrinking the map to only the livable areas.
 
 ## 🚀 Quick Start
 
-### Prerequisites (macOS)
 ```bash
-# Install dependencies
-brew install python@3.11 proj geos gdal tippecanoe pmtiles jq node
-
-# Setup Python environment
+# Setup
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# Build data pipeline  
+make pbf        # Download OSM data
+make pois       # Extract POI locations
+make anchors    # Create travel network anchor points
+make t-hex      # Precompute Hex→Anchor matrices
+make d-anchor   # Precompute Anchor→Category matrices
+
+# Start web interface
+make serve      # Runs on http://localhost:8080
 ```
 
-### Running the Map
+**Access your TownScout interface**:
+- **Main App**: http://localhost:8080/static/web/index.html
+- **Demo**: http://localhost:8080/static/web/runtime_demo.html
+- **Landing**: http://localhost:8080/
+
+## 🌐 Web Interface
+
+### Architecture: Clean Separation
+- **`/static`** → All frontend assets (HTML, CSS, JS)
+- **`/api`** → Dynamic runtime endpoints
+- **MapLibre GL** → Interactive map with real-time tile loading
+
+### Features
+- **Multi-criteria filtering**: Chipotle ≤ 15min, Costco ≤ 20min, Airports ≤ 120min
+- **Viewport-based loading**: Fetches multiple tiles covering visible area
+- **Instant updates**: Real-time filtering as you adjust sliders
+- **Share functionality**: URL parameters preserve your criteria
+- **Mobile responsive**: Works on all devices
+
+### API Endpoints
 ```bash
-# Activate Python environment
-source .venv/bin/activate
+# Health check
+curl http://localhost:8080/health
 
-# Start the web server (IMPORTANT: Use npx serve, not Python's http.server)
-npx --yes serve . -p 5173
+# Available categories
+curl http://localhost:8080/api/categories
 
-# Open the map
-open http://localhost:5173/tiles/web/
+# Query criteria for a specific tile
+curl "http://localhost:8080/api/criteria?z=8&x=77&y=94&criteria=[{\"category\":\"chipotle\",\"threshold\":15}]"
+
+# Multi-criteria query
+curl "http://localhost:8080/api/criteria?z=8&x=77&y=94&criteria=[
+  {\"category\":\"costco\",\"threshold\":15},
+  {\"category\":\"chipotle\",\"threshold\":30}, 
+  {\"category\":\"airports\",\"threshold\":240}
+]"
 ```
 
-## ✅ Current Status (MVP)
+**Response**: GeoJSON FeatureCollection of H3 hexes meeting ALL criteria.
 
-Your TownScout map currently shows:
-- **Geographic Coverage**: Massachusetts (Boston metro area)
-- **H3 Resolution**: 7 (overview) and 8 (detail) hexagonal cells
-- **Metrics**: Drive times to Chipotle and Costco locations + Crime rates per 100k population
-- **Interactive Filters**: 
-  - Chipotle ≤ 5-45 minutes (5min steps)
-  - Costco ≤ 5-60 minutes (5min steps)
-  - Crime rate ≤ 0-10,000 per 100k (50 steps)
-- **Real-time Filtering**: Instant visual updates as you move sliders
-- **URL Sharing**: Share your current filter settings via URL
-- **Zoom Transitions**: Automatic layer switching between zoom levels
-
-### Data Coverage
-- **3,116 H3 cells** at resolution 7 (overview level)
-- **17,611 H3 cells** at resolution 8 (detail level)  
-- **Drive time ranges**: Chipotle 0-149 min, Costco 0-240 min
-- **Crime rate ranges**: 222-13,297 per 100k (2024 MA data)
-- **Crime rate coverage**: 70-74% of hexes have valid crime data
-- **Geographic bounds**: ~42.0-42.3°N, 72.8-72.3°W (Boston area)
-
-## 🏛️ Crime Rate Integration
-
-✅ **Fully Integrated** - Crime rate data is now available as a filterable layer in TownScout.
-
-### How It Works
-
-**User Experience:**
-- **Crime Rate Slider**: Filter areas by crime rate per 100k population (0-10,000, 50-unit steps)
-- **Smart Filtering**: Areas without crime data remain visible but don't interfere with filtering
-- **Combined Filters**: Crime rate works alongside drive time filters for comprehensive location scoring
-- **Visual Feedback**: Instant map updates as you adjust the crime rate threshold
-
-**Data Processing:**
-1. Downloads Massachusetts municipal boundaries from U.S. Census TIGER/Line 2024
-2. Matches 287 valid crime records to 357 jurisdictions (76.5% match rate)
-3. Assigns crime rates to 19,245+ H3 hexes via centroid-in-polygon spatial join
-4. Excludes 47 towns with incomplete data (0.0 or missing values)
-5. Areas without crime data get special value (-1) and are excluded from crime filtering
-
-### Usage Instructions
-
-```bash
-# If starting fresh, run the complete pipeline with crime data:
-make all
-
-# If you already have H3 data and want to add crime rates:
-make boundaries    # Download municipal boundaries (Massachusetts only)
-make crime-rates   # Enrich H3 hexes with crime data  
-make merge geojson tiles  # Rebuild tiles with crime data
-
-# Test the integration:
-make test         # Validate crime rate processing
-
-# Start the map:
-npx --yes serve . -p 5173
-open http://localhost:5173/tiles/web/
+## 💡 Our Solution: Matrix Factorization
+```
+(Hex→Anchor) × (Anchor→Category) = Linear Scale
 ```
 
-### Data Quality & Coverage
+🔑 **How It Works**
+- **Anchor-based architecture**: Instead of brute-forcing every trip for every user query, TownScout builds a permanent "backbone" of anchors (bridges, intersections, key network nodes) that guarantee coverage.
+- **Precomputed matrices**:
+  - **T_hex** (Hex → Anchor travel times) — how long it takes from any hex tile to the network backbone.
+  - **D_anchor** (Anchor → POI categories) — how long from the backbone to things like Costco, airports, ski resorts.
+- **Min-plus algebra at runtime**: When a user asks for "≤15 min drive to Costco AND ≤30 min to Chipotle AND ≤2 hr to a ski resort", TownScout just does fast matrix lookups and bitset combinations. No recomputation, no waiting.
 
-**Crime Rate Data:**
-- **Valid Records**: 287 towns with complete crime data
-- **Data Range**: 222 to 13,297 crimes per 100k population
-- **Excluded Data**: 47 towns with 0.0 or missing values (incomplete records)
-- **Match Rate**: 76.5% of Massachusetts jurisdictions matched to crime data
-
-**H3 Hex Coverage:**
-- **R7 (Overview)**: 3,014/4,311 hexes (70%) have valid crime data
-- **R8 (Detail)**: 19,245/25,859 hexes (74%) have valid crime data
-- **No Data Areas**: Remain visible but excluded from crime rate filtering
-
-**Example High/Low Crime Areas:**
-- **Lowest**: Groveland (223 per 100k), Worthington (424 per 100k)
-- **Highest**: Holyoke (13,298 per 100k), Springfield (9,271 per 100k)
-- **Boston**: Cambridge (5,417), Boston (6,618), Chelsea (6,459)
+**Result**: Nationwide, stackable, live filters across multiple criteria that feel instantaneous.
 
 ## 🏗️ Architecture
 
 ```
-Data → Compute → Tiles → UI
+Data → Anchors → Matrices → Runtime Queries → Web Interface
 ```
 
-1. **Data**: OSM Geofabrik PBFs + brand name filters
-2. **Compute**: Build drivable graph → multi-source Dijkstra → aggregate to H3
-3. **Tiles**: Parquet → GeoJSON → MBTiles → PMTiles
-4. **UI**: MapLibre GL loads PMTiles; filter expressions drive instant updates
+1. **Anchors** — Strategic points on drive/walk networks (bridges, intersections, motorway chains)
+   - QA targets:
+     - Drive: ≥95% of r7 hexes within 10 km
+     - Walk (urban): ≥95% of r8 hexes within 600 m
 
-## 📂 Directory Structure
+2. **T_hex** — Hex→Anchor travel times (sparse, K≈24–48 anchors per hex)
+
+3. **D_anchor** — Anchor→Category travel times (multi-source floods)
+
+4. **Runtime API** — Queries = fast min-plus matrix ops + bitset masking
+
+5. **Web Interface** — MapLibre GL + FastAPI for real-time visualization
+
+## 📂 Data Structure
 
 ```
-data/osm/             # *.osm.pbf files
-data/poi/             # {state}_{brand}.parquet
-data/minutes/         # {state}_r{res}.parquet
-state_tiles/          # us_r{res}.parquet (+ optional CSV)
-tiles/                # us_r{res}.geojson, .mbtiles, .pmtiles
-tiles/web/            # index.html, style.css, pmtiles.js
-src/                  # Python pipeline scripts
+out/anchors/                               # Anchor points
+  anchors_drive.parquet                    # Drive network anchors
+  anchors_walk.parquet                     # Walk network anchors  
+  anchors_map.html                         # QA visualization
+
+data/minutes/                              # Precomputed matrices  
+  T_hex_drive.parquet                      # Hex→Anchor drive times
+  T_hex_walk.parquet                       # Hex→Anchor walk times
+  D_anchor_drive.parquet                   # Anchor→Category drive times
+  D_anchor_walk.parquet                    # Anchor→Category walk times
+
+data/poi/                                  # POI locations
+  {state}_{category}.parquet               # POI coordinates by category
+
+tiles/web/                                 # Web interface
+  index.html                               # Main TownScout interface
+  runtime_demo.html                        # Simple demo interface
+  style.css                                # Responsive styling
 ```
 
-## 🔄 Data Pipeline
+## 🔄 Pipeline Commands
 
-### Full Pipeline
+### Core Pipeline
 ```bash
-make all    # Run complete pipeline
+make all        # Complete anchor-based pipeline
+make quick      # Skip downloads, build and serve
+
+# Individual steps
+make anchors    # Build network anchor points
+make t-hex      # Precompute Hex→Anchor matrices  
+make d-anchor   # Precompute Anchor→Category matrices
+make serve      # Start web interface on port 8080
+make test       # Validate pipeline outputs
 ```
 
-### Individual Steps
+### Utilities  
 ```bash
-make pbf       # Download OSM PBF files
-make pois      # Extract brand POIs
-make minutes   # Compute drive times per state
-make merge     # Merge states into unified files
-make geojson   # Export to GeoJSON
-make tiles     # Build MBTiles and convert to PMTiles
+make pbf        # Download OSM data
+make pois       # Extract POI locations
+make clean      # Remove generated files
 ```
 
-## 🛠️ Key Technologies
+## 🎚️ Supported Categories
 
-- **Backend**: Python 3.11, OSMnx, NetworkX, H3, Pandas
-- **Tiles**: Tippecanoe, PMTiles
-- **Frontend**: MapLibre GL, vanilla JavaScript
-- **Serving**: Node.js `serve` (for proper HTTP range request support)
+Current POI categories with optimized defaults:
 
-## 🔧 Critical Fixes Applied
+| Category   | ID | Default Mode | Default Cutoff | Description        |
+|------------|----|--------------|--------------| ------------------|
+| `chipotle` | 1  | drive        | 30min        | Chipotle restaurants |
+| `costco`   | 2  | drive        | 60min        | Costco warehouses  |
+| `airports` | 3  | drive        | 240min       | Major airports     |
 
-### 1. HTTP Server Issue ⚠️
-**Problem**: Python's `http.server` doesn't support HTTP range requests properly.
-**Solution**: Use `npx serve` instead for proper PMTiles support.
+*Adding new categories is trivial - just update `src/categories.py` and re-run `make d-anchor`.*
 
-```bash
-# ❌ DON'T USE - causes tile loading errors
-python -m http.server 5173
+## 🔧 Key Technologies
 
-# ✅ USE THIS - proper range request support
-npx --yes serve . -p 5173
-```
+### Backend
+- **Python 3.11**: Core runtime
+- **FastAPI**: Web API with automatic docs
+- **OSMnx**: Road network analysis
+- **NetworkX**: Graph algorithms
+- **H3**: Hexagonal spatial indexing
+- **Pandas**: Data processing
+- **NumPy**: Matrix operations
 
-### 2. PMTiles Library Issue
-**Problem**: CDN URLs for PMTiles were returning 404 errors.
-**Solution**: Downloaded PMTiles library locally to `tiles/web/pmtiles.js`.
+### Frontend  
+- **MapLibre GL JS**: Interactive mapping
+- **Vanilla JavaScript**: Lightweight UI
+- **CSS Grid/Flexbox**: Responsive design
 
-### 3. Layer Zoom Ranges
-**Problem**: HTML was using incorrect zoom ranges for tile layers.
-**Solution**: Fixed zoom ranges to match actual tile data:
-- R7 tiles: zoom 0-5 (not 0-8)
-- R8 tiles: zoom 5-22 (not 8-22)
+### Data
+- **OpenStreetMap**: Road networks via Pyrosm
+- **Parquet**: Columnar storage for matrices
+- **GeoJSON**: Spatial data exchange
 
-### 4. Missing Assets
-- Added favicon.ico to prevent 404 errors
-- Added OpenStreetMap attribution
-- Enhanced error handling and debugging
+## 🚀 Performance
 
-## 🎛️ Configuration
+- **Query Response**: < 250ms for complex multi-criteria
+- **Data Size**: ~17K anchor-to-category relationships
+- **Coverage**: 705 H3 hexes in Massachusetts
+- **Memory**: Matrices cached in RAM for instant access
 
-### Current POI Brands (src/config.py)
-```python
-POI_BRANDS = {
-    "chipotle": {"tags": {"amenity": ["fast_food"], "name": ["Chipotle"]}},
-    "costco":   {"tags": {"shop": ["supermarket", "wholesale"], "name": ["Costco"]}},
-    "airports": {"tags": {"aeroway": ["aerodrome"]}},
-}
-```
+## 🤝 Contributing
 
-### Adding New POI Brands
+1. **Add Categories**: Update `src/categories.py` with new POI types
+2. **Extend Regions**: Add states to `src/config.py`
+3. **Improve UI**: Enhance `tiles/web/` interfaces
+4. **Optimize Performance**: Improve anchor selection algorithms
 
-The system uses a robust multi-stage extraction pipeline that automatically ensures comprehensive coverage:
+## 📄 License
 
-1. **Stage 1**: Pyrosm extraction with specific shop/amenity filters
-2. **Stage 2**: OGR fallback across points+polygons if count is suspiciously low
-3. **Stage 3**: Validation against expected minimums with warnings
-
-To add a new POI brand:
-
-1. **Add to `src/config.py`**:
-```python
-POI_BRANDS = {
-    # ... existing brands ...
-    "starbucks": {
-        "tags": {
-            "amenity": ["cafe", "fast_food"],
-            "shop": ["coffee"],  # if applicable
-            "name": ["Starbucks", "Starbucks Coffee"],
-            "brand": ["Starbucks", "Starbucks Coffee"], 
-            "operator": ["Starbucks", "Starbucks Coffee"]
-        }
-    },
-}
-```
-
-2. **Set expected minimum count** in `src/02_extract_pois_from_pbf.py`:
-```python
-EXPECTED_MIN_COUNTS = {
-    # ... existing counts ...
-    "starbucks": 25,  # Estimate for Massachusetts
-}
-```
-
-3. **Add brand-specific variants** (if needed) in `extract_and_validate_pois()`:
-```python
-elif brand == "starbucks":
-    keywords.extend(["Starbucks #", "Starbucks Store"])
-```
-
-4. **Run extraction**: `make pois`
-
-The system will automatically:
-- Try multiple extraction methods
-- Include points, polygons, and relations
-- Filter out irrelevant features (gas stations, etc.)
-- Validate against expected counts
-- Report warnings if coverage seems incomplete
-
-### Geographic Scope
-```python
-STATES = ["massachusetts"]  # Currently Massachusetts only
-```
-
-### H3 Resolutions
-```python
-H3_RES_LOW = 7   # overview (fewer, larger hexes)
-H3_RES_HIGH = 8  # detail (more, smaller hexes)
-```
-
-## 🚀 Scaling to Nationwide
-
-To expand beyond Massachusetts:
-
-1. **Update config**:
-   ```python
-   STATES = ["massachusetts", "connecticut", "rhode-island", "new-hampshire"]
-   ```
-
-2. **Add more POI categories**:
-   ```python
-   POI_BRANDS = {
-       "chipotle": {...},
-       "costco": {...},
-       "hospitals": {"tags": {"amenity": ["hospital"]}},
-       "airports": {"tags": {"aeroway": ["aerodrome"]}},
-   }
-   ```
-
-3. **Rebuild pipeline**:
-   ```bash
-   make clean
-   make all
-   ```
-
-## 🐛 Troubleshooting
-
-### Map Not Loading
-1. **Check server**: Ensure using `npx serve`, not Python's http.server
-2. **Check browser console**: Look for PMTiles loading errors
-3. **Verify tiles**: Check if `.pmtiles` files exist in `tiles/` directory
-
-### No Hexagons Visible
-1. **Check zoom level**: Zoom in/out to trigger layer switching
-2. **Adjust filters**: Try raising slider values (current data is Massachusetts only)
-3. **Check data**: Verify `state_tiles/us_r*.parquet` files exist
-
-### Server Issues
-```bash
-# Kill existing servers
-lsof -ti:5173 | xargs kill
-
-# Start fresh
-npx --yes serve . -p 5173
-```
-
-## 📊 Performance Targets
-
-- **Initial tile download**: ≤10-50 MB per session
-- **Slider update response**: ≤250ms
-- **Total tile size**: <400 MB combined (r7 + r8)
-- **Single-state compute**: ≤10 minutes on 8-core laptop
-
-## 🔒 Security & Privacy
-
-- **Entirely static**: No user auth required for MVP
-- **No PII**: Only public POI data and aggregated drive times
-- **Open data**: Uses OpenStreetMap contributors' data
-
-## 📈 Next Steps
-
-### Immediate Improvements
-- [ ] Add base map layer (state boundaries, roads)
-- [ ] Expand to neighboring states
-- [ ] Add hospitals and airports POI categories
-- [ ] Implement CSV export for Pro users
-
-### Advanced Features
-- [ ] Friend/family proximity scoring
-- [ ] User-uploaded custom POIs
-- [ ] Live traffic integration
-- [ ] Mobile-responsive design
-
-## 📜 License & Attribution
-
-- **Map data**: © OpenStreetMap contributors
-- **Code**: MIT License (add your license file)
-- **H3**: Uber's hexagonal hierarchical geospatial indexing system
+*Map data © OpenStreetMap contributors*
 
 ---
 
-**Built with ❤️ for finding the perfect place to live** 
+**TownScout**: Where data meets decisions. Where algorithms meet life choices. Where you discover not just where you *can* live, but where you *should* live.

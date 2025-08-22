@@ -7,19 +7,36 @@
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
   <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
   <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
-  <script src="pmtiles.js"></script>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/static/web/style.css" />
 </head>
 <body>
 <div class="panel">
-  <div class="row"><label>Chipotle ≤ min</label><input id="chipotle" type="range" min="5" max="45" step="5" value="15"><span id="chipotle_v">15</span></div>
-  <div class="row"><label>Costco ≤ min</label><input id="costco" type="range" min="5" max="60" step="5" value="20"><span id="costco_v">20</span></div>
-  <div class="row"><label>Major airport ≤ min</label><input id="airports" type="range" min="10" max="120" step="10" value="40"><span id="airports_v">40</span></div>
-  <div class="row"><label>Crime rate ≤ per 100k</label><input id="crime_rate" type="range" min="0" max="10000" step="50" value="5000"><span id="crime_rate_v">5000</span></div>
-  <div class="row"><button id="share">Share map</button></div>
+  <h3>TownScout Criteria</h3>
+  <div class="row">
+    <label>Chipotle ≤ min</label>
+    <input id="chipotle" type="range" min="5" max="45" step="5" value="15">
+    <span id="chipotle_v">15</span>
+  </div>
+  <div class="row">
+    <label>Costco ≤ min</label>
+    <input id="costco" type="range" min="5" max="60" step="5" value="20">
+    <span id="costco_v">20</span>
+  </div>
+  <div class="row">
+    <label>Major airport ≤ min</label>
+    <input id="airports" type="range" min="10" max="240" step="10" value="120">
+    <span id="airports_v">120</span>
+  </div>
+  <div class="row">
+    <button id="update">Update Map</button>
+    <button id="share">Share Map</button>
+  </div>
+  <div id="status" class="status"></div>
   <div id="nudge" class="nudge" style="display:none;"></div>
 </div>
+
 <div id="map"></div>
+
 <div id="info-panel" class="info-panel">
   <div class="info-panel-title">Area Information</div>
   <div id="info-content" class="info-panel-content">
@@ -29,336 +46,238 @@
     Hover over an area to see details
   </div>
 </div>
+
 <div class="footer">
   Map data © OpenStreetMap contributors
 </div>
+
+<script src="https://unpkg.com/pmtiles@2.7.0/dist/pmtiles.js"></script>
 <script>
-  // PMTiles setup using local library
-  const pm = new pmtiles.Protocol(); 
-  maplibregl.addProtocol("pmtiles", pm.tile);
-  const r7 = "pmtiles://" + location.origin + "/tiles/us_r7.pmtiles";
-  const r8 = "pmtiles://" + location.origin + "/tiles/us_r8.pmtiles";
-  
-  const map = new maplibregl.Map({
-    container: 'map',
-    style: {
-      version: 8,
-      sources: {
-        // Base map from OpenStreetMap
-        'osm': {
-          type: 'raster',
-          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-          tileSize: 256,
-          attribution: '© OpenStreetMap contributors'
-        }
-      },
-      layers: [
-        // Base map layer
-        {
-          id: 'osm-base',
-          type: 'raster',
-          source: 'osm',
-          paint: {
-            'raster-opacity': 0.6
-          }
-        }
-      ]
-    },
-    center: [-71.06, 42.36], 
-    zoom: 8
-  });
+  // Initialize pmtiles protocol
+  let protocol = new pmtiles.Protocol();
+  maplibregl.addProtocol("pmtiles", protocol.tile);
 
-  function addVector(id, url, layer){
-    map.addSource(id, { type:'vector', url });
-    map.addLayer({
-      id: layer, 
-      source: id, 
-      'source-layer': id, 
-      type:'fill',
-      paint: {
-        'fill-color': [
-          'interpolate', ['linear'],
-          ['coalesce', ['min', ['coalesce', ['get','chipotle_drive_min'], 9999], ['coalesce', ['get','costco_drive_min'], 9999], ['coalesce', ['get','airports_drive_min'], 9999]], 0],
-          0, '#2166ac', 10, '#67a9cf', 20, '#d1e5f0', 30, '#fddbc7', 45, '#ef8a62', 60, '#b2182b'
-        ],
-        'fill-opacity': 0.65
-      },
-      filter: ['all'],
-      minzoom: id === 'us_r7' ? 0 : 5,
-      maxzoom: id === 'us_r7' ? 5 : 22
-    });
-  }
+  const R7_SOURCE_ID = "ts_r7";
+  const R7_LAYER_ID = "ts_r7_fill";
+  const R8_SOURCE_ID = "ts_r8";
+  const R8_LAYER_ID = "ts_r8_fill";
+  const R7_URL = "/tiles/us_r7.pmtiles";
+  const R8_URL = "/tiles/us_r8.pmtiles";
 
-  function getCurrentFilters() {
-    return {
-      chipotle: Number(document.getElementById('chipotle').value),
-      costco: Number(document.getElementById('costco').value),
-      airports: Number(document.getElementById('airports').value),
-      crime_rate: Number(document.getElementById('crime_rate').value)
+  // Debounce function
+  function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+      const later = () => {
+        clearTimeout(timeout);
+        func(...args);
+      };
+      clearTimeout(timeout);
+      timeout = setTimeout(later, wait);
     };
   }
 
-  function formatInfoContent(properties) {
-    const filters = getCurrentFilters();
-    const items = [];
+  // Sliders and filters
+  const SLIDERS = [
+    { id: "chipotle", prop: "chipotle_drive_min", max: 45, init: 15 },
+    { id: "costco", prop: "costco_drive_min", max: 60, init: 20 },
+    { id: "airports", prop: "airports_drive_min", max: 240, init: 120 },
+  ];
+  let hoveredHexId = null;
 
-    // Helper function to check qualification status
-    function getStatus(value, threshold, hasData = true) {
-      if (!hasData || value === undefined || value === null || value < 0) {
-        return { status: '—', class: 'info-no-data', text: 'No data' };
-      }
-      const qualified = value <= threshold;
-      return {
-        status: qualified ? '✅' : '❌',
-        class: qualified ? 'info-qualified' : 'info-failed',
-        text: `${value} min`
-      };
+  function getFilterExpression() {
+    const filters = ["all"];
+    for (const s of SLIDERS) {
+      const val = parseInt(document.getElementById(s.id).value, 10);
+      // Use coalesce to treat missing values as a large number (effectively passing the check)
+      filters.push(["<=", ["coalesce", ["get", s.prop], 9999], val]);
     }
+    return filters;
+  }
 
-    // Chipotle
-    const chipotleValue = properties.chipotle_drive_min;
-    const chipotleStatus = getStatus(chipotleValue, filters.chipotle, chipotleValue !== undefined && chipotleValue >= 0);
-    items.push({
-      status: chipotleStatus.status,
-      class: chipotleStatus.class,
-      label: 'Chipotle',
-      value: chipotleStatus.text
-    });
+  function updateFilters() {
+    const filterExpr = getFilterExpression();
+    if (map.getLayer(R7_LAYER_ID)) {
+      map.setFilter(R7_LAYER_ID, filterExpr);
+    }
+    if (map.getLayer(R8_LAYER_ID)) {
+      map.setFilter(R8_LAYER_ID, filterExpr);
+    }
+    updateShareUrl();
+    checkVisibleFeatures();
+  }
 
-    // Costco
-    const costcoValue = properties.costco_drive_min;
-    const costcoStatus = getStatus(costcoValue, filters.costco, costcoValue !== undefined && costcoValue >= 0);
-    items.push({
-      status: costcoStatus.status,
-      class: costcoStatus.class,
-      label: 'Costco',
-      value: costcoStatus.text
-    });
-
-    // Airports
-    const airportsValue = properties.airports_drive_min;
-    const airportsStatus = getStatus(airportsValue, filters.airports, airportsValue !== undefined && airportsValue >= 0);
-    items.push({
-      status: airportsStatus.status,
-      class: airportsStatus.class,
-      label: 'Major airport',
-      value: airportsStatus.text
-    });
-
-    // Crime rate
-    const crimeValue = properties.crime_rate;
-    let crimeStatus;
-    if (crimeValue === undefined || crimeValue === null || crimeValue < 0) {
-      crimeStatus = { status: '—', class: 'info-no-data', text: 'No data' };
+  // Nudge if no features are visible
+  const checkVisibleFeatures = debounce(() => {
+    const featuresR7 = map.queryRenderedFeatures({ layers: [R7_LAYER_ID] });
+    const featuresR8 = map.queryRenderedFeatures({ layers: [R8_LAYER_ID] });
+    const nudge = document.getElementById('nudge');
+    if (featuresR7.length === 0 && featuresR8.length === 0) {
+      nudge.textContent = "No areas match your criteria. Try increasing drive times.";
+      nudge.style.display = 'block';
     } else {
-      const qualified = crimeValue <= filters.crime_rate;
-      crimeStatus = {
-        status: qualified ? '✅' : '❌',
-        class: qualified ? 'info-qualified' : 'info-failed',
-        text: `${crimeValue} per 100k`
-      };
+      nudge.style.display = 'none';
     }
-    items.push({
-      status: crimeStatus.status,
-      class: crimeStatus.class,
-      label: 'Crime rate',
-      value: crimeStatus.text
-    });
+  }, 500);
 
-    return items.map(item => 
-      `<div class="info-item">
-        <span class="info-status ${item.class}">${item.status}</span>
-        <span class="info-label">${item.label}:</span>
-        <span class="info-value">${item.value}</span>
-      </div>`
-    ).join('');
+  // Share URL logic
+  function updateShareUrl() {
+    const params = new URLSearchParams();
+    for (const s of SLIDERS) {
+      params.set(s.id, document.getElementById(s.id).value);
+    }
+    const newUrl = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState({}, '', newUrl);
   }
 
-  function showInfoPanel(properties) {
-    const content = document.getElementById('info-content');
-    const placeholder = document.getElementById('info-placeholder');
-        
-    if (!content || !placeholder) {
-      console.error('Info panel elements not found');
-      return;
-    }
-    
-    content.innerHTML = formatInfoContent(properties);
-    content.classList.add('visible');
-    placeholder.style.display = 'none';
-  }
-
-  function hideInfoPanel() {
-    const content = document.getElementById('info-content');
-    const placeholder = document.getElementById('info-placeholder');
-    
-    if (!content || !placeholder) {
-      console.error('Info panel elements not found');
-      return;
-    }
-    
-    content.classList.remove('visible');
-    placeholder.style.display = 'block';
-  }
-
-  function updateFilter(){
-    const c = Number(document.getElementById('chipotle').value);
-    const g = Number(document.getElementById('costco').value);
-    const a = Number(document.getElementById('airports').value);
-    const cr = Number(document.getElementById('crime_rate').value);
-    document.getElementById('chipotle_v').textContent = c;
-    document.getElementById('costco_v').textContent = g;
-    document.getElementById('airports_v').textContent = a;
-    document.getElementById('crime_rate_v').textContent = cr;
-    const f = ['all',
-      ['<=', ['coalesce', ['get','chipotle_drive_min'], 9999], c],
-      ['<=', ['coalesce', ['get','costco_drive_min'], 9999], g],
-      ['<=', ['coalesce', ['get','airports_drive_min'], 9999], a],
-      // Crime rate filter: show areas with no data (-1) OR areas with valid data that meet threshold
-      ['any',
-        ['==', ['get','crime_rate'], -1],  // Show areas with no crime data
-        ['all', 
-          ['>=', ['get','crime_rate'], 0],  // Has valid crime data (>= 0)
-          ['<=', ['get','crime_rate'], cr]  // Meets crime rate threshold
-        ]
-      ]
-    ];
-    map.setFilter('layer_r7', f);
-    map.setFilter('layer_r8', f);
-    // Nudge logic
-    setTimeout(() => {
-      const visible = map.queryRenderedFeatures({ layers: ['layer_r7','layer_r8'] }).length;
-      const n = document.getElementById('nudge');
-      if (!visible) { n.style.display='block'; n.textContent = 'No areas match. Try raising drive times +5–10 minutes or crime rate limits.'; }
-      else { n.style.display='none'; }
-    }, 100);
-    
-    // Update info panel if currently showing data
-    const content = document.getElementById('info-content');
-    if (content.classList.contains('visible')) {
-      // Re-render current data with updated filter thresholds
-      const currentData = window.currentHexData;
-      if (currentData) {
-        showInfoPanel(currentData);
+  function loadUrlParams() {
+    const params = new URLSearchParams(window.location.search);
+    for (const s of SLIDERS) {
+      if (params.has(s.id)) {
+        const val = parseInt(params.get(s.id), 10);
+        document.getElementById(s.id).value = val;
+        document.getElementById(s.id + '_v').textContent = val;
       }
     }
   }
 
-  map.on('load', () => {
-    addVector('us_r7', r7, 'layer_r7');
-    addVector('us_r8', r8, 'layer_r8');
-    
-    // Wait for sources to load before adding mouse events
-    map.on('sourcedata', (e) => {
-      if (e.isSourceLoaded && (e.sourceId === 'us_r7' || e.sourceId === 'us_r8')) {
-        console.log('Source loaded:', e.sourceId);
-      }
-    });
-    
-    // Add hover events for info panel - handle ALL features, not just visible ones
-    function handleMouseMove(e) {
-      // First try to get rendered features (visible ones)
-      const renderedFeatures = map.queryRenderedFeatures(e.point, { 
-        layers: ['layer_r7', 'layer_r8'] 
-      });
-      
-      if (renderedFeatures.length > 0) {
-        const feature = renderedFeatures[0];
-        window.currentHexData = feature.properties;
-        showInfoPanel(feature.properties);
-        map.getCanvas().style.cursor = 'pointer';
+  function setupInfoPanel() {
+    const infoPanel = document.getElementById('info-panel');
+    const infoContent = document.getElementById('info-content');
+    const infoPlaceholder = document.getElementById('info-placeholder');
+
+    const onMouseMove = (e) => {
+      if (!e.features || e.features.length === 0) {
+        infoContent.innerHTML = '';
+        infoPlaceholder.style.display = 'block';
+        if (hoveredHexId !== null) {
+          map.setFeatureState({ source: R7_SOURCE_ID, sourceLayer: "us_r7", id: hoveredHexId }, { hover: false });
+          map.setFeatureState({ source: R8_SOURCE_ID, sourceLayer: "us_r8", id: hoveredHexId }, { hover: false });
+          hoveredHexId = null;
+        }
         return;
       }
-      
-      // If no rendered features, try to get source features (including filtered ones)
-      try {
-        const currentZoom = map.getZoom();
-        const sourceId = currentZoom < 5 ? 'us_r7' : 'us_r8';
-        
-        // Query source features without filter constraints
-        const sourceFeatures = map.querySourceFeatures(e.point, { 
-          sourceLayer: sourceId,
-          source: sourceId
-        });
-        
-        if (sourceFeatures.length > 0) {
-          const feature = sourceFeatures[0];
-          console.log('Found source feature:', feature.properties);
-          window.currentHexData = feature.properties;
-          showInfoPanel(feature.properties);
-          map.getCanvas().style.cursor = 'pointer';
-          return;
-        }
-      } catch (error) {
-        console.log('Source feature query failed:', error);
-      }
-      
-      // No features found - only log occasionally to avoid spam
-      if (Math.random() < 0.01) {
-      }
-      window.currentHexData = null;
-      hideInfoPanel();
-      map.getCanvas().style.cursor = '';
-    }
 
-    map.on('mousemove', handleMouseMove);
+      infoPlaceholder.style.display = 'none';
+      const feat = e.features[0];
+
+      if (hoveredHexId !== feat.id) {
+        if (hoveredHexId !== null) {
+          map.setFeatureState({ source: R7_SOURCE_ID, sourceLayer: "us_r7", id: hoveredHexId }, { hover: false });
+          map.setFeatureState({ source: R8_SOURCE_ID, sourceLayer: "us_r8", id: hoveredHexId }, { hover: false });
+        }
+        hoveredHexId = feat.id;
+        map.setFeatureState({ source: feat.source, sourceLayer: feat.sourceLayer, id: hoveredHexId }, { hover: true });
+      }
+
+      let content = '<ul>';
+      for (const s of SLIDERS) {
+        const val = feat.properties[s.prop];
+        const status = (val !== null && val <= parseInt(document.getElementById(s.id).value, 10)) ? '✅' : '❌';
+        content += `<li>${s.id}: ${val !== null ? val : 'N/A'} min ${status}</li>`;
+      }
+      content += '</ul>';
+      infoContent.innerHTML = content;
+    };
     
-    // Hide info panel when mouse leaves map
-    map.on('mouseleave', () => {
-      window.currentHexData = null;
-      hideInfoPanel();
-      map.getCanvas().style.cursor = '';
+    const onMouseLeave = () => {
+        infoContent.innerHTML = '';
+        infoPlaceholder.style.display = 'block';
+        if (hoveredHexId !== null) {
+          map.setFeatureState({ source: R7_SOURCE_ID, sourceLayer: "us_r7", id: hoveredHexId }, { hover: false });
+          map.setFeatureState({ source: R8_SOURCE_ID, sourceLayer: "us_r8", id: hoveredHexId }, { hover: false });
+          hoveredHexId = null;
+        }
+    };
+
+    map.on('mousemove', R7_LAYER_ID, onMouseMove);
+    map.on('mouseleave', R7_LAYER_ID, onMouseLeave);
+    map.on('mousemove', R8_LAYER_ID, onMouseMove);
+    map.on('mouseleave', R8_LAYER_ID, onMouseLeave);
+  }
+
+  // Initialize map and controls
+  map.on('load', () => {
+    // Add PMTiles sources
+    map.addSource(R7_SOURCE_ID, {
+      type: "vector",
+      url: `pmtiles://${R7_URL}`,
+      attribution: '© OpenStreetMap contributors'
+    });
+    map.addSource(R8_SOURCE_ID, {
+      type: "vector",
+      url: `pmtiles://${R8_URL}`,
     });
 
-    document.getElementById('chipotle').oninput = updateFilter;
-    document.getElementById('costco').oninput = updateFilter;
-    document.getElementById('airports').oninput = updateFilter;
-    document.getElementById('crime_rate').oninput = updateFilter;
-    
-    // Load URL params if present
-    const params = new URLSearchParams(window.location.search);
-    if (params.has('chipotle')) {
-      document.getElementById('chipotle').value = params.get('chipotle');
-    }
-    if (params.has('costco')) {
-      document.getElementById('costco').value = params.get('costco');
-    }
-    if (params.has('airports')) {
-      document.getElementById('airports').value = params.get('airports');
-    }
-    if (params.has('crime_rate')) {
-      document.getElementById('crime_rate').value = params.get('crime_rate');
-    }
-    
-    updateFilter();
-    
-    console.log('Map setup complete, mouse events registered');
-  
-      });
+    // Add layers
+    map.addLayer({
+      "id": R7_LAYER_ID,
+      "type": "fill",
+      "source": R7_SOURCE_ID,
+      "source-layer": "us_r7",
+      "maxzoom": 8,
+      "paint": {
+        "fill-color": "#4CAF50",
+        "fill-opacity": [
+            "case",
+            ["boolean", ["feature-state", "hover"], false],
+            0.8,
+            0.5
+        ],
+        "fill-outline-color": "rgba(0, 0, 0, 0.1)"
+      }
+    });
 
-  // Debug error handling
+    map.addLayer({
+      "id": R8_LAYER_ID,
+      "type": "fill",
+      "source": R8_SOURCE_ID,
+      "source-layer": "us_r8",
+      "minzoom": 8,
+      "paint": {
+        "fill-color": "#4CAF50",
+        "fill-opacity": [
+            "case",
+            ["boolean", ["feature-state", "hover"], false],
+            0.8,
+            0.5
+        ],
+        "fill-outline-color": "rgba(0, 0, 0, 0.1)"
+      }
+    });
+
+    // Setup sliders
+    for (const s of SLIDERS) {
+      const slider = document.getElementById(s.id);
+      const display = document.getElementById(s.id + '_v');
+      slider.addEventListener('input', () => {
+        display.textContent = slider.value;
+      });
+      slider.addEventListener('change', debounce(updateFilters, 50));
+    }
+
+    // Share button
+    document.getElementById('share').addEventListener('click', () => {
+      navigator.clipboard.writeText(window.location.href).then(() => {
+        const btn = document.getElementById('share');
+        btn.textContent = 'Copied!';
+        setTimeout(() => (btn.textContent = 'Share Map'), 1000);
+      });
+    });
+    
+    // Manual update button (now just for aesthetics, filtering is live)
+    document.getElementById('update').addEventListener('click', updateFilters);
+
+    // Initial state
+    loadUrlParams();
+    updateFilters();
+    setupInfoPanel();
+  });
+
+  // Error handling
   map.on('error', (e) => {
     console.error('Map error:', e);
   });
-
-  map.on('sourcedata', (e) => {
-    console.log('Source data loaded:', e.sourceId, e.dataType);
-  });
-
-  // Shareable URL
-  document.getElementById('share').onclick = () => {
-    const c = document.getElementById('chipotle').value;
-    const g = document.getElementById('costco').value;
-    const a = document.getElementById('airports').value;
-    const cr = document.getElementById('crime_rate').value;
-    const url = new URL(location.href);
-    url.searchParams.set('chipotle', c);
-    url.searchParams.set('costco', g);
-    url.searchParams.set('airports', a);
-    url.searchParams.set('crime_rate', cr);
-    navigator.clipboard.writeText(url.toString());
-    alert('Copied URL with your filters');
-  };
 </script>
 </body>
 </html> 

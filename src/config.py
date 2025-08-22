@@ -85,9 +85,6 @@ POI_BRANDS = {
 # Definition examples for future categories
 MAJOR_AIRPORT_MIN_PAX = 500_000  # illustrative
 
-# City/ZIP lookup sources (for the tiny API)
-CITY_LOOKUP_CSV = "src/api/city_lookup.csv"
-
 # Mapping from Geofabrik state slug to USPS state code (minimal set for current STATES/Makefile)
 STATE_SLUG_TO_CODE = {
     "massachusetts": "MA",
