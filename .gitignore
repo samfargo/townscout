@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.pkl
 .venv/
 venv/
 ENV/
@@ -58,3 +59,4 @@ htmlcov/
 # Redis (if using optional API)
 *.rdb
 dump.rdb 
+*.pkl
