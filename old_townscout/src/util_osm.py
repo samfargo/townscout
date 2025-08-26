@@ -4,13 +4,7 @@ from pyrosm import OSM
 import geopandas as gpd
 import subprocess
 import tempfile
-from typing import List, Dict
-import networkx as nx
-import osmnx as ox
-from pyrosm import OSM, get_data
-from shapely.geometry import Point
-
-from src import config
+from typing import List
 
 
 def download_geofabrik(state: str, base: str, out_dir="data/osm"):
@@ -196,6 +190,7 @@ def find_major_airports(pbf_path: str) -> gpd.GeoDataFrame:
             if gdf.empty:
                 return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry")
             # Convert all geometries to representative points
+            from shapely.geometry import Point
             pts_list = []
             for geom in gdf.geometry:
                 if geom is None:
@@ -258,66 +253,3 @@ def airports_from_csv(csv_path: str, state_code: str) -> gpd.GeoDataFrame:
     geometry = [Point(float(lon), float(lat)) for lat, lon in zip(df[lat_col], df[lon_col])]
     gdf = gpd.GeoDataFrame(df[[state_col]].copy(), geometry=geometry, crs="EPSG:4326")
     return gdf[["geometry"]] 
-
-
-def get_network_type(mode: str) -> str:
-    if "walk" in mode:
-        return "walk"
-    return "drive"
-
-def _ensure_node_coords(G: nx.MultiDiGraph) -> nx.MultiDiGraph:
-    """Check for x_orig/y_orig attributes and rename to x/y if needed."""
-    if not G.nodes:
-        return G
-    
-    # Peek at the first node's data
-    sample_node_id = next(iter(G.nodes))
-    sample_data = G.nodes[sample_node_id]
-
-    if 'x' not in sample_data and 'x_orig' in sample_data:
-        print("[graph] Renaming 'x_orig'/'y_orig' node attributes to 'x'/'y'...")
-        for _, n_data in G.nodes(data=True):
-            if 'x_orig' in n_data:
-                n_data['x'] = n_data.pop('x_orig')
-            if 'y_orig' in n_data:
-                n_data['y'] = n_data.pop('y_orig')
-    return G
-
-def load_graph(pbf_path: str, mode: str, force_rebuild: bool = False) -> nx.MultiDiGraph:
-    state_name = os.path.basename(pbf_path).split(".")[0]
-    network_type = get_network_type(mode)
-    graph_params = config.GRAPH_CONFIG.get(network_type, {})
-    
-    # Using a simpler GraphML cache to avoid node/edge parquet issues for now
-    cache_dir = "data/osm/cache"
-    graphml_cache_path = os.path.join(cache_dir, f"{state_name}_{network_type}.graphml")
-    
-    if not force_rebuild and os.path.exists(graphml_cache_path):
-        try:
-            print(f"[{mode}] Loading cached graph from {graphml_cache_path}...")
-            G = ox.load_graphml(graphml_cache_path)
-            G = _ensure_node_coords(G)
-            return G
-        except Exception as e:
-            print(f"[{mode}] Cache load failed: {e}. Rebuilding...")
-
-    # If not cached, build it
-    print(f"[{mode}] Building OSMnx graph from {pbf_path} (this might take a while)...")
-    G = ox.graph_from_pbf(
-        pbf_path,
-        **graph_params
-    )
-
-    # Add travel times
-    G = ox.add_edge_speeds(G)
-    G = ox.add_edge_travel_times(G)
-
-    # Final check on node coordinates before saving
-    G = _ensure_node_coords(G)
-
-    # Save to cache
-    os.makedirs(cache_dir, exist_ok=True)
-    print(f"[{mode}] Caching graph to {graphml_cache_path}...")
-    ox.save_graphml(G, graphml_cache_path)
-    
-    return G 

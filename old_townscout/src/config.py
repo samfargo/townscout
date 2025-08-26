@@ -1,35 +1,12 @@
-import numpy as np
-
 # Regions to compute first
 STATES = [
     "massachusetts"
 ]
 GEOFABRIK_BASE = "https://download.geofabrik.de/north-america/us"
 
-# Dataset version
-DATASET_VERSION = "v2024.07.1"
-
-# Graph creation settings
-GRAPH_CONFIG = {
-    "drive": {
-        "network_type": "drive",
-        "retain_all": False,
-        "simplify": False,
-    },
-    "walk": {
-        "network_type": "walk",
-        "retain_all": False,
-        "simplify": False,
-    }
-}
-
 # H3 resolutions
 H3_RES_LOW = 7   # overview
 H3_RES_HIGH = 8  # detail
-
-# Data sentinels
-UNREACH_U16 = np.uint16(65535)  # Travel time is unknown or >= cutoff
-NODATA_U16 = np.uint16(65534)   # No road node available for a hex
 
 # Crime rate enrichment configuration
 CRIME_RATE_SOURCE = "ma_crime_rates.csv"  # Path to crime rate data
@@ -107,6 +84,9 @@ POI_BRANDS = {
 
 # Definition examples for future categories
 MAJOR_AIRPORT_MIN_PAX = 500_000  # illustrative
+
+# City/ZIP lookup sources (for the tiny API)
+CITY_LOOKUP_CSV = "src/api/city_lookup.csv"
 
 # Mapping from Geofabrik state slug to USPS state code (minimal set for current STATES/Makefile)
 STATE_SLUG_TO_CODE = {

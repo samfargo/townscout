@@ -1,201 +1,181 @@
-# 🏘️ TownScout
+🗺️ TownScout — Anchor-Matrix Architecture
 
-**Interactive, stackable-filter map that answers: "Where should I live given my criteria?"**
+TownScout is an interactive, stackable-filter map that answers one deceptively simple question:
 
-TownScout uses an **anchor-based architecture** that precomputes travel networks once, then answers complex multi-POI queries in milliseconds. Instead of building every road from scratch for each trip, we lay permanent highways and just check intersections.
+“Where should I live given my criteria?”
 
-The application is a map of the United States where each time a filter/criteria is added, the livable land for that user visually shrinks in real-time.
+The user sees a map of the United States. Every time they add a filter —
+“≤ 10 min to Costco”, “walkability ≥ 70”, “within 2 hrs of skiing” —
+the livable area visibly shrinks in real time.
 
-Zillow tells you what's for sale. Google Maps tells you how to get somewhere. TownScout tells you where your life actually works—by stacking together your criteria and instantly shrinking the map to only the livable areas.
+Not Zillow filters. A compute engine disguised as a magical map.
 
-## 🚀 Quick Start
+⸻
 
-```bash
-# Setup
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+🔑 Core Idea
 
-# Build data pipeline  
-make pbf        # Download OSM data
-make pois       # Extract POI locations
-make anchors    # Create travel network anchor points
-make t-hex      # Precompute Hex→Anchor matrices
-make d-anchor   # Precompute Anchor→Category matrices
+Routing every query on the fly is prohibitively expensive. TownScout avoids it by precomputing travel networks once and storing them in a compact, factorized form.
 
-# Start web interface
-make serve      # Runs on http://localhost:8080
-```
+At runtime, every filter is answered with a single algebraic lookup:
 
-**Access your TownScout interface**:
-- **Main App**: http://localhost:8080/static/web/index.html
-- **Demo**: http://localhost:8080/static/web/runtime_demo.html
-- **Landing**: http://localhost:8080/
+(Hex \to Anchor) \times (Anchor \to Category) = (Hex \to Category)
 
-## 🌐 Web Interface
+Two offline truth tables:
+	•	T_hex (Hex → Anchors)
+For each H3 hex, store its travel time to top-K nearby anchors.
+Example row:
 
-### Architecture: Clean Separation
-- **`/static`** → All frontend assets (HTML, CSS, JS)
-- **`/api`** → Dynamic runtime endpoints
-- **MapLibre GL** → Interactive map with real-time tile loading
+h3_id=…, a0_id=123, a0_s=540s, a1_id=456, a1_s=720s …
 
-### Features
-- **Multi-criteria filtering**: Chipotle ≤ 15min, Costco ≤ 20min, Airports ≤ 120min
-- **Viewport-based loading**: Fetches multiple tiles covering visible area
-- **Instant updates**: Real-time filtering as you adjust sliders
-- **Share functionality**: URL parameters preserve your criteria
-- **Mobile responsive**: Works on all devices
 
-### API Endpoints
-```bash
-# Health check
-curl http://localhost:8080/health
+	•	D_anchor (Anchor → Category)
+For each anchor, store its travel time to the nearest POI in a category.
+Example row:
 
-# Available categories
-curl http://localhost:8080/api/categories
+anchor_id=123, category_id=Costco, seconds=360
 
-# Query criteria for a specific tile
-curl "http://localhost:8080/api/criteria?z=8&x=77&y=94&criteria=[{\"category\":\"chipotle\",\"threshold\":15}]"
 
-# Multi-criteria query
-curl "http://localhost:8080/api/criteria?z=8&x=77&y=94&criteria=[
-  {\"category\":\"costco\",\"threshold\":15},
-  {\"category\":\"chipotle\",\"threshold\":30}, 
-  {\"category\":\"airports\",\"threshold\":240}
-]"
-```
+At runtime, the browser computes:
 
-**Response**: GeoJSON FeatureCollection of H3 hexes meeting ALL criteria.
+TT(hex, Costco) = \min_k (a_k.s + D[a_k.id, Costco])
 
-## 💡 Our Solution: Matrix Factorization
-```
-(Hex→Anchor) × (Anchor→Category) = Linear Scale
-```
+Stacking filters is just a boolean AND over conditions — all evaluated client-side on the GPU.
 
-🔑 **How It Works**
-- **Anchor-based architecture**: Instead of brute-forcing every trip for every user query, TownScout builds a permanent "backbone" of anchors (bridges, intersections, key network nodes) that guarantee coverage.
-- **Precomputed matrices**:
-  - **T_hex** (Hex → Anchor travel times) — how long it takes from any hex tile to the network backbone.
-  - **D_anchor** (Anchor → POI categories) — how long from the backbone to things like Costco, airports, ski resorts.
-- **Min-plus algebra at runtime**: When a user asks for "≤15 min drive to Costco AND ≤30 min to Chipotle AND ≤2 hr to a ski resort", TownScout just does fast matrix lookups and bitset combinations. No recomputation, no waiting.
+⸻
 
-**Result**: Nationwide, stackable, live filters across multiple criteria that feel instantaneous.
+📂 Repo Structure
 
-## 🏗️ Architecture
+.
+├── scripts/
+│   ├── precompute_t_hex.py    # Build T_hex (Hex→Anchors)
+│   ├── precompute_d_anchor.py # Build D_anchor (Anchors→Categories)
+│
+├── api/
+│   └── app/
+│       └── main.py            # FastAPI microservice serving D_anchor slices
+│
+├── web/
+│   ├── index.html             # Map UI with filter panel
+│   └── src/main.ts            # MapLibre + PMTiles frontend
+│
+└── schemas/
+    ├── filters.catalog.json   # Filter definitions, IDs, metadata
+    └── tiles.manifest.json    # Tile/PMTiles locations per dataset version
 
-```
-Data → Anchors → Matrices → Runtime Queries → Web Interface
-```
 
-1. **Anchors** — Strategic points on drive/walk networks (bridges, intersections, motorway chains)
-   - QA targets:
-     - Drive: ≥95% of r7 hexes within 10 km
-     - Walk (urban): ≥95% of r8 hexes within 600 m
+⸻
 
-2. **T_hex** — Hex→Anchor travel times (sparse, K≈24–48 anchors per hex)
+📐 Data Contracts
 
-3. **D_anchor** — Anchor→Category travel times (multi-source floods)
+T_hex.pmtiles
+	•	Geometry: H3 hex boundaries (res=8)
+	•	Attributes per feature:
+	•	h3_id: string
+	•	k: uint8 (# of anchor slots used)
+	•	Repeated slots i ∈ [0..K-1]:
+	•	a{i}_id: uint32 (stable anchor ID)
+	•	a{i}_s: uint16 (seconds; 65535=UNREACH, 65534=NODATA)
+	•	a{i}_flags: uint8 (bit 0=borrowed, bit 1=pruned, …)
 
-4. **Runtime API** — Queries = fast min-plus matrix ops + bitset masking
+Invariants
+	•	a{i}_s ≤ cutoff_s or equals sentinel.
+	•	Anchors in strictly increasing order for SIMD-friendly min.
 
-5. **Web Interface** — MapLibre GL + FastAPI for real-time visualization
+D_anchor.parquet
+	•	Columns:
+	•	anchor_id: uint32
+	•	category_id: uint16 (see catalog)
+	•	seconds: uint16 (sentinels above)
+	•	mode: uint8 (drive=0, bike=1, walk=2, transit=3)
+	•	snapshot_ts: int64 (epoch ms)
 
-## 📂 Data Structure
+Partitioning: mode=<m>/category_id=<c>/part-*.parquet
 
-```
-out/anchors/                               # Anchor points
-  anchors_drive.parquet                    # Drive network anchors
-  anchors_walk.parquet                     # Walk network anchors  
-  anchors_map.html                         # QA visualization
+Invariants
+	•	One row per (anchor_id, category_id, mode)
+	•	No duplicates, no nulls
 
-data/minutes/                              # Precomputed matrices  
-  T_hex_drive.parquet                      # Hex→Anchor drive times
-  T_hex_walk.parquet                       # Hex→Anchor walk times
-  D_anchor_drive.parquet                   # Anchor→Category drive times
-  D_anchor_walk.parquet                    # Anchor→Category walk times
+⸻
 
-data/poi/                                  # POI locations
-  {state}_{category}.parquet               # POI coordinates by category
+🏗️ How It Works
+	1.	Offline Precompute
+	•	precompute_t_hex.py: hex → top-K anchors
+	•	precompute_d_anchor.py: anchor → POI categories
+	2.	Tile Build
+	•	Results written as PMTiles (T_hex) and Parquet (D_anchor)
+	3.	Serving
+	•	PMTiles served from CDN (immutable, cacheable)
+	•	API serves tiny JSON slices of D_anchor
+	4.	Frontend
+	•	MapLibre loads T_hex tiles
+	•	On filter add: browser fetches matching D_anchor slices, evaluates min-plus algebra as a GPU expression, and updates map mask instantly
 
-tiles/web/                                 # Web interface
-  index.html                               # Main TownScout interface
-  runtime_demo.html                        # Simple demo interface
-  style.css                                # Responsive styling
-```
+⸻
 
-## 🔄 Pipeline Commands
+🧮 Runtime Math (Client-Side)
 
-### Core Pipeline
-```bash
-make all        # Complete anchor-based pipeline
-make quick      # Skip downloads, build and serve
+Example: “≤10 min to Costco AND ≥70 walkability AND ≤2 hr to skiing”
 
-# Individual steps
-make anchors    # Build network anchor points
-make t-hex      # Precompute Hex→Anchor matrices  
-make d-anchor   # Precompute Anchor→Category matrices
-make serve      # Start web interface on port 8080
-make test       # Validate pipeline outputs
-```
+// Compute travel time to Costco
+["min",
+  ["+", ["get","a0_s"], ["literal", dAnchor.get(["get","a0_id"]) || 65535]],
+  ["+", ["get","a1_s"], ["literal", dAnchor.get(["get","a1_id"]) || 65535]],
+  ["+", ["get","a2_s"], ["literal", dAnchor.get(["get","a2_id"]) || 65535]],
+  ["+", ["get","a3_s"], ["literal", dAnchor.get(["get","a3_id"]) || 65535]]
+]
 
-### Utilities  
-```bash
-make pbf        # Download OSM data
-make pois       # Extract POI locations
-make clean      # Remove generated files
-```
+// Apply all filters
+["case",
+  ["all",
+    ["<=", ["var","tt_costco"], 600],   // ≤ 10 min
+    [">=", ["get","walkscore"], 70],    // walkability ≥ 70
+    ["<=", ["var","tt_ski"], 7200]      // ≤ 2 hr
+  ],
+  0.9, 0.05 // visible vs masked
+]
 
-## 🎚️ Supported Categories
 
-Current POI categories with optimized defaults:
+⸻
 
-| Category   | ID | Default Mode | Default Cutoff | Description        |
-|------------|----|--------------|--------------| ------------------|
-| `chipotle` | 1  | drive        | 30min        | Chipotle restaurants |
-| `costco`   | 2  | drive        | 60min        | Costco warehouses  |
-| `airports` | 3  | drive        | 240min       | Major airports     |
+🚀 Demo Workflow
 
-*Adding new categories is trivial - just update `src/categories.py` and re-run `make d-anchor`.*
+# 1. Build T_hex for Massachusetts
+python scripts/precompute_t_hex.py \
+  --pbf data/massachusetts.osm.pbf \
+  --anchors data/anchors.parquet \
+  --mode drive \
+  --out data/t_hex_drive.parquet \
+  --k-best 4 --borrow-neighbors
 
-## 🔧 Key Technologies
+# 2. Build D_anchor for Costco + Chipotle
+python scripts/precompute_d_anchor.py \
+  --pbf data/massachusetts.osm.pbf \
+  --anchors data/anchors.parquet \
+  --mode drive --state massachusetts \
+  --categories costco chipotle \
+  --out data/d_anchor_drive.parquet
 
-### Backend
-- **Python 3.11**: Core runtime
-- **FastAPI**: Web API with automatic docs
-- **OSMnx**: Road network analysis
-- **NetworkX**: Graph algorithms
-- **H3**: Hexagonal spatial indexing
-- **Pandas**: Data processing
-- **NumPy**: Matrix operations
+# 3. Run API
+cd api
+uvicorn app.main:app --reload --port 5174
 
-### Frontend  
-- **MapLibre GL JS**: Interactive mapping
-- **Vanilla JavaScript**: Lightweight UI
-- **CSS Grid/Flexbox**: Responsive design
+# 4. Run frontend
+cd web
+npm install
+npm run dev
 
-### Data
-- **OpenStreetMap**: Road networks via Pyrosm
-- **Parquet**: Columnar storage for matrices
-- **GeoJSON**: Spatial data exchange
+# Open in browser
+http://localhost:5173
 
-## 🚀 Performance
 
-- **Query Response**: < 250ms for complex multi-criteria
-- **Data Size**: ~17K anchor-to-category relationships
-- **Coverage**: 705 H3 hexes in Massachusetts
-- **Memory**: Matrices cached in RAM for instant access
+⸻
 
-## 🤝 Contributing
+🧭 Summary
 
-1. **Add Categories**: Update `src/categories.py` with new POI types
-2. **Extend Regions**: Add states to `src/config.py`
-3. **Improve UI**: Enhance `tiles/web/` interfaces
-4. **Optimize Performance**: Improve anchor selection algorithms
+TownScout is not a filter UI.
+It’s a geospatial compute engine packaged as a map:
+	•	Heavy math precomputed once
+	•	Compact tiles served over CDN
+	•	Browser GPU evaluates livability filters instantly
 
-## 📄 License
-
-*Map data © OpenStreetMap contributors*
-
----
-
-**TownScout**: Where data meets decisions. Where algorithms meet life choices. Where you discover not just where you *can* live, but where you *should* live.
+That’s why it feels magic. And why it scales nationally.

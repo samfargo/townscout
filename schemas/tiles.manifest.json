@@ -1,0 +1,12 @@
+{
+    "datasets": {
+        "massachusetts_drive": {
+            "t_hex_url": "pmtiles:///tiles/massachusetts_drive.pmtiles",
+            "d_anchor_api_base": "/d_anchor/drive/{categoryId}.json"
+        },
+        "massachusetts_walk": {
+            "t_hex_url": "pmtiles:///tiles/massachusetts_walk.pmtiles",
+            "d_anchor_api_base": "/d_anchor/walk/{categoryId}.json"
+        }
+    }
+}

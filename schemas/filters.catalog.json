@@ -1,0 +1,26 @@
+{
+    "filters": [
+        {
+            "id": "chipotle",
+            "name": "Chipotle",
+            "categoryId": 101,
+            "params": {
+                "min": 5,
+                "max": 45,
+                "step": 5,
+                "initial": 20
+            }
+        },
+        {
+            "id": "costco",
+            "name": "Costco",
+            "categoryId": 102,
+            "params": {
+                "min": 5,
+                "max": 60,
+                "step": 5,
+                "initial": 30
+            }
+        }
+    ]
+}

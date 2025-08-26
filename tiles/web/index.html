@@ -7,7 +7,21 @@
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
   <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
   <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
-  <link rel="stylesheet" href="/static/web/style.css" />
+  <!-- Use pmtiles.js for protocol -->
+  <script src="https://unpkg.com/pmtiles@2.11.0/dist/pmtiles.js"></script>
+  <style>
+    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+    .panel { position: absolute; top: 10px; left: 10px; background: #fff; padding: 10px 15px; border-radius: 6px; z-index: 1; box-shadow: 0 1px 3px rgba(0,0,0,0.1); width: 280px; }
+    .panel h3 { margin: 0 0 10px; }
+    .row { display: flex; align-items: center; margin-bottom: 8px; }
+    .row label { flex: 1; font-size: 14px; }
+    .row input[type="range"] { flex: 2; }
+    .row span { font-weight: bold; width: 30px; text-align: right; }
+    .status { margin-top: 10px; font-size: 12px; }
+    .nudge { font-size: 12px; color: #666; background: #eee; padding: 5px; border-radius: 3px; display: none; }
+    .footer { position: absolute; bottom: 5px; right: 10px; font-size: 11px; background: rgba(255,255,255,0.7); padding: 2px 5px; border-radius: 3px; z-index: 1; }
+  </style>
 </head>
 <body>
 <div class="panel">
@@ -22,262 +36,202 @@
     <input id="costco" type="range" min="5" max="60" step="5" value="20">
     <span id="costco_v">20</span>
   </div>
-  <div class="row">
-    <label>Major airport ≤ min</label>
-    <input id="airports" type="range" min="10" max="240" step="10" value="120">
-    <span id="airports_v">120</span>
-  </div>
-  <div class="row">
-    <button id="update">Update Map</button>
-    <button id="share">Share Map</button>
-  </div>
+  <!-- Add more sliders here if needed -->
   <div id="status" class="status"></div>
-  <div id="nudge" class="nudge" style="display:none;"></div>
+  <div id="nudge" class="nudge">Try increasing minutes to see more areas.</div>
+  <button id="share" style="width: 100%; margin-top: 10px; padding: 5px;">Share Map</button>
 </div>
 
 <div id="map"></div>
-
-<div id="info-panel" class="info-panel">
-  <div class="info-panel-title">Area Information</div>
-  <div id="info-content" class="info-panel-content">
-    <!-- Content will be populated by JavaScript -->
-  </div>
-  <div id="info-placeholder" class="info-panel-placeholder">
-    Hover over an area to see details
-  </div>
-</div>
 
 <div class="footer">
   Map data © OpenStreetMap contributors
 </div>
 
-<script src="https://unpkg.com/pmtiles@2.7.0/dist/pmtiles.js"></script>
 <script>
-  // Initialize pmtiles protocol
+  // ---------- PMTiles Protocol ----------
   let protocol = new pmtiles.Protocol();
   maplibregl.addProtocol("pmtiles", protocol.tile);
 
-  const R7_SOURCE_ID = "ts_r7";
-  const R7_LAYER_ID = "ts_r7_fill";
-  const R8_SOURCE_ID = "ts_r8";
-  const R8_LAYER_ID = "ts_r8_fill";
-  const R7_URL = "/tiles/us_r7.pmtiles";
-  const R8_URL = "/tiles/us_r8.pmtiles";
+  const T_HEX_R7_URL = "pmtiles:///tiles/t_hex_r7_drive.pmtiles";
+  const T_HEX_R8_URL = "pmtiles:///tiles/t_hex_r8_drive.pmtiles";
+  const D_ANCHOR_API = "http://localhost:5174/api/d_anchor"; // Port from api/app/main.py
 
-  // Debounce function
-  function debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-      const later = () => {
-        clearTimeout(timeout);
-        func(...args);
-      };
-      clearTimeout(timeout);
-      timeout = setTimeout(later, wait);
-    };
-  }
+  // Store anchor data: { costco: {123: 360, ...}, chipotle: { ... } }
+  const dAnchorState = {};
+  const K_ANCHORS = 4; // Should match precompute_t_hex.py --k-best
 
-  // Sliders and filters
-  const SLIDERS = [
-    { id: "chipotle", prop: "chipotle_drive_min", max: 45, init: 15 },
-    { id: "costco", prop: "costco_drive_min", max: 60, init: 20 },
-    { id: "airports", prop: "airports_drive_min", max: 240, init: 120 },
-  ];
-  let hoveredHexId = null;
-
-  function getFilterExpression() {
-    const filters = ["all"];
-    for (const s of SLIDERS) {
-      const val = parseInt(document.getElementById(s.id).value, 10);
-      // Use coalesce to treat missing values as a large number (effectively passing the check)
-      filters.push(["<=", ["coalesce", ["get", s.prop], 9999], val]);
-    }
-    return filters;
-  }
-
-  function updateFilters() {
-    const filterExpr = getFilterExpression();
-    if (map.getLayer(R7_LAYER_ID)) {
-      map.setFilter(R7_LAYER_ID, filterExpr);
-    }
-    if (map.getLayer(R8_LAYER_ID)) {
-      map.setFilter(R8_LAYER_ID, filterExpr);
-    }
-    updateShareUrl();
-    checkVisibleFeatures();
-  }
-
-  // Nudge if no features are visible
-  const checkVisibleFeatures = debounce(() => {
-    const featuresR7 = map.queryRenderedFeatures({ layers: [R7_LAYER_ID] });
-    const featuresR8 = map.queryRenderedFeatures({ layers: [R8_LAYER_ID] });
-    const nudge = document.getElementById('nudge');
-    if (featuresR7.length === 0 && featuresR8.length === 0) {
-      nudge.textContent = "No areas match your criteria. Try increasing drive times.";
-      nudge.style.display = 'block';
-    } else {
-      nudge.style.display = 'none';
-    }
-  }, 500);
-
-  // Share URL logic
-  function updateShareUrl() {
-    const params = new URLSearchParams();
-    for (const s of SLIDERS) {
-      params.set(s.id, document.getElementById(s.id).value);
-    }
-    const newUrl = `${window.location.pathname}?${params.toString()}`;
-    window.history.replaceState({}, '', newUrl);
-  }
-
-  function loadUrlParams() {
-    const params = new URLSearchParams(window.location.search);
-    for (const s of SLIDERS) {
-      if (params.has(s.id)) {
-        const val = parseInt(params.get(s.id), 10);
-        document.getElementById(s.id).value = val;
-        document.getElementById(s.id + '_v').textContent = val;
-      }
-    }
-  }
-
-  function setupInfoPanel() {
-    const infoPanel = document.getElementById('info-panel');
-    const infoContent = document.getElementById('info-content');
-    const infoPlaceholder = document.getElementById('info-placeholder');
-
-    const onMouseMove = (e) => {
-      if (!e.features || e.features.length === 0) {
-        infoContent.innerHTML = '';
-        infoPlaceholder.style.display = 'block';
-        if (hoveredHexId !== null) {
-          map.setFeatureState({ source: R7_SOURCE_ID, sourceLayer: "us_r7", id: hoveredHexId }, { hover: false });
-          map.setFeatureState({ source: R8_SOURCE_ID, sourceLayer: "us_r8", id: hoveredHexId }, { hover: false });
-          hoveredHexId = null;
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+      version: 8,
+      sources: {
+        'osm': {
+          type: 'raster',
+          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          attribution: '© OpenStreetMap contributors'
+        },
+        't_hex_r7': {
+          type: 'vector',
+          url: T_HEX_R7_URL,
+          attribution: "TownScout"
+        },
+        't_hex_r8': {
+          type: 'vector',
+          url: T_HEX_R8_URL
         }
-        return;
-      }
-
-      infoPlaceholder.style.display = 'none';
-      const feat = e.features[0];
-
-      if (hoveredHexId !== feat.id) {
-        if (hoveredHexId !== null) {
-          map.setFeatureState({ source: R7_SOURCE_ID, sourceLayer: "us_r7", id: hoveredHexId }, { hover: false });
-          map.setFeatureState({ source: R8_SOURCE_ID, sourceLayer: "us_r8", id: hoveredHexId }, { hover: false });
+      },
+      layers: [
+        { id: 'osm-base', type: 'raster', source: 'osm', paint: { 'raster-opacity': 0.7 } },
+        {
+          id: 't_hex_r7_layer',
+          type: 'fill',
+          source: 't_hex_r7',
+          'source-layer': 't_hex_r7_drive', // Must match --layer in 06_build_tiles.py
+          maxzoom: 8,
+          paint: {
+            'fill-color': 'rgba(76, 175, 80, 0.5)',
+            'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        {
+          id: 't_hex_r8_layer',
+          type: 'fill',
+          source: 't_hex_r8',
+          'source-layer': 't_hex_r8_drive', // Must match --layer in 06_build_tiles.py
+          minzoom: 8,
+          paint: {
+            'fill-color': 'rgba(76, 175, 80, 0.5)',
+            'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
+          }
         }
-        hoveredHexId = feat.id;
-        map.setFeatureState({ source: feat.source, sourceLayer: feat.sourceLayer, id: hoveredHexId }, { hover: true });
-      }
-
-      let content = '<ul>';
-      for (const s of SLIDERS) {
-        const val = feat.properties[s.prop];
-        const status = (val !== null && val <= parseInt(document.getElementById(s.id).value, 10)) ? '✅' : '❌';
-        content += `<li>${s.id}: ${val !== null ? val : 'N/A'} min ${status}</li>`;
-      }
-      content += '</ul>';
-      infoContent.innerHTML = content;
-    };
-    
-    const onMouseLeave = () => {
-        infoContent.innerHTML = '';
-        infoPlaceholder.style.display = 'block';
-        if (hoveredHexId !== null) {
-          map.setFeatureState({ source: R7_SOURCE_ID, sourceLayer: "us_r7", id: hoveredHexId }, { hover: false });
-          map.setFeatureState({ source: R8_SOURCE_ID, sourceLayer: "us_r8", id: hoveredHexId }, { hover: false });
-          hoveredHexId = null;
-        }
-    };
-
-    map.on('mousemove', R7_LAYER_ID, onMouseMove);
-    map.on('mouseleave', R7_LAYER_ID, onMouseLeave);
-    map.on('mousemove', R8_LAYER_ID, onMouseMove);
-    map.on('mouseleave', R8_LAYER_ID, onMouseLeave);
-  }
-
-  // Initialize map and controls
-  map.on('load', () => {
-    // Add PMTiles sources
-    map.addSource(R7_SOURCE_ID, {
-      type: "vector",
-      url: `pmtiles://${R7_URL}`,
-      attribution: '© OpenStreetMap contributors'
-    });
-    map.addSource(R8_SOURCE_ID, {
-      type: "vector",
-      url: `pmtiles://${R8_URL}`,
-    });
-
-    // Add layers
-    map.addLayer({
-      "id": R7_LAYER_ID,
-      "type": "fill",
-      "source": R7_SOURCE_ID,
-      "source-layer": "us_r7",
-      "maxzoom": 8,
-      "paint": {
-        "fill-color": "#4CAF50",
-        "fill-opacity": [
-            "case",
-            ["boolean", ["feature-state", "hover"], false],
-            0.8,
-            0.5
-        ],
-        "fill-outline-color": "rgba(0, 0, 0, 0.1)"
-      }
-    });
-
-    map.addLayer({
-      "id": R8_LAYER_ID,
-      "type": "fill",
-      "source": R8_SOURCE_ID,
-      "source-layer": "us_r8",
-      "minzoom": 8,
-      "paint": {
-        "fill-color": "#4CAF50",
-        "fill-opacity": [
-            "case",
-            ["boolean", ["feature-state", "hover"], false],
-            0.8,
-            0.5
-        ],
-        "fill-outline-color": "rgba(0, 0, 0, 0.1)"
-      }
-    });
-
-    // Setup sliders
-    for (const s of SLIDERS) {
-      const slider = document.getElementById(s.id);
-      const display = document.getElementById(s.id + '_v');
-      slider.addEventListener('input', () => {
-        display.textContent = slider.value;
-      });
-      slider.addEventListener('change', debounce(updateFilters, 50));
-    }
-
-    // Share button
-    document.getElementById('share').addEventListener('click', () => {
-      navigator.clipboard.writeText(window.location.href).then(() => {
-        const btn = document.getElementById('share');
-        btn.textContent = 'Copied!';
-        setTimeout(() => (btn.textContent = 'Share Map'), 1000);
-      });
-    });
-    
-    // Manual update button (now just for aesthetics, filtering is live)
-    document.getElementById('update').addEventListener('click', updateFilters);
-
-    // Initial state
-    loadUrlParams();
-    updateFilters();
-    setupInfoPanel();
+      ]
+    },
+    center: [-71.06, 42.36],
+    zoom: 8
   });
 
-  // Error handling
-  map.on('error', (e) => {
-    console.error('Map error:', e);
+  function debounce(fn, ms) {
+    let timer;
+    return (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), ms);
+    };
+  }
+  
+  function getSliderValues() {
+    return {
+      chipotle: +document.getElementById('chipotle').value * 60, // convert min to sec
+      costco:   +document.getElementById('costco').value * 60,
+    };
+  }
+
+  // ---------- Core Logic: Build Filter Expression ----------
+  function buildFilterExpression(criteria, dAnchorData) {
+    const UNREACHABLE = 65535; // Sentinel for unreachable in uint16
+    const expressions = [];
+
+    for (const [category, thresholdSecs] of Object.entries(criteria)) {
+      const categoryData = dAnchorData[category];
+      if (!categoryData) continue; // Skip if data not loaded
+
+      const minPlusClauses = [];
+      for (let i = 0; i < K_ANCHORS; i++) {
+        minPlusClauses.push([
+          "+",
+          ["get", `a${i}_s`],
+          // Use `literal` with the dAnchorData map for fast lookups on GPU
+          ["coalesce", ["get", ["to-string", ["get", `a${i}_id`]], ["literal", categoryData]], UNREACHABLE]
+        ]);
+      }
+      const travelTimeSecs = ["min", ...minPlusClauses];
+      expressions.push(["<=", travelTimeSecs, thresholdSecs]);
+    }
+    
+    // Final expression shows hex if ALL criteria are met
+    return ["case", ["all", ...expressions], 0.8, 0.0]; // opacity
+  }
+
+  // ---------- Main Update Function ----------
+  async function updateMap() {
+    document.getElementById('status').textContent = 'Updating...';
+    
+    const criteria = getSliderValues();
+    const categories = Object.keys(criteria);
+    let needsUpdate = false;
+
+    // Fetch any missing D_anchor data
+    for (const cat of categories) {
+      if (!dAnchorState[cat]) {
+        try {
+          const resp = await fetch(`${D_ANCHOR_API}?category=${cat}&mode=drive`);
+          if (!resp.ok) throw new Error(`API fetch failed for ${cat}: ${resp.status}`);
+          dAnchorState[cat] = await resp.json();
+          needsUpdate = true;
+        } catch (err) {
+          console.error(err);
+          document.getElementById('status').textContent = `Error: ${err.message}`;
+          return;
+        }
+      }
+    }
+    
+    // Only rebuild expression if data changed or it's the first run
+    const expression = buildFilterExpression(criteria, dAnchorState);
+
+    // Apply the same expression to both layers
+    map.setPaintProperty('t_hex_r7_layer', 'fill-opacity', expression);
+    map.setPaintProperty('t_hex_r8_layer', 'fill-opacity', expression);
+    
+    document.getElementById('status').textContent = 'Map updated.';
+    // Note: Nudge logic for "zero results" is harder with this architecture
+    // as we can't easily count visible hexes. A simpler "no data?" nudge is used.
+  }
+  
+  // ---------- UI & Event Listeners ----------
+  function initUI() {
+    const sliders = ['chipotle', 'costco'];
+    const debouncedUpdate = debounce(updateMap, 250);
+
+    sliders.forEach(id => {
+      const slider = document.getElementById(id);
+      const output = document.getElementById(id + '_v');
+      slider.addEventListener('input', () => {
+        output.textContent = slider.value;
+        debouncedUpdate();
+      });
+    });
+
+    // Handle share button
+    document.getElementById('share').addEventListener('click', () => {
+      const params = new URLSearchParams();
+      sliders.forEach(id => params.set(id, document.getElementById(id).value));
+      const url = new URL(window.location.href);
+      url.search = params.toString();
+      navigator.clipboard.writeText(url.toString()).then(() => {
+        const btn = document.getElementById('share');
+        const originalText = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => (btn.textContent = originalText), 1500);
+      });
+    });
+    
+    // Load initial state from URL params
+    const params = new URLSearchParams(window.location.search);
+    sliders.forEach(id => {
+      if (params.has(id)) {
+        const val = params.get(id);
+        document.getElementById(id).value = val;
+        document.getElementById(id + '_v').textContent = val;
+      }
+    });
+  }
+
+  map.on('load', () => {
+    initUI();
+    updateMap(); // Initial map load
   });
 </script>
 </body>
-</html> 
+</html>

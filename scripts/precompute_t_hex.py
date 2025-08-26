@@ -31,20 +31,41 @@ import networkx as nx
 import numpy as np
 import osmnx as ox
 import pandas as pd
+import geopandas as gpd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from pyrosm import OSM
+from scipy.spatial import cKDTree
 from tqdm import tqdm
+
+from src import util_h3, util_osm, config
 
 SNAPSHOT_TS = time.strftime("%Y-%m-%d")
 
 # -----------------------------
 # Sentinels & provenance flags
 # -----------------------------
-UNREACH_U16 = np.uint16(65535)  # ≥ cutoff or unknown reachability
-NODATA_U16  = np.uint16(65534)  # no road node for hex even after borrowing
+UNREACH_U16 = config.UNREACH_U16
+NODATA_U16 = config.NODATA_U16
 
 # provenance byte (uint8): bit k set => the a{k} entry was borrowed from neighbor hexes
 def set_bit(u8: int, k: int) -> int:
     return int(u8 | (1 << k))
+
+
+# -----------------------------
+# KD-tree snapping (lon/lat → nearest node within meters)
+# -----------------------------
+def build_node_kdtree(G: nx.MultiDiGraph) -> Tuple[np.ndarray, cKDTree, float, float]:
+    """Builds a KD-tree from graph nodes for fast spatial lookups."""
+    ids = np.fromiter(G.nodes, dtype=np.int64)
+    xs = np.array([G.nodes[n]["x"] for n in ids], dtype="float64")  # lon
+    ys = np.array([G.nodes[n]["y"] for n in ids], dtype="float64")  # lat
+    lat0 = float(np.deg2rad(np.mean(ys)))
+    m_per_deg = 111000.0
+    X = np.c_[(xs * np.cos(lat0)) * m_per_deg, ys * m_per_deg]
+    tree = cKDTree(X)
+    return ids, tree, lat0, m_per_deg
 
 
 # -----------------------------
@@ -76,153 +97,6 @@ def cell_to_uint64(cell) -> np.uint64:
         return np.uint64(h3.h3_to_int(cell))      # v3 helper
     # Fallback: parse as hexadecimal string
     return np.uint64(int(cell, 16))
-
-
-# -----------------------------
-# Graph build
-# -----------------------------
-def build_graph(pbf: str, mode: str) -> Tuple[nx.MultiDiGraph, pd.DataFrame]:
-    """
-    Build a routable MultiDiGraph with consistent 'travel_time' per edge (seconds).
-    Driving: osmnx speeds + travel_time; prunes private access; simplifies.
-    Walking: fixed 4.8 kph travel_time; simplifies.
-    Returns the simplified graph AND the original nodes (id,x,y) for optional remap.
-    Caches processed nodes/edges as parquet for faster re-runs.
-    """
-    cache_dir = os.path.join(os.path.dirname(pbf), "cache")
-    nodes_path = os.path.join(cache_dir, f"{os.path.basename(pbf)}_{mode}_nodes.parquet")
-    edges_path = os.path.join(cache_dir, f"{os.path.basename(pbf)}_{mode}_edges.parquet")
-    os.makedirs(cache_dir, exist_ok=True)
-
-    if os.path.exists(nodes_path) and os.path.exists(edges_path):
-        print(f"[{mode}] Loading cached graph from {cache_dir}...")
-        nodes = pd.read_parquet(nodes_path)
-        edges = pd.read_parquet(edges_path)
-        if "key" not in edges.columns:
-            edges["key"] = 0
-        nodes = nodes.set_index("id")
-        edges = edges.set_index(["u", "v", "key"])
-        G = ox.graph_from_gdfs(nodes, edges)
-        # return G, nodes.reset_index()[["id", "x", "y"]] # bug fix for cached version
-        return G, nodes.reset_index()[["id", "x", "y"]].rename(columns={"x": "x_orig", "y": "y_orig"})
-
-
-    osm = OSM(pbf)
-    net = "driving" if mode == "drive" else "walking"
-
-    nodes, edges = osm.get_network(
-        network_type=net, nodes=True, extra_attributes=["highway", "access", "length"]
-    )
-
-    # ---- Nodes: ensure unique int index and x/y columns ----
-    if "x" not in nodes:
-        nodes = nodes.copy()
-        nodes["x"] = nodes.geometry.x
-        nodes["y"] = nodes.geometry.y
-
-    # normalize node id/index
-    if nodes.index.name != "id":
-        nodes = nodes.set_index("id", drop=True)
-    # make sure they are integers (pyrosm can deliver ints already, but be strict)
-    nodes.index = pd.to_numeric(nodes.index, errors="coerce")
-    nodes = nodes[nodes.index.notna()]
-    nodes.index = nodes.index.astype("int64")
-    nodes = nodes[~nodes.index.duplicated(keep="first")].copy()
-
-    # ---- Edges: normalize u/v, force unique (u,v,key) ----
-    edges = edges.reset_index(drop=True)
-    edges = edges.dropna(subset=["u", "v"]).copy()
-    edges["u"] = pd.to_numeric(edges["u"], errors="coerce").astype("Int64")
-    edges["v"] = pd.to_numeric(edges["v"], errors="coerce").astype("Int64")
-    edges = edges.dropna(subset=["u", "v"]).copy()
-    edges["u"] = edges["u"].astype("int64")
-    edges["v"] = edges["v"].astype("int64")
-
-    # keep only edges whose endpoints exist
-    edges = edges[edges["u"].isin(nodes.index) & edges["v"].isin(nodes.index)].copy()
-
-    # If no 'key', or if keys collide, assign unique keys per (u,v)
-    if "key" not in edges.columns:
-        edges["key"] = edges.groupby(["u", "v"]).cumcount().astype("int64")
-    else:
-        # Coerce to int where possible; fill NaNs; then fix collisions anyway
-        edges["key"] = pd.to_numeric(edges["key"], errors="coerce").fillna(0).astype("int64")
-        # Detect collisions and rebuild keys per (u,v) when needed
-        dup_mask = edges.duplicated(subset=["u", "v", "key"], keep=False)
-        if dup_mask.any():
-            # rebuild a fresh unique key that includes cumcount
-            edges["key"] = edges.groupby(["u", "v"]).cumcount().astype("int64")
-
-    # Finalize MultiIndex
-    edges = edges.set_index(["u", "v", "key"], drop=True)
-
-    # ---- Sanity checks (fail fast with clear message) ----
-    if nodes.index.has_duplicates:
-        dups = nodes.index[nodes.index.duplicated()].unique().tolist()[:5]
-        raise ValueError(f"nodes index not unique; examples: {dups}")
-    if edges.index.duplicated().any():
-        # Surface a few offenders to help debugging
-        ex = edges.index[edges.index.duplicated()].unique().tolist()[:5]
-        raise ValueError(f"edges (u,v,key) not unique; examples: {ex}")
-
-    # ---- Build graph ----
-    G = ox.graph_from_gdfs(nodes, edges)
-
-    # ---- Travel time ----
-    if mode == "walk":
-        for _, _, k, d in G.edges(keys=True, data=True):
-            length_m = float(d.get("length", 0.0))
-            d["speed_kph"] = 4.8
-            d["travel_time"] = (length_m / 1000.0) / 4.8 * 3600.0
-    else:
-        # ensure length exists for speeds/travel times; pyrosm normally provides it
-        if not all("length" in d for _, _, _, d in G.edges(keys=True, data=True)):
-            G = ox.add_edge_lengths(G)
-        G = ox.add_edge_speeds(G)
-        G = ox.add_edge_travel_times(G)
-
-    # ---- Guardrail: check for valid travel_time ----
-    invalid_tt = 0
-    for _, _, d in G.edges(data=True):
-        tt = d.get("travel_time")
-        if tt is None or not isinstance(tt, (int, float)) or tt <= 0:
-            invalid_tt += 1
-            # patch with small positive value to avoid Dijkstra errors
-            d["travel_time"] = 0.1
-    if invalid_tt > 0:
-        pct = 100 * invalid_tt / max(1, G.number_of_edges())
-        print(f"[warning] Patched {invalid_tt} ({pct:.2f}%) edges with invalid/missing 'travel_time' to 0.1s.")
-
-    # ---- Prune private for driving ----
-    if mode == "drive":
-        rm = []
-        for u, v, k, d in G.edges(keys=True, data=True):
-            access = d.get("access")
-            # pyrosm can deliver list/tuple; normalize to str token(s)
-            if isinstance(access, (list, tuple, set)):
-                tokens = {str(a).lower() for a in access if a is not None}
-                if "private" in tokens or "no" in tokens:
-                    rm.append((u, v, k))
-            else:
-                tok = str(access).lower()
-                if tok in ("private", "no"):
-                    rm.append((u, v, k))
-        if rm:
-            G.remove_edges_from(rm)
-
-    # ---- Simplify (merge degree-2 chains) ----
-    print(f"[{mode}] Simplifying graph…")
-    G = ox.simplify_graph(G)
-
-    # ---- Cache to Parquet ----
-    # Deconstruct back to GDFs for saving
-    nodes_gdf, edges_gdf = ox.graph_to_gdfs(G)
-    nodes_gdf.reset_index().to_parquet(nodes_path)
-    edges_gdf.reset_index().to_parquet(edges_path)
-    print(f"[{mode}] Cached simplified graph to {cache_dir}")
-
-    # Return simplified graph and original node coordinates for optional remap
-    return G, nodes.reset_index()[["id", "x", "y"]]
 
 
 # -----------------------------
@@ -260,35 +134,38 @@ def multi_source_kbest(
         seen.add(key)
 
         L = node_best[u]
-        # If we already have K and this is not better than worst, skip insert
-        if len(L) < k_best or dist < L[-1][0]:
-            # insert keeping list sorted; k_best small so O(K) is fine
-            inserted = False
-            for i, (old, _) in enumerate(L):
-                if dist < old:
-                    L.insert(i, (dist, src))
-                    inserted = True
-                    break
-            if not inserted:
-                L.append((dist, src))
-            if len(L) > k_best:
-                L.pop()
+        # Optimization: if we already have K and this is not better than the worst,
+        # we can't improve on this node, so no need to insert or relax neighbors.
+        if len(L) >= k_best and dist >= L[-1][0]:
+            continue
 
-            # relax neighbors
-            if hasattr(G, 'out_edges'):
-                # Directed graph
-                edges_iter = G.out_edges(u, keys=True, data=True)
-            else:
-                # Undirected graph
-                edges_iter = G.edges(u, keys=True, data=True)
-            
-            for _, v, k, d in edges_iter:
-                tt = d.get(weight)
-                if tt is None:
-                    continue
-                nd = dist + float(tt)
-                if nd <= cutoff_s:
-                    heappush(pq, (nd, int(v), int(src)))
+        # insert keeping list sorted; k_best small so O(K) is fine
+        inserted = False
+        for i, (old, _) in enumerate(L):
+            if dist < old:
+                L.insert(i, (dist, src))
+                inserted = True
+                break
+        if not inserted and len(L) < k_best:
+            L.append((dist, src))
+        if len(L) > k_best:
+            L.pop()
+
+        # relax neighbors
+        if hasattr(G, 'out_edges'):
+            # Directed graph
+            edges_iter = G.out_edges(u, keys=True, data=True)
+        else:
+            # Undirected graph
+            edges_iter = G.edges(u, keys=True, data=True)
+        
+        for _, v, k, d in edges_iter:
+            tt = d.get(weight)
+            if tt is None:
+                continue
+            nd = dist + float(tt)
+            if nd <= cutoff_s:
+                heappush(pq, (nd, int(v), int(src)))
     # ensure sorted
     for n in node_best:
         node_best[n].sort(key=lambda t: t[0])
@@ -321,8 +198,8 @@ def collect_hex_pairs(
             s = int(round(float(secs)))
             if s < 0:
                 s = 0
-            if s > 65535:
-                s = 65535
+            if s > 65534:
+                s = 65534
             L.append((np.uint16(s), int(aid_int)))
     return buckets
 
@@ -337,73 +214,119 @@ def reduce_with_borrowing(
 ) -> pd.DataFrame:
     """
     From raw pairs, produce one row per hex with columns:
-      h3_id(uint64), prov(uint8), a0_id(int32), a0_s(uint16), a1_id, a1_s, ...
+      h3_id(uint64), k(u8), prov(u8), a{i}_id(i32), a{i}_s(u16), a{i}_flags(u8)
     prov bit k is 1 if a{k} was borrowed (not from the hex's own nodes).
+    a{i}_flags bit 0 is 1 if a{i} was borrowed.
     """
-    # Optionally identify empty hexes and plan borrowing
+    all_hexes_in_play = set(hex_pairs.keys())
     if borrow_neighbors:
-        missing = [h for h, L in hex_pairs.items() if not L]
-        print(f"[debug] empty hex buckets after collect: {len(missing)} (sample {missing[:10]})")
-        # also hexes not present at all—collect neighborhood from existing keys
-        all_hexes = set(hex_pairs.keys())
-        for h in list(all_hexes):
-            # include immediate neighbors in the universe
+        # Pre-create empty lists for any hexes that are neighbors but not in the keys
+        # to ensure they are processed.
+        for h in list(all_hexes_in_play):
             try:
                 nbrs = h3.grid_disk(h, 1)
             except AttributeError:
                 nbrs = set(h3.k_ring(h, 1))
             for nb in nbrs:
                 if nb not in hex_pairs:
-                    hex_pairs[nb] = []  # create placeholder so we can fill
+                    hex_pairs[nb] = []
 
     rows = []
     for h, L in hex_pairs.items():
-        prov = 0  # uint8 bitfield
-        if not L and borrow_neighbors:
-            # collect candidates from neighbors
-            cands: List[Tuple[np.uint16, int]] = []
+        prov = 0  # legacy uint8 bitfield
+        slot_flags = [0] * K  # uint8 per slot
+
+        # Candidate list holds (seconds, anchor_id, is_borrowed_flag)
+        # Start with candidates from the hex itself.
+        candidates_with_provenance: List[Tuple[np.uint16, int, bool]] = [
+            (secs, aid, False) for secs, aid in L
+        ]
+
+        if borrow_neighbors:
+            # Collect candidates from neighbors
             try:
                 nbrs = h3.grid_disk(h, 1)
             except AttributeError:
                 nbrs = set(h3.k_ring(h, 1))
             for nb in nbrs:
-                pairs = hex_pairs.get(nb)
-                if pairs:
-                    # take up to K best from neighbor to avoid explosion
-                    best_nb = _dedupe_sort_topk(pairs, K)
-                    cands.extend(best_nb)
-            if cands:
-                L = cands
-        # pick top-K with per-anchor min
-        best = _dedupe_sort_topk(L, K)
+                if nb == h: continue # don't borrow from self
+                
+                neighbor_pairs = hex_pairs.get(nb)
+                if neighbor_pairs:
+                    # Mark all candidates from neighbors as borrowed
+                    for secs, aid in neighbor_pairs:
+                        candidates_with_provenance.append((secs, aid, True))
+
+        # pick top-K with per-anchor min, respecting provenance
+        best = _dedupe_sort_topk_with_provenance(candidates_with_provenance, K)
 
         row = {"h3_id": cell_to_uint64(h)}
+        slots_used = 0
         for i in range(K):
             if i < len(best):
-                secs, aid_int = best[i]
+                secs, aid_int, is_borrowed = best[i]
                 row[f"a{i}_id"] = np.int32(aid_int)
                 row[f"a{i}_s"]  = np.uint16(secs)
-                # borrowed if original hex had no pairs
-                if not hex_pairs.get(h):
-                    prov = set_bit(prov, i)
+                slot_flags[i] = 1 if is_borrowed else 0
+                slots_used += 1
             else:
                 row[f"a{i}_id"] = np.int32(-1)
                 row[f"a{i}_s"]  = UNREACH_U16  # unreachable within cutoff
+                slot_flags[i] = 0
+
+        # legacy byte kept for backward-compat (bit k == borrowed)
+        for i, b in enumerate(slot_flags):
+            if b:
+                prov = set_bit(prov, i)
+        
         row["prov"] = np.uint8(prov)
+        row["k"] = np.uint8(slots_used)
+        for i, b in enumerate(slot_flags):
+            row[f"a{i}_flags"] = np.uint8(b)  # bit 0 = borrowed
+
         rows.append(row)
 
     if not rows:
         return pd.DataFrame(
             {"h3_id": pd.Series([], dtype="uint64"),
+             "k": pd.Series([], dtype="uint8"),
              "prov": pd.Series([], dtype="uint8")}
         )
 
-    cols = ["h3_id", "prov"]
+    cols = ["h3_id", "k", "prov"]
     for i in range(K):
-        cols += [f"a{i}_id", f"a{i}_s"]
+        cols += [f"a{i}_id", f"a{i}_s", f"a{i}_flags"]
     out = pd.DataFrame(rows)[cols]
     return out
 
+
+def _dedupe_sort_topk_with_provenance(
+    pairs: List[Tuple[np.uint16, int, bool]], K: int
+) -> List[Tuple[np.uint16, int, bool]]:
+    """Per-anchor min, then sort by secs asc and return top-K with provenance."""
+    if not pairs:
+        return []
+    
+    # Store: anchor_id -> (seconds, is_borrowed)
+    best_by_anchor: Dict[int, Tuple[np.uint16, bool]] = {}
+    
+    for s, aid, is_borrowed in pairs:
+        prev_s, prev_borrowed = best_by_anchor.get(aid, (None, None))
+        
+        # Always prefer a better time
+        if prev_s is None or int(s) < int(prev_s):
+            best_by_anchor[aid] = (s, is_borrowed)
+        # Tie-breaking rule: if times are identical, prefer non-borrowed over borrowed
+        elif int(s) == int(prev_s) and prev_borrowed and not is_borrowed:
+            best_by_anchor[aid] = (s, is_borrowed)
+
+    # Convert dict to list for sorting by (time, anchor_id)
+    # item is (anchor_id, (seconds, is_borrowed))
+    ordered = sorted(best_by_anchor.items(), key=lambda item: (int(item[1][0]), int(item[0])))
+    
+    # Format for output
+    top = [(s, aid, is_borrowed) for aid, (s, is_borrowed) in ordered[:K]]
+    return top
 
 def _dedupe_sort_topk(pairs: List[Tuple[np.uint16, int]], K: int) -> List[Tuple[np.uint16, int]]:
     """Per-anchor min, then sort by secs asc and return top-K."""
@@ -439,82 +362,64 @@ def main():
                     help="Snap anchors dropped by simplify to nearest surviving node")
     args = ap.parse_args()
 
-    # Load anchors and filter by mode if present
+    # Load and validate anchors
+    print("[info] Loading anchor data...")
     anchors_df = pd.read_parquet(args.anchors)
-    if "mode" in anchors_df.columns:
-        anchors_df = anchors_df[anchors_df["mode"] == args.mode]
-    if not {"id", "node_id"}.issubset(anchors_df.columns):
-        raise SystemExit("anchors parquet must include columns: id, node_id")
+    if "node_id" not in anchors_df.columns:
+        raise ValueError("Anchors parquet must contain 'node_id' column")
+    if "id" not in anchors_df.columns:
+        raise ValueError("Anchors parquet must contain 'id' column for stable IDs")
 
-    anchors_df = anchors_df[["id", "node_id"]].copy()
-    anchors_df["node_id"] = pd.to_numeric(anchors_df["node_id"], errors="coerce").astype("Int64")
-    anchors_df = anchors_df.dropna(subset=["node_id"])
-    anchors_df["node_id"] = anchors_df["node_id"].astype("int64")
+    # Create anchor mappings
+    # stable id (string) -> integer id (for compact parquet)
+    # node_id -> integer_id
+    anchors_df = anchors_df.sort_values("id").reset_index(drop=True)
+    anchors_df["anchor_int_id"] = anchors_df.index.astype(np.int32)
+    node_to_anchor_int = anchors_df.set_index("node_id")["anchor_int_id"].to_dict()
+    int_to_stable = anchors_df[["anchor_int_id", "id"]].rename(columns={"id": "stable_id"})
 
-    # Numeric anchor IDs for compact tiles
-    # Build a stable map from stable id (any type) -> int32
-    unique_stable_ids = pd.Index(anchors_df["id"].astype("string").unique()).tolist()
-    stable_to_int = {sid: i for i, sid in enumerate(unique_stable_ids)}
-    int_to_stable = pd.DataFrame({
-        "anchor_int_id": np.arange(len(unique_stable_ids), dtype=np.int32),
-        "anchor_stable_id": unique_stable_ids,
-    })
-    # node_id -> anchor_int_id for fast lookup
-    node_to_anchor_int = dict(
-        zip(anchors_df["node_id"].tolist(),
-            [stable_to_int[str(sid)] for sid in anchors_df["id"].astype("string").tolist()])
-    )
 
-    print(f"[info] mode={args.mode} anchors={len(anchors_df)} "
-          f"cutoff={args.cutoff} min K={args.k_best} batches≈{(len(anchors_df)+args.batch-1)//args.batch}")
+    # Load graph using the centralized utility function
+    G = util_osm.load_graph(args.pbf, args.mode)
 
-    # Build graph
-    G, nodes_xy = build_graph(args.pbf, args.mode)
-    # Direction-correct query graph (node -> anchor)
-    if args.mode == "drive":
-        Gq = G.reverse(copy=False)
-    else:
-        Gq = G.to_undirected(reciprocal=False)
+    # Prepare metadata to embed in output
+    metadata = {
+        "source_pbf": os.path.basename(args.pbf),
+        "mode": args.mode,
+        "k_best": str(args.k_best),
+        "cutoff_minutes": str(args.cutoff),
+        "borrow_neighbors": str(args.borrow_neighbors),
+        "graph_config": str(config.GRAPH_CONFIG.get(args.mode, {})),
+        "creation_date": SNAPSHOT_TS,
+        "dataset_version": config.DATASET_VERSION,
+        "id_space": "anchor_int_id",
+    }
 
-    # Optional: remap anchors whose node_id vanished after simplify
-    if args.remap_missing_anchors:
-        present = set(Gq.nodes())
-        # Join original coordinates for all anchors
-        nodes_xy = nodes_xy.rename(columns={"id": "node_id"})
-        anchors_xy = anchors_df.merge(nodes_xy, on="node_id", how="left")
-        missing = anchors_xy[~anchors_xy["node_id"].isin(present)].dropna(subset=["x", "y"])
-        if not missing.empty:
-            xs = missing["x"].to_numpy()
-            ys = missing["y"].to_numpy()
-            # nearest_nodes supports vectorized arrays
-            nearest = ox.distance.nearest_nodes(G, xs, ys)
-            remap = pd.DataFrame({
-                "node_id": missing["node_id"].to_numpy(dtype=np.int64),
-                "node_id_new": np.asarray(nearest, dtype=np.int64),
-            })
-            # Apply remap
-            anchors_df = anchors_df.merge(remap, on="node_id", how="left")
-            anchors_df["node_id"] = anchors_df["node_id_new"].fillna(anchors_df["node_id"]).astype("int64")
-            anchors_df = anchors_df.drop(columns=["node_id_new"])
-            kept = anchors_df["node_id"].isin(Gq.nodes()).mean()
-            print(f"[remap] anchors present after remap: {kept:.1%}")
-            # Rebuild node → anchor_int map (ids may have changed)
-            node_to_anchor_int = dict(
-                zip(anchors_df["node_id"].tolist(),
-                    [stable_to_int[str(sid)] for sid in anchors_df["id"].astype("string").tolist()])
-            )
-        else:
-            print("[remap] No coords for missing anchors or none missing; skipping remap.")
-
-    cutoff_s = int(args.cutoff * 60)
-
-    # ---- Guardrail: check anchor presence ----
-    all_anchor_nodes = anchors_df["node_id"].unique()
-    present_nodes = [n for n in all_anchor_nodes if n in Gq]
-    present_pct = len(present_nodes) / len(all_anchor_nodes) * 100 if len(all_anchor_nodes) > 0 else 0
-    print(f"[guardrail] Anchor presence in graph: {present_pct:.1f}% ({len(present_nodes)} / {len(all_anchor_nodes)})")
+    # Guardrail: Check that most anchors are actually in the graph
+    anchor_nodes = anchors_df["node_id"].unique()
+    present_nodes_mask = anchors_df["node_id"].isin(G.nodes)
+    present_nodes = anchors_df.loc[present_nodes_mask, "node_id"].unique()
+    present_pct = len(present_nodes) / len(anchor_nodes) * 100 if len(anchor_nodes) > 0 else 0
+    print(f"[guardrail] Anchor presence in graph: {present_pct:.1f}% ({len(present_nodes)} / {len(anchor_nodes)})")
     if present_pct < 80.0:
         print("[warning] Low anchor coverage. Many sources will be dropped. Consider --remap-missing-anchors.")
+
+    if args.remap_missing_anchors:
+        missing = anchors_df[~present_nodes_mask]
+        if not missing.empty:
+            if 'lon' not in missing.columns or 'lat' not in missing.columns:
+                 print("[warning] --remap-missing-anchors needs 'lon' and 'lat' in anchors file. Skipping remap.")
+            else:
+                print(f"[info] Remapping {len(missing)} anchors not found in graph...")
+                ids, tree, lat0, m_per_deg = build_node_kdtree(G)
+                xy = np.c_[(missing["lon"].to_numpy()*np.cos(lat0))*m_per_deg,
+                           (missing["lat"].to_numpy())*m_per_deg]
+                d, idx = tree.query(xy, k=1)
+                anchors_df.loc[missing.index, "node_id"] = ids[idx].astype("int64")
+                # after remapping, need to update node_to_anchor_int
+                node_to_anchor_int = anchors_df.set_index("node_id")["anchor_int_id"].to_dict()
+                print(f"[info] Remapped {len(missing)} anchors.")
+
 
     # Prepare global collectors per res
     global_hex_pairs_by_res: Dict[int, Dict[str, List[Tuple[np.uint16, int]]]] = {
@@ -526,7 +431,7 @@ def main():
     for bi, batch_df in enumerate(tqdm(batches, desc="Batches", unit="batch")):
         # Filter sources to nodes present in the query graph to avoid NX errors
         all_sources = batch_df["node_id"].astype(int).tolist()
-        source_nodes = [n for n in all_sources if n in Gq]
+        source_nodes = [n for n in all_sources if n in G]
         dropped = len(all_sources) - len(source_nodes)
         kept_pct = (len(source_nodes) / max(1, len(all_sources))) * 100.0
         msg = f"[batch {bi+1}/{len(batches)}] sources={len(source_nodes)}"
@@ -535,7 +440,7 @@ def main():
         print(msg)
         if not source_nodes:
             continue
-        node_best = multi_source_kbest(Gq, source_nodes, "travel_time", cutoff_s, k_best=max(2, args.k_best))
+        node_best = multi_source_kbest(G, source_nodes, "travel_time", cutoff_s=args.cutoff * 60, k_best=max(2, args.k_best))
 
         if not node_best:
             print(f"[batch {bi+1}] no coverage within cutoff")
@@ -575,8 +480,7 @@ def main():
         a0 = T_hex["a0_s"].replace({NODATA_U16: np.nan, UNREACH_U16: np.nan}).astype("float")
         med = float(np.nanmedian(a0)) if np.isfinite(a0).any() else float("nan")
         p95 = float(np.nanpercentile(a0, 95)) if np.isfinite(a0).any() else float("nan")
-        have_k = ~(T_hex[f"a{args.k_best-1}_s"] == UNREACH_U16)
-        pct_k = 100.0 * float(have_k.mean()) if len(have_k) else 0.0
+        pct_k = 100.0 * float((T_hex["k"] >= args.k_best).mean()) if len(T_hex) else 0.0
         print(f"[QA] res={r} a0_s median={med:.0f}s p95={p95:.0f}s  hexes with ≥{args.k_best} anchors={pct_k:.1f}%")
 
     if not out_parts:
@@ -585,18 +489,35 @@ def main():
     out_df = pd.concat(out_parts, ignore_index=True)
 
     # Final column order
-    cols = ["h3_id", "prov"]
+    cols = ["h3_id", "k", "prov"]
     for k in range(args.k_best):
-        cols += [f"a{k}_id", f"a{k}_s"]
+        cols += [f"a{k}_id", f"a{k}_s", f"a{k}_flags"]
     cols += ["mode", "res", "snapshot_ts"]
     out_df = out_df[cols]
 
+    # Schema validation
+    for i in range(args.k_best):
+        assert out_df.dtypes[f"a{i}_s"] == "uint16"
+        assert out_df.dtypes[f"a{i}_id"] == "int32"
+        assert out_df.dtypes[f"a{i}_flags"] == "uint8"
+    assert out_df.dtypes["k"] == "uint8"
+
     # Write T_hex parquet
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    out_df.to_parquet(args.out, index=False)
+    
+    table = pa.Table.from_pandas(out_df, preserve_index=False)
+    
+    # Add metadata
+    metadata_bytes = {k: v.encode('utf-8') for k, v in metadata.items()}
+    table = table.replace_schema_metadata(metadata_bytes)
+
+    pq.write_table(table, args.out)
     print(f"[ok] wrote {args.out}  rows={len(out_df)}  (one row per hex per res)")
 
     # Optional: write anchor index parquet (int32 → stable id)
+    if not args.anchor_index_out:
+        args.anchor_index_out = os.path.splitext(args.out)[0] + ".anchor_index.parquet"
+
     if args.anchor_index_out:
         os.makedirs(os.path.dirname(args.anchor_index_out) or ".", exist_ok=True)
         int_to_stable.to_parquet(args.anchor_index_out, index=False)

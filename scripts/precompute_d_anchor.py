@@ -37,123 +37,44 @@ import pandas as pd
 import geopandas as gpd
 import networkx as nx
 import osmnx as ox
+import pyarrow as pa
+import pyarrow.parquet as pq
 from pyrosm import OSM
 from scipy.spatial import cKDTree
+from tqdm import tqdm
 
-from src.categories import get_category  # your category registry
+from src import categories, util_osm, config
 
 SNAPSHOT_TS = time.strftime("%Y-%m-%d")
 
 # Sentinels (keep consistent with T_hex)
-UNREACH_U16 = np.uint16(65535)
+UNREACH_U16 = config.UNREACH_U16
+U16_MAX_FLOOR = 65534
 
-# -----------------------------
-# Graph build
-# -----------------------------
-def build_graph(pbf: str, mode: str) -> nx.MultiDiGraph:
-    """
-    Build routable graph with 'travel_time' seconds per edge.
-    Drive: osmnx speeds + pruning private; Walk: fixed 4.8 kph.
-    Finally simplify graph to speed up Dijkstra.
-    """
-    osm = OSM(pbf)
-    net = "driving" if mode == "drive" else "walking"
 
-    nodes, edges = osm.get_network(
-        network_type=net, nodes=True, extra_attributes=["highway", "access", "length"]
-    )
-
-    # ---- Nodes: ensure unique int index and x/y columns ----
-    if "x" not in nodes:
-        nodes = nodes.copy()
-        nodes["x"] = nodes.geometry.x
-        nodes["y"] = nodes.geometry.y
-
-    # normalize node id/index
-    if nodes.index.name != "id":
-        nodes = nodes.set_index("id", drop=True)
-    # make sure they are integers (pyrosm can deliver ints already, but be strict)
-    nodes.index = pd.to_numeric(nodes.index, errors="coerce").astype("Int64")
-    nodes = nodes.dropna().copy()
-    nodes.index = nodes.index.astype("int64")
-    nodes = nodes[~nodes.index.duplicated(keep="first")].copy()
-
-    # ---- Edges: normalize u/v, force unique (u,v,key) ----
-    edges = edges.reset_index(drop=True)
-    edges = edges.dropna(subset=["u", "v"]).copy()
-    edges["u"] = pd.to_numeric(edges["u"], errors="coerce").astype("Int64")
-    edges["v"] = pd.to_numeric(edges["v"], errors="coerce").astype("Int64")
-    edges = edges.dropna(subset=["u", "v"]).copy()
-    edges["u"] = edges["u"].astype("int64")
-    edges["v"] = edges["v"].astype("int64")
-
-    # keep only edges whose endpoints exist
-    edges = edges[edges["u"].isin(nodes.index) & edges["v"].isin(nodes.index)].copy()
-
-    # If no 'key', or if keys collide, assign unique keys per (u,v)
-    if "key" not in edges.columns:
-        edges["key"] = edges.groupby(["u", "v"]).cumcount().astype("int64")
-    else:
-        # Coerce to int where possible; fill NaNs; then fix collisions anyway
-        edges["key"] = pd.to_numeric(edges["key"], errors="coerce").fillna(0).astype("int64")
-        # Detect collisions and rebuild keys per (u,v) when needed
-        dup_mask = edges.duplicated(subset=["u", "v", "key"], keep=False)
-        if dup_mask.any():
-            # rebuild a fresh unique key that includes cumcount
-            edges["key"] = edges.groupby(["u", "v"]).cumcount().astype("int64")
-
-    # Finalize MultiIndex
-    edges = edges.set_index(["u", "v", "key"], drop=True)
-
-    # ---- Sanity checks (fail fast with clear message) ----
-    if nodes.index.has_duplicates:
-        dups = nodes.index[nodes.index.duplicated()].unique().tolist()[:5]
-        raise ValueError(f"nodes index not unique; examples: {dups}")
-    if edges.index.duplicated().any():
-        # Surface a few offenders to help debugging
-        ex = edges.index[edges.index.duplicated()].unique().tolist()[:5]
-        raise ValueError(f"edges (u,v,key) not unique; examples: {ex}")
-
-    # ---- Build graph ----
-    G = ox.graph_from_gdfs(nodes, edges)
-
-    if mode == "walk":
-        # Constant walk speed 4.8 kph
-        for _, _, k, d in G.edges(keys=True, data=True):
-            length_m = float(d.get("length", 0.0))
-            d["speed_kph"] = 4.8
-            d["travel_time"] = (length_m / 1000.0) / 4.8 * 3600.0
-    else:
-        G = ox.add_edge_speeds(G)
-        G = ox.add_edge_travel_times(G)
-
-        # Prune private/no-access after TT assignment
-        rm = [(u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
-              if str(d.get("access")) in ("private", "no")]
-        if rm:
-            G.remove_edges_from(rm)
-
-    print(f"[{mode}] Simplifying graph…")
-    G = ox.simplify_graph(G)
-    return G
+def assert_no_nulls(df, cols):
+    bad = [c for c in cols if df[c].isna().any()]
+    if bad:
+        raise SystemExit(f"Nulls in required columns: {bad}")
 
 
 # -----------------------------
 # KD-tree snapping (lon/lat → nearest node within meters)
 # -----------------------------
-def build_node_kdtree(G: nx.MultiDiGraph) -> Tuple[np.ndarray, cKDTree, float]:
+def build_node_kdtree(G: nx.MultiDiGraph) -> Tuple[np.ndarray, cKDTree, float, float]:
     ids = np.fromiter(G.nodes, dtype=np.int64)
-    xs = np.array([G.nodes[n]["x"] for n in ids])  # lon
-    ys = np.array([G.nodes[n]["y"] for n in ids])  # lat
+    xs = np.array([G.nodes[n]["x"] for n in ids], dtype="float64")  # lon
+    ys = np.array([G.nodes[n]["y"] for n in ids], dtype="float64")  # lat
     lat0 = float(np.deg2rad(np.mean(ys)))
-    X = np.c_[(xs * np.cos(lat0)) * 111000.0, ys * 111000.0]  # meters
+    m_per_deg = 111000.0
+    X = np.c_[(xs * np.cos(lat0)) * m_per_deg, ys * m_per_deg]
     tree = cKDTree(X)
-    return ids, tree, lat0
+    return ids, tree, lat0, m_per_deg
 
 def snap_points_to_nodes(G: nx.MultiDiGraph, pts: gpd.GeoDataFrame, max_m: float, mode: str = "drive") -> List[int]:
     if pts is None or pts.empty:
         return []
-    ids, tree, lat0 = build_node_kdtree(G)
+    ids, tree, lat0, m_per_deg = build_node_kdtree(G)
     out = []
     for geom in pts.geometry:
         if geom is None:
@@ -166,7 +87,7 @@ def snap_points_to_nodes(G: nx.MultiDiGraph, pts: gpd.GeoDataFrame, max_m: float
             qx, qy = float(centroid.x), float(centroid.y)
         
         # Find candidate nodes within radius
-        Xq = np.array([(qx * np.cos(lat0)) * 111000.0, qy * 111000.0])
+        Xq = np.array([(qx * np.cos(lat0)) * m_per_deg, qy * m_per_deg])
         
         # For driving mode, try to find publicly accessible nodes
         if mode == "drive":
@@ -238,7 +159,7 @@ def main():
     ap = argparse.ArgumentParser(description="Precompute Anchor→Category seconds (D_anchor)")
     ap.add_argument("--pbf", required=True)
     ap.add_argument("--anchors", required=True, help="anchors parquet (id, node_id, [mode])")
-    ap.add_argument("--anchor-index", default="", help="anchor index parquet (anchor_int_id, anchor_stable_id)")
+    ap.add_argument("--anchor-index", required=True, help="anchor index parquet (anchor_int_id, anchor_stable_id)")
     ap.add_argument("--mode", required=True, choices=["drive", "walk"])
     ap.add_argument("--state", required=True, help="state slug, e.g., 'massachusetts'")
     ap.add_argument("--categories", nargs="+", required=True, help="category slugs")
@@ -248,7 +169,26 @@ def main():
     ap.add_argument("--snap-max-m", type=int, default=1200, help="drive snap radius (m); walking will override smaller")
     args = ap.parse_args()
 
-    # Load anchors
+    # Load graph using the centralized utility function
+    G = util_osm.load_graph(args.pbf, args.mode)
+
+    # Prepare metadata to embed in output
+    metadata = {
+        "source_pbf": os.path.basename(args.pbf),
+        "mode": args.mode,
+        "state": args.state,
+        "categories": ",".join(args.categories),
+        "snap_max_m": str(args.snap_max_m),
+        "drive_cutoff_min": str(args.drive_cutoff_min),
+        "walk_cutoff_min": str(args.walk_cutoff_min),
+        "graph_config": str(config.GRAPH_CONFIG.get(args.mode, {})),
+        "creation_date": SNAPSHOT_TS,
+        "dataset_version": config.DATASET_VERSION,
+        "id_space": "anchor_int_id",
+    }
+
+    # Load anchor data
+    print("[info] Loading anchor data...")
     anc = pd.read_parquet(args.anchors)
     if "mode" in anc.columns:
         anc = anc[anc["mode"] == args.mode]
@@ -261,48 +201,44 @@ def main():
     anc["id"] = anc["id"].astype("string")
 
     # Anchor ID mapping (stable -> int32) to match T_hex
-    if args.anchor_index and os.path.exists(args.anchor_index):
-        idx = pd.read_parquet(args.anchor_index)
-        if not {"anchor_int_id", "anchor_stable_id"}.issubset(idx.columns):
-            raise SystemExit("--anchor-index parquet must have columns: anchor_int_id, anchor_stable_id")
-        idx["anchor_stable_id"] = idx["anchor_stable_id"].astype("string")
-        # Join to get anchor_int_id
-        anc = anc.merge(idx, left_on="id", right_on="anchor_stable_id", how="left")
-        if anc["anchor_int_id"].isna().any():
-            missing = anc[anc["anchor_int_id"].isna()]["id"].unique().tolist()
-            raise SystemExit(f"Some anchors missing in anchor-index: {missing[:10]} …")
-        anc["anchor_int_id"] = anc["anchor_int_id"].astype("int32")
-        print(f"[info] Anchors mapped via index: {len(anc)} rows, "
-              f"{anc['anchor_int_id'].nunique()} unique anchor_int_id")
-    else:
-        # Build local mapping (OK for one-off runs; WARN for production)
-        print("[warn] --anchor-index not provided; building a local mapping. "
-              "Ensure this matches the mapping used by T_hex!")
-        unique_ids = pd.Index(anc["id"].unique()).astype("string").tolist()
-        stable_to_int = {sid: i for i, sid in enumerate(unique_ids)}
-        anc["anchor_int_id"] = anc["id"].map(stable_to_int).astype("int32")
+    if not (args.anchor_index and os.path.exists(args.anchor_index)):
+        raise SystemExit(f"--anchor-index file not found: {args.anchor_index}")
+
+    idx = pd.read_parquet(args.anchor_index)
+    if not {"anchor_int_id", "anchor_stable_id"}.issubset(idx.columns):
+        raise SystemExit("--anchor-index parquet must have columns: anchor_int_id, anchor_stable_id")
+    idx["anchor_stable_id"] = idx["anchor_stable_id"].astype("string")
+    # Join to get anchor_int_id
+    anc = anc.merge(idx, left_on="id", right_on="anchor_stable_id", how="left")
+    if anc["anchor_int_id"].isna().any():
+        missing = anc[anc["anchor_int_id"].isna()]["id"].unique().tolist()
+        raise SystemExit(f"Some anchors missing in anchor-index: {missing[:10]} …")
+    anc["anchor_int_id"] = anc["anchor_int_id"].astype("int32")
+    print(f"[info] Anchors mapped via index: {len(anc)} rows, "
+          f"{anc['anchor_int_id'].nunique()} unique anchor_int_id")
 
     anchor_nodes = anc[["anchor_int_id", "node_id"]].copy()
+    # Sanity: one row per anchor_int_id in anchor_nodes
+    anchor_nodes = anchor_nodes.drop_duplicates(subset=["anchor_int_id"])
 
     # Build graph & pick query graph per mode
-    G = build_graph(args.pbf, args.mode)
     if args.mode == "drive":
         # Direction-correct: POIs → anchors on REVERSED graph equals anchor→POI on forward
-        Gq = G.reverse(copy=False)
+        Gq = G.reverse(copy=True)
         snap_max_m = int(args.snap_max_m)
-        cutoff_sec = int(min(args.drive_cutoff_min, 1092 * 24 * 60) * 60)  # guard absurd values
+        cutoff_sec = int(min(args.drive_cutoff_min, 1092) * 60)  # cap to ~18.2hr to fit uint16
     else:
         Gq = G.to_undirected(reciprocal=False)
         snap_max_m = 400  # tighter for walks
-        cutoff_sec = int(args.walk_cutoff_min * 60)
+        cutoff_sec = int(min(args.walk_cutoff_min, 1092) * 60)  # cap to ~18.2hr to fit uint16
 
     out_rows = []
 
     for slug in args.categories:
-        cat = get_category(slug)  # expect .id and optional default_cutoff_min
+        cat = categories.get_category(slug)  # expect .id and optional default_cutoff_min
         cat_cutoff_min = getattr(cat, "default_cutoff", None)
         if cat_cutoff_min is not None:
-            cutoff_sec_eff = int(min(cat_cutoff_min, cutoff_sec / 60) * 60)
+            cutoff_sec_eff = int(min(cat_cutoff_min * 60, cutoff_sec))
         else:
             cutoff_sec_eff = cutoff_sec
 
@@ -330,9 +266,9 @@ def main():
             v = int(round(float(s)))
             if v < 0:
                 v = 0
-            if v > 65534:
+            if v > U16_MAX_FLOOR:
                 # Cap at 65534; 65535 reserved as UNREACH
-                v = 65534
+                v = U16_MAX_FLOOR
             return np.uint16(v)
 
         merged["seconds_u16"] = merged["seconds"].apply(to_u16).astype("uint16")
@@ -355,11 +291,40 @@ def main():
 
     out_df = pd.concat(out_rows, ignore_index=True)
 
+    # ---- enforce schema & partitioning ----
+    MODE_MAP = {"drive": 0, "walk": 2}  # keep reserved ids (bike=1, transit=3)
+    out_df["category_id"] = out_df["category_id"].astype("uint16")
+    out_df["mode_u8"]      = out_df["mode"].map(MODE_MAP).astype("uint8")
+
+    # epoch ms int64
+    snapshot_ms = int(pd.Timestamp(SNAPSHOT_TS).tz_localize("UTC").timestamp() * 1000)
+    out_df["snapshot_ts_ms"] = np.int64(snapshot_ms)
+
+    # final column order
+    out_df = out_df[["anchor_int_id", "category_id", "mode_u8", "seconds_u16", "snapshot_ts_ms"]]
+    out_df = out_df.rename(columns={
+        "mode_u8": "mode",
+        "snapshot_ts_ms": "snapshot_ts",
+        "seconds_u16": "seconds"
+    })
+
+    assert_no_nulls(out_df, ["anchor_int_id", "category_id", "mode", "seconds", "snapshot_ts"])
+    assert out_df.dtypes["seconds"] == "uint16"
+
     # Write Parquet
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    out_df.to_parquet(args.out, index=False)
-    print(f"[ok] wrote {args.out} rows={len(out_df)} "
-          f"(anchors={out_df['anchor_int_id'].nunique()}, categories={out_df['category_id'].nunique()})")
+
+    # Add metadata
+    metadata_bytes = {k: v.encode('utf-8') for k, v in metadata.items()}
+
+    # write partitioned
+    pq.write_to_dataset(
+        pa.Table.from_pandas(out_df, preserve_index=False).replace_schema_metadata(metadata_bytes),
+        root_path=os.path.dirname(args.out) or ".",
+        partition_cols=["mode", "category_id"],
+        basename_template="part-{i}.parquet"
+    )
+    print(f"[ok] wrote partitioned dataset under {os.path.dirname(args.out) or '.'}")
 
 
 if __name__ == "__main__":
