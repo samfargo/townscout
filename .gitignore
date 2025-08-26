@@ -34,6 +34,7 @@ wheels/
 
 # Project specific
 data/osm/*.pbf
+data/osm/cache/*.parquet
 data/poi/*.parquet
 data/minutes/*.parquet
 data/deltas/*.csv
