@@ -91,7 +91,7 @@
           'source-layer': 't_hex_r7_drive', // Must match --layer in 06_build_tiles.py
           maxzoom: 8,
           paint: {
-            'fill-color': 'rgba(76, 175, 80, 0.5)',
+            'fill-color': 'rgba(25, 118, 210, 0.5)',
             'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
           }
         },
@@ -102,7 +102,7 @@
           'source-layer': 't_hex_r8_drive', // Must match --layer in 06_build_tiles.py
           minzoom: 8,
           paint: {
-            'fill-color': 'rgba(76, 175, 80, 0.5)',
+            'fill-color': 'rgba(25, 118, 210, 0.5)',
             'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
           }
         }
@@ -136,17 +136,25 @@
       const categoryData = dAnchorData[category];
       if (!categoryData) continue; // Skip if data not loaded
 
-      const minPlusClauses = [];
+      // For each category, calculate minimum travel time across all anchors
+      const travelTimeOptions = [];
       for (let i = 0; i < K_ANCHORS; i++) {
-        minPlusClauses.push([
+        // Calculate total travel time: hex→anchor + anchor→category
+        travelTimeOptions.push([
           "+",
-          ["get", `a${i}_s`],
-          // Use `literal` with the dAnchorData map for fast lookups on GPU
-          ["coalesce", ["get", ["to-string", ["get", `a${i}_id`]], ["literal", categoryData]], UNREACHABLE]
+          ["coalesce", ["get", `a${i}_s`], UNREACHABLE], // hex → anchor travel time
+          ["coalesce", 
+            ["get", ["to-string", ["get", `a${i}_id`]], ["literal", categoryData]], 
+            UNREACHABLE
+          ] // anchor → category travel time
         ]);
       }
-      const travelTimeSecs = ["min", ...minPlusClauses];
-      expressions.push(["<=", travelTimeSecs, thresholdSecs]);
+      
+      // Take minimum travel time across all anchor options
+      const minTravelTime = ["min", ...travelTimeOptions];
+      
+      // Check if minimum travel time is within threshold
+      expressions.push(["<=", minTravelTime, thresholdSecs]);
     }
     
     // Final expression shows hex if ALL criteria are met
