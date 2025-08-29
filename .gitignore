@@ -61,3 +61,5 @@ htmlcov/
 *.rdb
 dump.rdb 
 *.pkl
+*.parquet
+*.nd

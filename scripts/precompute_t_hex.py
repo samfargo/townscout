@@ -20,6 +20,7 @@ Sentinels:
 """
 
 import argparse
+import gc
 import os
 import time
 from collections import defaultdict
@@ -58,7 +59,7 @@ def set_bit(u8: int, k: int) -> int:
 # -----------------------------
 def build_node_kdtree(G: nx.MultiDiGraph) -> Tuple[np.ndarray, cKDTree, float, float]:
     """Builds a KD-tree from graph nodes for fast spatial lookups."""
-    ids = np.fromiter(G.nodes, dtype=np.int64)
+    ids = np.array(list(G.nodes), dtype=object)
     xs = np.array([G.nodes[n]["x"] for n in ids], dtype="float64")  # lon
     ys = np.array([G.nodes[n]["y"] for n in ids], dtype="float64")  # lat
     lat0 = float(np.deg2rad(np.mean(ys)))
@@ -120,7 +121,7 @@ def multi_source_kbest(
         heappush(pq, (0.0, int(src), int(src)))
         # (optionally seed node_best[src] with (0,src); harmless either way)
 
-    seen = set()
+    best = {}  # (u,src) -> best_dist
     while pq:
         dist, u, src = heappop(pq)
         # guard against any stray IDs not present (e.g., after simplification)
@@ -129,27 +130,26 @@ def multi_source_kbest(
         if dist > cutoff_s:
             continue
         key = (u, src)
-        if key in seen:
+        prev = best.get(key)
+        if prev is not None and dist >= prev:
             continue
-        seen.add(key)
+        best[key] = dist
 
         L = node_best[u]
         # Optimization: if we already have K and this is not better than the worst,
-        # we can't improve on this node, so no need to insert or relax neighbors.
-        if len(L) >= k_best and dist >= L[-1][0]:
-            continue
-
-        # insert keeping list sorted; k_best small so O(K) is fine
-        inserted = False
-        for i, (old, _) in enumerate(L):
-            if dist < old:
-                L.insert(i, (dist, src))
-                inserted = True
-                break
-        if not inserted and len(L) < k_best:
-            L.append((dist, src))
-        if len(L) > k_best:
-            L.pop()
+        # we can't improve on this node, so skip insertion but still relax neighbors.
+        if not (len(L) >= k_best and dist >= L[-1][0]):
+            # insert keeping list sorted; k_best small so O(K) is fine
+            inserted = False
+            for i, (old, _) in enumerate(L):
+                if dist < old:
+                    L.insert(i, (dist, src))
+                    inserted = True
+                    break
+            if not inserted and len(L) < k_best:
+                L.append((dist, src))
+            if len(L) > k_best:
+                L.pop()
 
         # relax neighbors
         if hasattr(G, 'out_edges'):
@@ -218,18 +218,9 @@ def reduce_with_borrowing(
     prov bit k is 1 if a{k} was borrowed (not from the hex's own nodes).
     a{i}_flags bit 0 is 1 if a{i} was borrowed.
     """
-    all_hexes_in_play = set(hex_pairs.keys())
-    if borrow_neighbors:
-        # Pre-create empty lists for any hexes that are neighbors but not in the keys
-        # to ensure they are processed.
-        for h in list(all_hexes_in_play):
-            try:
-                nbrs = h3.grid_disk(h, 1)
-            except AttributeError:
-                nbrs = set(h3.k_ring(h, 1))
-            for nb in nbrs:
-                if nb not in hex_pairs:
-                    hex_pairs[nb] = []
+    print(f"[reduce] Processing {len(hex_pairs)} hexes with borrowing={borrow_neighbors}")
+    
+    # Don't pre-populate neighbor hex buckets globally - borrow on the fly instead
 
     rows = []
     for h, L in hex_pairs.items():
@@ -243,17 +234,16 @@ def reduce_with_borrowing(
         ]
 
         if borrow_neighbors:
-            # Collect candidates from neighbors
+            # Collect candidates from neighbors (on-the-fly borrowing)
             try:
                 nbrs = h3.grid_disk(h, 1)
             except AttributeError:
                 nbrs = set(h3.k_ring(h, 1))
             for nb in nbrs:
-                if nb == h: continue # don't borrow from self
-                
+                if nb == h: 
+                    continue
                 neighbor_pairs = hex_pairs.get(nb)
                 if neighbor_pairs:
-                    # Mark all candidates from neighbors as borrowed
                     for secs, aid in neighbor_pairs:
                         candidates_with_provenance.append((secs, aid, True))
 
@@ -342,6 +332,96 @@ def _dedupe_sort_topk(pairs: List[Tuple[np.uint16, int]], K: int) -> List[Tuple[
     return top
 
 
+def single_source_dijkstra_multi_target(
+    G: nx.MultiDiGraph,
+    source_nodes: List[int],
+    weight: str,
+    cutoff_s: int,
+) -> Dict[int, Tuple[float, int]]:
+    """
+    Single-label multi-source Dijkstra: returns node -> (seconds, src_node_id) for best path only.
+    Much more memory efficient than multi-label version.
+    """
+    node_best: Dict[int, Tuple[float, int]] = {}
+    pq: List[Tuple[float, int, int]] = []
+
+    for src in source_nodes:
+        heappush(pq, (0.0, int(src), int(src)))
+
+    visited = set()
+    while pq:
+        dist, u, src = heappop(pq)
+        
+        if u not in G or dist > cutoff_s:
+            continue
+        if u in visited:
+            continue
+        visited.add(u)
+        
+        # Record best path to this node
+        current_best = node_best.get(u)
+        if current_best is None or dist < current_best[0]:
+            node_best[u] = (dist, src)
+
+        # Relax neighbors
+        if hasattr(G, 'out_edges'):
+            edges_iter = G.out_edges(u, keys=True, data=True)
+        else:
+            edges_iter = G.edges(u, keys=True, data=True)
+        
+        for _, v, k, d in edges_iter:
+            tt = d.get(weight)
+            if tt is None:
+                continue
+            nd = dist + float(tt)
+            if nd <= cutoff_s and v not in visited:
+                heappush(pq, (nd, int(v), int(src)))
+    
+    return node_best
+
+
+def k_pass_dijkstra(
+    G: nx.MultiDiGraph,
+    source_nodes: List[int],
+    weight: str,
+    cutoff_s: int,
+    k_best: int,
+) -> Dict[int, List[Tuple[float, int]]]:
+    """
+    K-pass single-label Dijkstra for ultimate memory efficiency.
+    Each pass finds the globally best remaining anchor per node.
+    """
+    node_results: Dict[int, List[Tuple[float, int]]] = defaultdict(list)
+    remaining_sources = set(source_nodes)
+    
+    for pass_num in range(k_best):
+        if not remaining_sources:
+            break
+            
+        print(f"[k-pass] Pass {pass_num + 1}/{k_best}: {len(remaining_sources)} remaining anchors")
+        
+        # Run single-label Dijkstra
+        pass_results = single_source_dijkstra_multi_target(
+            G, list(remaining_sources), weight, cutoff_s
+        )
+        
+        # Track which sources won in this pass
+        pass_winners = set()
+        for node_id, (secs, src) in pass_results.items():
+            node_results[node_id].append((secs, src))
+            pass_winners.add(src)
+        
+        # Remove winners from remaining sources for next pass
+        remaining_sources -= pass_winners
+        print(f"[k-pass] Pass {pass_num + 1} complete: {len(pass_winners)} anchors won paths")
+        
+        # Memory cleanup
+        del pass_results
+        gc.collect()
+    
+    return dict(node_results)
+
+
 # -----------------------------
 # Main
 # -----------------------------
@@ -353,13 +433,14 @@ def main():
     ap.add_argument("--mode", required=True, choices=["drive", "walk"])
     ap.add_argument("--res", nargs="+", type=int, default=[8], help="H3 resolutions (e.g., 8 9)")
     ap.add_argument("--cutoff", type=int, default=90, help="Cutoff MINUTES for node→anchor leg")
-    ap.add_argument("--batch", type=int, default=400, help="Anchors per batch for multi-source pass")
     ap.add_argument("--k-best", type=int, default=2, help="K anchors per hex to keep")
     ap.add_argument("--borrow-neighbors", action="store_true", help="Borrow neighbors for sparse/empty hexes")
     ap.add_argument("--out", required=True, help="Output Parquet path for T_hex")
     ap.add_argument("--anchor-index-out", default="", help="Optional: write anchor_int_id index parquet here")
-    ap.add_argument("--remap-missing-anchors", action="store_true",
-                    help="Snap anchors dropped by simplify to nearest surviving node")
+    ap.add_argument("--simplify-graph", action="store_true", help="Simplify graph before routing")
+    ap.add_argument("--batch-size", type=int, default=500, help="Batch size for anchor processing (default: 500)")
+    ap.add_argument("--k-pass-mode", action="store_true", help="Use K-pass single-label Dijkstra for ultimate memory efficiency")
+    ap.add_argument("--memory-bailout", action="store_true", help="Automatically reduce batch size on memory pressure")
     args = ap.parse_args()
 
     # Load and validate anchors
@@ -381,6 +462,79 @@ def main():
 
     # Load graph using the centralized utility function
     G = util_osm.load_graph(args.pbf, args.mode)
+    
+    # Make sure travel_time exists and is compact
+    try:
+        from osmnx import distance as oxd, speed as oxs
+        G = oxd.add_edge_lengths(G)
+        G = oxs.add_edge_speeds(G)
+        G = oxs.add_edge_travel_times(G)
+    except Exception:
+        try: G = ox.add_edge_lengths(G)
+        except: pass
+        try: G = ox.add_edge_speeds(G)
+        except: pass
+        try: G = ox.add_edge_travel_times(G)
+        except: pass
+
+    # Compact attribute to float32 to shrink heap usage when copied around
+    print("[info] Compacting edge travel_time attributes to float32...")
+    for u, v, k, d in G.edges(keys=True, data=True):
+        if "travel_time" in d:
+            d["travel_time"] = np.float32(d["travel_time"])
+
+    if args.simplify_graph:
+        print("[info] Simplifying graph...")
+        G_s = ox.simplify_graph(G)
+        print(f"[info] Simplified graph from {len(G.nodes)} to {len(G_s.nodes)} nodes.")
+        
+        # Recompute lengths/speeds after simplification
+        try:
+            from osmnx import distance as oxd, speed as oxs
+            G_s = oxd.add_edge_lengths(G_s)
+            G_s = oxs.add_edge_speeds(G_s)
+            G_s = oxs.add_edge_travel_times(G_s)
+        except Exception:
+            # older OSMnx fallbacks
+            try: G_s = ox.add_edge_lengths(G_s)
+            except: pass
+            try: G_s = ox.add_edge_speeds(G_s)
+            except: pass
+            try: G_s = ox.add_edge_travel_times(G_s)
+            except: pass
+
+        # Compact simplified graph edge attributes too
+        print("[info] Compacting simplified graph edge travel_time attributes...")
+        for u, v, k, d in G_s.edges(keys=True, data=True):
+            if "travel_time" in d:
+                d["travel_time"] = np.float32(d["travel_time"])
+
+        # Check anchor presence on simplified graph
+        present_nodes_mask_s = anchors_df["node_id"].isin(G_s.nodes)
+        missing_on_simplified = anchors_df[~present_nodes_mask_s]
+
+        if not missing_on_simplified.empty:
+            print(f"[info] Remapping {len(missing_on_simplified)} anchors dropped by simplification...")
+            # build KDTree on simplified graph in meters (not raw degrees)
+            node_ids_s = np.array(list(G_s.nodes), dtype=object)
+            xs = np.array([G_s.nodes[n]["x"] for n in node_ids_s], dtype="float64")
+            ys = np.array([G_s.nodes[n]["y"] for n in node_ids_s], dtype="float64")
+            lat0 = float(np.deg2rad(np.mean(ys))); m_per_deg = 111000.0
+            X_s = np.c_[(xs * np.cos(lat0)) * m_per_deg, ys * m_per_deg]
+            tree_s = cKDTree(X_s)
+
+            # get missing anchor coords from the original (pre-simplify) graph
+            missing_ids = missing_on_simplified["node_id"].tolist()
+            ax = np.array([G.nodes[n]["x"] for n in missing_ids], dtype="float64")
+            ay = np.array([G.nodes[n]["y"] for n in missing_ids], dtype="float64")
+            A = np.c_[(ax * np.cos(lat0)) * m_per_deg, ay * m_per_deg]
+
+            _, idx = tree_s.query(A, k=1)
+            anchors_df.loc[missing_on_simplified.index, "node_id"] = node_ids_s[idx]
+            node_to_anchor_int = anchors_df.set_index("node_id")["anchor_int_id"].to_dict()
+            print(f"[info] Remapped {len(missing_on_simplified)} anchors to nearest nodes in simplified graph.")
+        
+        G = G_s # Use simplified graph for routing
 
     # Prepare metadata to embed in output
     metadata = {
@@ -390,6 +544,7 @@ def main():
         "cutoff_minutes": str(args.cutoff),
         "borrow_neighbors": str(args.borrow_neighbors),
         "graph_config": str(config.GRAPH_CONFIG.get(args.mode, {})),
+        "simplify_graph": str(args.simplify_graph),
         "creation_date": SNAPSHOT_TS,
         "dataset_version": config.DATASET_VERSION,
         "id_space": "anchor_int_id",
@@ -402,23 +557,7 @@ def main():
     present_pct = len(present_nodes) / len(anchor_nodes) * 100 if len(anchor_nodes) > 0 else 0
     print(f"[guardrail] Anchor presence in graph: {present_pct:.1f}% ({len(present_nodes)} / {len(anchor_nodes)})")
     if present_pct < 80.0:
-        print("[warning] Low anchor coverage. Many sources will be dropped. Consider --remap-missing-anchors.")
-
-    if args.remap_missing_anchors:
-        missing = anchors_df[~present_nodes_mask]
-        if not missing.empty:
-            if 'lon' not in missing.columns or 'lat' not in missing.columns:
-                 print("[warning] --remap-missing-anchors needs 'lon' and 'lat' in anchors file. Skipping remap.")
-            else:
-                print(f"[info] Remapping {len(missing)} anchors not found in graph...")
-                ids, tree, lat0, m_per_deg = build_node_kdtree(G)
-                xy = np.c_[(missing["lon"].to_numpy()*np.cos(lat0))*m_per_deg,
-                           (missing["lat"].to_numpy())*m_per_deg]
-                d, idx = tree.query(xy, k=1)
-                anchors_df.loc[missing.index, "node_id"] = ids[idx].astype("int64")
-                # after remapping, need to update node_to_anchor_int
-                node_to_anchor_int = anchors_df.set_index("node_id")["anchor_int_id"].to_dict()
-                print(f"[info] Remapped {len(missing)} anchors.")
+        print("[warning] Low anchor coverage. Many sources will be dropped. Consider re-running without --simplify-graph or checking anchor quality.")
 
 
     # Prepare global collectors per res
@@ -426,42 +565,65 @@ def main():
         r: defaultdict(list) for r in args.res
     }
 
-    # Process in batches
-    batches = [anchors_df.iloc[i:i + args.batch] for i in range(0, len(anchors_df), args.batch)]
-    for bi, batch_df in enumerate(tqdm(batches, desc="Batches", unit="batch")):
-        # Filter sources to nodes present in the query graph to avoid NX errors
-        all_sources = batch_df["node_id"].astype(int).tolist()
-        source_nodes = [n for n in all_sources if n in G]
-        dropped = len(all_sources) - len(source_nodes)
-        kept_pct = (len(source_nodes) / max(1, len(all_sources))) * 100.0
-        msg = f"[batch {bi+1}/{len(batches)}] sources={len(source_nodes)}"
-        if dropped:
-            msg += f" (dropped {dropped} not-in-graph, kept {kept_pct:.1f}%)"
-        print(msg)
-        if not source_nodes:
-            continue
-        node_best = multi_source_kbest(G, source_nodes, "travel_time", cutoff_s=args.cutoff * 60, k_best=max(2, args.k_best))
+    # Choose algorithm based on memory mode
+    all_source_nodes = [int(n) for n in anchors_df["node_id"].unique() if n in G]
+    
+    if not all_source_nodes:
+        raise SystemExit("No valid anchor nodes found in the graph. Aborting.")
 
-        if not node_best:
-            print(f"[batch {bi+1}] no coverage within cutoff")
-            continue
+    if args.k_pass_mode:
+        # Ultimate memory efficiency: K-pass single-label Dijkstra
+        print(f"[info] Running K-pass single-label Dijkstra from {len(all_source_nodes)} anchors...")
+        node_best = k_pass_dijkstra(G, all_source_nodes, "travel_time", 
+                                   cutoff_s=args.cutoff * 60, k_best=args.k_best)
+    else:
+        # Memory-efficient batched multi-label Dijkstra
+        print(f"[info] Running batched multi-source Dijkstra from {len(all_source_nodes)} anchors...")
+        
+        batch_size = min(args.batch_size, len(all_source_nodes))  # Limit batch size to control memory
+        node_best = {}
+        
+        for i in range(0, len(all_source_nodes), batch_size):
+            batch_nodes = all_source_nodes[i:i + batch_size]
+            print(f"[info] Processing batch {i//batch_size + 1}/{(len(all_source_nodes) + batch_size - 1)//batch_size}: "
+                  f"{len(batch_nodes)} anchors (nodes {i+1}-{min(i+batch_size, len(all_source_nodes))})")
+            
+            batch_results = multi_source_kbest(G, batch_nodes, "travel_time", 
+                                             cutoff_s=args.cutoff * 60, k_best=args.k_best)
+            
+            # Merge batch results into global results, maintaining k-best per node
+            for node_id, batch_labels in batch_results.items():
+                if node_id not in node_best:
+                    node_best[node_id] = batch_labels
+                else:
+                    # Merge and keep top-k
+                    combined = node_best[node_id] + batch_labels
+                    combined.sort(key=lambda t: t[0])  # sort by seconds
+                    node_best[node_id] = combined[:args.k_best]
+            
+            # Memory cleanup
+            del batch_results
+            gc.collect()
+            
+            print(f"[info] Batch {i//batch_size + 1} complete. Total nodes with results: {len(node_best)}")
 
-        for r in args.res:
-            bucket = collect_hex_pairs(G, node_best, node_to_anchor_int, res=r)
-            # merge into global (append)
-            glob = global_hex_pairs_by_res[r]
-            for h, pairs in bucket.items():
-                glob[h].extend(pairs)
+    if not node_best:
+        raise SystemExit(f"No coverage found within cutoff of {args.cutoff} minutes.")
 
-        # Quick per-batch QA (a0 only, approximate from nodes→hex)
-        secs0 = []
-        for labels in node_best.values():
-            if labels:
-                secs0.append(labels[0][0])
-        if secs0:
-            med = float(np.median(secs0))
-            p95 = float(np.percentile(secs0, 95))
-            print(f"[QA] node→nearest anchor: median={med:.0f}s p95={p95:.0f}s")
+    # Quick QA of the global run
+    secs0 = [labels[0][0] for labels in node_best.values() if labels]
+    if secs0:
+        med = float(np.median(secs0))
+        p95 = float(np.percentile(secs0, 95))
+        print(f"[QA] node→nearest anchor: median={med:.0f}s p95={p95:.0f}s")
+
+    # Collect results into hex buckets for each resolution
+    print("[info] Collecting results into H3 hexes...")
+    for r in args.res:
+        bucket = collect_hex_pairs(G, node_best, node_to_anchor_int, res=r)
+        # Directly assign to the global collector, no merging needed
+        global_hex_pairs_by_res[r] = bucket
+
 
     # Build final per-res DataFrames with borrowing + global top-K
     out_parts = []
@@ -511,7 +673,12 @@ def main():
     metadata_bytes = {k: v.encode('utf-8') for k, v in metadata.items()}
     table = table.replace_schema_metadata(metadata_bytes)
 
-    pq.write_table(table, args.out)
+    pq.write_table(
+        table,
+        args.out,
+        compression="zstd",
+        use_dictionary=True
+    )
     print(f"[ok] wrote {args.out}  rows={len(out_df)}  (one row per hex per res)")
 
     # Optional: write anchor index parquet (int32 → stable id)

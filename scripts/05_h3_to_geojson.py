@@ -9,14 +9,25 @@ try:
     int_to_str = getattr(h3, "int_to_string", None) or getattr(h3, "h3_to_string", None)
     to_boundary = h3.h3_to_geo_boundary
 except Exception:
-    from h3.api.basic_int import h3 as h3v4
-    h3 = h3v4
-    int_to_str = h3v4.h3_to_string
-    to_boundary = h3v4.h3_to_geo_boundary
+    try:
+        from h3.api.basic_int import h3 as h3v4
+        h3 = h3v4
+        int_to_str = h3v4.h3_to_string
+        to_boundary = h3v4.h3_to_geo_boundary
+    except Exception:
+        # Direct H3 v4 API
+        import h3
+        int_to_str = h3.int_to_str
+        to_boundary = h3.cell_to_boundary
 
 def hex_polygon_lonlat(h3_addr: str):
     # returns a closed lon/lat ring for GeoJSON
-    boundary_latlon = to_boundary(h3_addr, geo_json=True)  # [(lat, lon), ...]
+    try:
+        # H3 v3 API
+        boundary_latlon = to_boundary(h3_addr, geo_json=True)  # [(lat, lon), ...]
+    except TypeError:
+        # H3 v4 API - no geo_json parameter
+        boundary_latlon = to_boundary(h3_addr)  # [(lat, lon), ...]
     ring = [[lon, lat] for (lat, lon) in boundary_latlon]
     if ring[0] != ring[-1]:
         ring.append(ring[0])
@@ -64,12 +75,35 @@ def main():
     df = df[cols]
 
     with open(args.output, "w") as out:
-        for _, row in df.iterrows():
-            # h3 id as address string (safe for JS) — never emit 64-bit ints
-            h3_addr = int_to_str(int(row[args.h3_col])) if isinstance(row[args.h3_col], (int, np.integer)) else str(row[args.h3_col])
+        # Use .itertuples() instead of .iterrows() to preserve dtypes
+        for i, row in enumerate(df.itertuples(index=False)):
+            # Get h3_id directly from the named tuple to preserve uint64
+            h3_col_idx = df.columns.get_loc(args.h3_col)
+            h3_val = row[h3_col_idx]
+            
+            # Convert to H3 string address
+            if isinstance(h3_val, (int, np.integer)):
+                python_int = int(h3_val)
+                h3_addr = int_to_str(python_int)
+            else:
+                # Fallback for unexpected types
+                try:
+                    python_int = int(float(str(h3_val)))
+                    h3_addr = int_to_str(python_int)
+                except (ValueError, TypeError):
+                    h3_addr = str(h3_val)
+            
+            # Debug: print first few conversions
+            if i < 3:
+                print(f"Debug: h3_val={h3_val} ({type(h3_val)}) -> h3_addr={h3_addr}")
+            
             ring = hex_polygon_lonlat(h3_addr)
 
-            props = row.drop(labels=[args.h3_col]).to_dict()
+            # Build properties from the row, excluding h3_col
+            props = {}
+            for col_idx, col_name in enumerate(df.columns):
+                if col_name != args.h3_col:
+                    props[col_name] = row[col_idx]
             props = coerce_jsonable(props)
             # keep h3 id as string property if you want debugging; drop if not needed
             props["h3_id"] = h3_addr

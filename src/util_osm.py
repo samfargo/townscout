@@ -1,10 +1,10 @@
 import os
 import urllib.request
-from pyrosm import OSM
-import geopandas as gpd
 import subprocess
 import tempfile
 from typing import List, Dict
+
+import geopandas as gpd
 import networkx as nx
 import osmnx as ox
 from pyrosm import OSM, get_data
@@ -58,8 +58,7 @@ def ogr_find_brand_features(pbf_path: str, brand_keywords: List[str]) -> gpd.Geo
     if not brand_keywords:
         return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry")
 
-    # Build simple OR expression over name and other_tags. OGR SQL LIKE is case-sensitive,
-    # so include common case variants to be pragmatic.
+    # Build simple OR expression over name and other_tags.
     kws = set()
     for k in brand_keywords:
         if not isinstance(k, str):
@@ -108,7 +107,7 @@ def pois_from_pbf(pbf_path: str, amenity=None, shop=None):
         filt["amenity"] = amenity
     if shop:
         filt["shop"] = shop
-    
+
     # Preferred path: use get_pois
     try:
         gdf = osm.get_pois(custom_filter=filt)
@@ -121,7 +120,7 @@ def pois_from_pbf(pbf_path: str, amenity=None, shop=None):
         return gdf
     except Exception as e:
         print(f"Warning: Error extracting POIs from {pbf_path}: {e}")
-    
+
     # Fallback: broaden criteria and include ways & relations where possible
     try:
         gdf = osm.get_data_by_custom_criteria(
@@ -141,8 +140,8 @@ def pois_from_pbf(pbf_path: str, amenity=None, shop=None):
         return gdf
     except Exception as e:
         print(f"Warning: Fallback extraction (ways/relations) failed for {pbf_path}: {e}")
-    
-    # Final fallback: nothing from Pyrosm worked
+
+    # Final fallback
     return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry")
 
 
@@ -170,7 +169,7 @@ def find_major_airports(pbf_path: str) -> gpd.GeoDataFrame:
         except Exception as e:
             print(f"Warning: centroid conversion failed for airports: {e}")
     if not frames:
-        # Fallback: Use Pyrosm to select aeroway=aerodrome, then filter
+        # Fallback: use Pyrosm to select aeroway=aerodrome, then filter
         try:
             osm = OSM(pbf_path)
             gdf = osm.get_data_by_custom_criteria(
@@ -224,7 +223,6 @@ def find_major_airports(pbf_path: str) -> gpd.GeoDataFrame:
 def airports_from_csv(csv_path: str, state_code: str) -> gpd.GeoDataFrame:
     """Load airports from a manual CSV, filtered by USPS state code, and return point GeoDataFrame (EPSG:4326)."""
     import pandas as pd
-    from shapely.geometry import Point
 
     if not os.path.exists(csv_path):
         print(f"Warning: airports CSV not found at {csv_path}")
@@ -257,7 +255,7 @@ def airports_from_csv(csv_path: str, state_code: str) -> gpd.GeoDataFrame:
 
     geometry = [Point(float(lon), float(lat)) for lat, lon in zip(df[lat_col], df[lon_col])]
     gdf = gpd.GeoDataFrame(df[[state_col]].copy(), geometry=geometry, crs="EPSG:4326")
-    return gdf[["geometry"]] 
+    return gdf[["geometry"]]
 
 
 def get_network_type(mode: str) -> str:
@@ -265,59 +263,180 @@ def get_network_type(mode: str) -> str:
         return "walk"
     return "drive"
 
+
 def _ensure_node_coords(G: nx.MultiDiGraph) -> nx.MultiDiGraph:
     """Check for x_orig/y_orig attributes and rename to x/y if needed."""
     if not G.nodes:
         return G
-    
-    # Peek at the first node's data
-    sample_node_id = next(iter(G.nodes))
-    sample_data = G.nodes[sample_node_id]
 
-    if 'x' not in sample_data and 'x_orig' in sample_data:
+    # Peek at the first node's data to see what we have
+    any_id = next(iter(G.nodes))
+    d = G.nodes[any_id]
+
+    # Case 1: no 'x', but has 'geometry'. Fill from geometry.
+    if "x" not in d:
+        for _, nd in G.nodes(data=True):
+            geom = nd.get("geometry")
+            if geom is not None:
+                nd["x"] = float(geom.x)
+                nd["y"] = float(geom.y)
+    
+    # Case 2: no 'x', but has 'x_orig'. Rename.
+    if "x" not in d and "x_orig" in d:
         print("[graph] Renaming 'x_orig'/'y_orig' node attributes to 'x'/'y'...")
-        for _, n_data in G.nodes(data=True):
-            if 'x_orig' in n_data:
-                n_data['x'] = n_data.pop('x_orig')
-            if 'y_orig' in n_data:
-                n_data['y'] = n_data.pop('y_orig')
+        for _, nd in G.nodes(data=True):
+            if "x_orig" in nd:
+                nd["x"] = nd.pop("x_orig")
+            if "y_orig" in nd:
+                nd["y"] = nd.pop("y_orig")
     return G
 
-def load_graph(pbf_path: str, mode: str, force_rebuild: bool = False) -> nx.MultiDiGraph:
-    state_name = os.path.basename(pbf_path).split(".")[0]
-    network_type = get_network_type(mode)
-    graph_params = config.GRAPH_CONFIG.get(network_type, {})
-    
-    # Using a simpler GraphML cache to avoid node/edge parquet issues for now
-    cache_dir = "data/osm/cache"
-    graphml_cache_path = os.path.join(cache_dir, f"{state_name}_{network_type}.graphml")
-    
-    if not force_rebuild and os.path.exists(graphml_cache_path):
-        try:
-            print(f"[{mode}] Loading cached graph from {graphml_cache_path}...")
-            G = ox.load_graphml(graphml_cache_path)
-            G = _ensure_node_coords(G)
-            return G
-        except Exception as e:
-            print(f"[{mode}] Cache load failed: {e}. Rebuilding...")
 
-    # If not cached, build it
-    print(f"[{mode}] Building OSMnx graph from {pbf_path} (this might take a while)...")
-    G = ox.graph_from_pbf(
-        pbf_path,
-        **graph_params
+def _build_graph_from_pbf_with_pyrosm(pbf_path: str, network_type: str) -> nx.MultiDiGraph:
+    """
+    Build a NetworkX MultiDiGraph from a .pbf using Pyrosm for parsing,
+    then OSMnx's graph_from_gdfs for graph construction.
+    """
+    import gc
+    
+    print(f"[graph] Parsing {network_type} network from {os.path.basename(pbf_path)}...")
+    osm = OSM(pbf_path)
+
+    # Map our network_type to Pyrosm's expected values
+    pyrosm_nt = "driving" if network_type == "drive" else "walking"
+
+    # ✅ Ask for nodes explicitly but be conservative with attributes
+    print(f"[graph] Extracting {pyrosm_nt} network data...")
+    nodes, edges = osm.get_network(
+        network_type=pyrosm_nt,
+        nodes=True,
+        extra_attributes=["maxspeed", "highway"]  # Reduce memory by limiting attributes
     )
+    
+    # Force garbage collection after Pyrosm parsing
+    del osm
+    gc.collect()
+    print(f"[graph] Extracted {len(nodes)} nodes, {len(edges)} edges")
 
-    # Add travel times
-    G = ox.add_edge_speeds(G)
-    G = ox.add_edge_travel_times(G)
+    if nodes is None or edges is None or edges.empty:
+        raise RuntimeError(f"Pyrosm returned empty network for {pyrosm_nt} on {pbf_path}")
+
+    # Normalize CRS
+    if nodes.crs is None:
+        nodes = nodes.set_crs("EPSG:4326")
+    else:
+        nodes = nodes.to_crs("EPSG:4326")
+
+    if edges.crs is None:
+        edges = edges.set_crs("EPSG:4326")
+    else:
+        edges = edges.to_crs("EPSG:4326")
+
+    # OSMnx expects node ID as index and explicit x/y columns
+    if "id" in nodes.columns:
+        nodes = nodes.set_index("id", drop=True)
+    nodes.index = nodes.index.astype(int)          # ensure dtype matches edges u/v
+    nodes["x"] = nodes.geometry.x.astype("float64")
+    nodes["y"] = nodes.geometry.y.astype("float64")
+
+    # Ensure edge endpoints are the same dtype
+    edges["u"] = edges["u"].astype(int)
+    edges["v"] = edges["v"].astype(int)
+
+    # ✅ OSMnx expects edges indexed by (u, v, key). Create a proper key per (u,v).
+    if "key" not in edges.columns:
+        # Make parallel edges unique: 0,1,2… within each (u,v)
+        edges = edges.sort_values(["u", "v"]).copy()
+        edges["key"] = edges.groupby(["u", "v"]).cumcount().astype(int)
+    else:
+        edges["key"] = edges["key"].fillna(0).astype(int)
+
+    # Set MultiIndex
+    edges = edges.set_index(["u", "v", "key"])
+
+    print(f"[graph] Building NetworkX graph from GeoDataFrames...")
+    G = ox.graph_from_gdfs(nodes, edges)
+    
+    # Free intermediate DataFrames
+    del nodes, edges
+    gc.collect()
+    print(f"[graph] NetworkX graph created: {len(G.nodes)} nodes, {len(G.edges)} edges")
+
+    # If you keep custom graph_params (speed assumptions, etc.), you can apply them here.
+    # Add speeds and travel times
+    try:
+        from osmnx import distance as oxd, speed as oxs
+        G = oxd.add_edge_lengths(G)
+        G = oxs.add_edge_speeds(G)
+        G = oxs.add_edge_travel_times(G)
+    except Exception:
+        try: G = ox.add_edge_lengths(G)
+        except: pass
+        try: G = ox.add_edge_speeds(G)
+        except: pass
+        try: G = ox.add_edge_travel_times(G)
+        except: pass
 
     # Final check on node coordinates before saving
     G = _ensure_node_coords(G)
 
-    # Save to cache
+    return G
+
+
+def load_graph(pbf_path: str, mode: str, force_rebuild: bool = False) -> nx.MultiDiGraph:
+    state_name = os.path.basename(pbf_path).split(".")[0]
+    network_type = get_network_type(mode)  # "drive" | "walk"
+    graph_params = config.GRAPH_CONFIG.get(network_type, {})
+
+    # GraphML cache path
+    cache_dir = "data/osm/cache"
     os.makedirs(cache_dir, exist_ok=True)
-    print(f"[{mode}] Caching graph to {graphml_cache_path}...")
-    ox.save_graphml(G, graphml_cache_path)
-    
-    return G 
+    graphml_cache_path = os.path.join(cache_dir, f"{state_name}_{network_type}.graphml")
+
+    # Try cache first, but check for corruption
+    if not force_rebuild and os.path.exists(graphml_cache_path):
+        cache_size = os.path.getsize(graphml_cache_path)
+        if cache_size < 1024:  # Less than 1KB suggests corruption
+            print(f"[{mode}] Cache file is corrupt (only {cache_size} bytes), removing...")
+            os.remove(graphml_cache_path)
+        else:
+            try:
+                print(f"[{mode}] Loading cached graph from {graphml_cache_path} ({cache_size//1024//1024}MB)...")
+                G = ox.load_graphml(graphml_cache_path)
+                G = _ensure_node_coords(G)
+                print(f"[{mode}] Loaded cached graph: {len(G.nodes)} nodes, {len(G.edges)} edges")
+                return G
+            except Exception as e:
+                print(f"[{mode}] Cache load failed: {e}. Removing corrupt cache and rebuilding...")
+                try:
+                    os.remove(graphml_cache_path)
+                except:
+                    pass
+
+    # Build from PBF using Pyrosm → OSMnx
+    print(f"[{mode}] Building graph from {pbf_path} via Pyrosm (this might take a while)...")
+    G = _build_graph_from_pbf_with_pyrosm(pbf_path, network_type)
+
+    # If you keep custom graph_params (speed assumptions, etc.), you can apply them here.
+    # Add speeds and travel times
+    try:
+        from osmnx import distance as oxd, speed as oxs
+        G = oxd.add_edge_lengths(G)
+        G = oxs.add_edge_speeds(G)
+        G = oxs.add_edge_travel_times(G)
+    except Exception:
+        try: G = ox.add_edge_lengths(G)
+        except: pass
+        try: G = ox.add_edge_speeds(G)
+        except: pass
+        try: G = ox.add_edge_travel_times(G)
+        except: pass
+
+    # Final check on node coordinates before saving
+    G = _ensure_node_coords(G)
+
+    # Save to cache (skip for now to avoid memory pressure during serialization)
+    print(f"[{mode}] Skipping graph caching to avoid memory pressure during GraphML serialization...")
+    # ox.save_graphml(G, graphml_cache_path)
+
+    return G

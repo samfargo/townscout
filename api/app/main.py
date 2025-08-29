@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import h3
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -47,6 +47,10 @@ def load_D_anchor(mode: str) -> pd.DataFrame:
 # ---------- FastAPI ----------
 app = FastAPI(title=APP_NAME)
 
+# Mount static files to serve the frontend and tiles
+app.mount("/static", StaticFiles(directory="tiles/web"), name="static")
+app.mount("/tiles", StaticFiles(directory="tiles"), name="tiles")
+
 # Basic CORS for frontend access
 app.add_middleware(
     CORSMiddleware,
@@ -55,6 +59,11 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+@app.get("/")
+async def serve_frontend():
+    """Serve the main frontend page"""
+    return FileResponse("tiles/web/index.html")
 
 @app.get("/health")
 def health():

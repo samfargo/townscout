@@ -47,7 +47,7 @@ t-hex: anchors ## Precompute Hex→Anchor travel times (T_hex matrix) and genera
 		--mode drive \
 		--res 8 \
 		--cutoff 90 \
-		--batch 200 \
+		--batch-size 250 \
 		--anchor-index-out out/anchors/anchor_index_drive.parquet \
 		--out data/minutes/massachusetts_hex_to_anchor_drive.parquet
 	$(PY) scripts/precompute_t_hex.py \
@@ -56,7 +56,7 @@ t-hex: anchors ## Precompute Hex→Anchor travel times (T_hex matrix) and genera
 		--mode walk \
 		--res 8 \
 		--cutoff 30 \
-		--batch 200 \
+		--k-pass-mode \
 		--anchor-index-out out/anchors/anchor_index_walk.parquet \
 		--out data/minutes/massachusetts_hex_to_anchor_walk.parquet
 	@echo "✅ T_hex matrices complete."
