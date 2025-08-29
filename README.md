@@ -49,14 +49,19 @@ Stacking filters is just a boolean AND over conditions — all evaluated client-
 ├── scripts/
 │   ├── precompute_t_hex.py    # Build T_hex (Hex→Anchors)
 │   ├── precompute_d_anchor.py # Build D_anchor (Anchors→Categories)
+│   ├── 05_h3_to_geojson.py    # Convert T_hex to GeoJSON
+│   └── 06_build_tiles.py      # Build PMTiles from GeoJSON
 │
 ├── api/
 │   └── app/
-│       └── main.py            # FastAPI microservice serving D_anchor slices
+│       └── main.py            # FastAPI server (frontend + D_anchor API)
 │
-├── web/
-│   ├── index.html             # Map UI with filter panel
-│   └── src/main.ts            # MapLibre + PMTiles frontend
+├── tiles/
+│   ├── web/
+│   │   ├── index.html         # Map UI with filter panel
+│   │   └── pmtiles.js         # PMTiles library (local)
+│   ├── t_hex_r7_drive.pmtiles # Low-res tiles (zoom < 8)
+│   └── t_hex_r8_drive.pmtiles # High-res tiles (zoom ≥ 8)
 │
 └── schemas/
     ├── filters.catalog.json   # Filter definitions, IDs, metadata
@@ -83,13 +88,12 @@ Invariants
 
 D_anchor.parquet
 	•	Columns:
-	•	anchor_id: uint32
-	•	category_id: uint16 (see catalog)
-	•	seconds: uint16 (sentinels above)
-	•	mode: uint8 (drive=0, bike=1, walk=2, transit=3)
-	•	snapshot_ts: int64 (epoch ms)
+	•	anchor_int_id: int32
+	•	seconds: uint16 (65535=UNREACH, 65534=NODATA)
+	•	snapshot_ts: string (YYYY-MM-DD format)
 
 Partitioning: mode=<m>/category_id=<c>/part-*.parquet
+Note: Also merged into flat files for API: massachusetts_anchor_to_category_{mode}.parquet
 
 Invariants
 	•	One row per (anchor_id, category_id, mode)
@@ -99,16 +103,18 @@ Invariants
 
 🏗️ How It Works
 	1.	Offline Precompute
-	•	precompute_t_hex.py: hex → top-K anchors
+	•	precompute_t_hex.py: hex → top-K anchors (with memory-efficient batching)
 	•	precompute_d_anchor.py: anchor → POI categories
-	2.	Tile Build
-	•	Results written as PMTiles (T_hex) and Parquet (D_anchor)
+	2.	Tile Build  
+	•	05_h3_to_geojson.py: Convert T_hex parquet → GeoJSON (H3 v3/v4 compatible)
+	•	06_build_tiles.py: GeoJSON → MBTiles → PMTiles (via tippecanoe)
 	3.	Serving
-	•	PMTiles served from CDN (immutable, cacheable)
-	•	API serves tiny JSON slices of D_anchor
+	•	FastAPI serves frontend + PMTiles via static routes
+	•	API serves D_anchor slices (currently returns errors - see logs)
 	4.	Frontend
-	•	MapLibre loads T_hex tiles
-	•	On filter add: browser fetches matching D_anchor slices, evaluates min-plus algebra as a GPU expression, and updates map mask instantly
+	•	MapLibre loads multi-resolution PMTiles (r7/r8 zoom switching)
+	•	Local pmtiles.js library (no CDN dependency)
+	•	Filter expressions applied as MapLibre paint properties
 
 ⸻
 
@@ -139,43 +145,84 @@ Example: “≤10 min to Costco AND ≥70 walkability AND ≤2 hr to skiing”
 
 🚀 Demo Workflow
 
-# 1. Build T_hex for Massachusetts
-python scripts/precompute_t_hex.py \
-  --pbf data/massachusetts.osm.pbf \
-  --anchors data/anchors.parquet \
-  --mode drive \
-  --out data/t_hex_drive.parquet \
-  --k-best 4 --borrow-neighbors
+# Complete pipeline (run from repo root)
+make all
 
-# 2. Build D_anchor for Costco + Chipotle
-python scripts/precompute_d_anchor.py \
-  --pbf data/massachusetts.osm.pbf \
-  --anchors data/anchors.parquet \
+# Or step by step:
+
+# 1. Build T_hex for Massachusetts (with memory optimizations)
+PYTHONPATH=. .venv/bin/python scripts/precompute_t_hex.py \
+  --pbf data/osm/massachusetts.osm.pbf \
+  --anchors out/anchors/anchors_drive.parquet \
+  --mode drive --res 8 --cutoff 90 --batch-size 250 \
+  --anchor-index-out out/anchors/anchor_index_drive.parquet \
+  --out data/minutes/massachusetts_hex_to_anchor_drive.parquet
+
+# 2. Build D_anchor 
+PYTHONPATH=. .venv/bin/python scripts/precompute_d_anchor.py \
+  --anchors out/anchors/anchors_drive.parquet \
+  --anchor-index out/anchors/anchor_index_drive.parquet \
   --mode drive --state massachusetts \
-  --categories costco chipotle \
-  --out data/d_anchor_drive.parquet
+  --out data/minutes/
 
-# 3. Run API
-cd api
-uvicorn app.main:app --reload --port 5174
+# 3. Build map tiles
+PYTHONPATH=. .venv/bin/python scripts/05_h3_to_geojson.py \
+  --input data/minutes/massachusetts_hex_to_anchor_drive.parquet \
+  --output tiles/t_hex_r8_drive.geojson.nd --h3-col h3_id
 
-# 4. Run frontend
-cd web
-npm install
-npm run dev
+PYTHONPATH=. .venv/bin/python scripts/06_build_tiles.py \
+  --input tiles/t_hex_r8_drive.geojson.nd \
+  --output tiles/t_hex_r8_drive.pmtiles \
+  --layer t_hex_r8_drive
+
+# 4. Run server
+make serve
 
 # Open in browser
-http://localhost:5173
+http://localhost:5174
 
+
+⸻
+
+## Current Status & Known Issues
+
+### ✅ Working
+- **Data Pipeline**: T_hex and D_anchor computation complete
+- **Map Visualization**: Interactive hex map with multi-resolution tiles
+- **Frontend**: PMTiles loading, zoom-based layer switching
+- **Memory Optimizations**: Batched processing, H3 v3/v4 compatibility
+
+### ⚠️ Known Issues  
+- **D_anchor API**: Missing required columns (`category_id`, `seconds_u16`)
+  ```
+  ERROR: D_anchor missing required columns: {'category_id', 'seconds_u16'}
+  GET /api/d_anchor?category=chipotle&mode=drive HTTP/1.1 404 Not Found
+  ```
+- **Filter Controls**: Frontend expects API data for dynamic filtering
+- **Category Mapping**: Need to map POI names to category IDs
+
+### 🚧 Next Steps
+1. **Fix D_anchor API**: Update data schema or API expectations
+2. **Category Integration**: Connect POI data to frontend categories  
+3. **Filter Implementation**: Enable interactive time-based filtering
+4. **Walk Mode**: Add walk mode tiles and routing
+
+### 📊 Performance Notes
+- **Memory**: Successfully handles 23K+ hexes with batched processing
+- **Tiles**: ~6MB total (1MB r7 + 5MB r8) for Massachusetts
+- **H3 Compatibility**: Robust fallback for different H3 versions
+- **Data Types**: `.itertuples()` preserves uint64 precision
 
 ⸻
 
 🧭 Summary
 
 TownScout is not a filter UI.
-It’s a geospatial compute engine packaged as a map:
+It's a geospatial compute engine packaged as a map:
 	•	Heavy math precomputed once
-	•	Compact tiles served over CDN
-	•	Browser GPU evaluates livability filters instantly
+	•	Compact tiles served from static routes
+	•	Browser evaluates livability filters with MapLibre expressions
 
-That’s why it feels magic. And why it scales nationally.
+The core matrix factorization works. The visualization works. The data pipeline is robust.
+
+Next: Connect the pieces for dynamic filtering.
