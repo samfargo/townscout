@@ -192,11 +192,9 @@ http://localhost:5174
 - **Frontend**: PMTiles loading, zoom-based layer switching
 - **Memory Optimizations**: Batched processing, H3 v3/v4 compatibility
 
-### ⚠️ Known Issues  
-- **D_anchor API**: Missing required columns (`category_id`, `seconds_u16`)
-  ```
-  ERROR: D_anchor missing required columns: {'category_id', 'seconds_u16'}
-  GET /api/d_anchor?category=chipotle&mode=drive HTTP/1.1 404 Not Found
+### ⚠️ Previous Issues (Resolved)  
+- **D_anchor API**: ~~Missing required columns~~ → Fixed with Hive-partitioned dataset reading via PyArrow
+- **Airport Connectivity**: ~~Poor coverage~~ → Fixed with arterial-snapping for airports in drive mode
   ```
 - **Filter Controls**: Frontend expects API data for dynamic filtering
 - **Category Mapping**: Need to map POI names to category IDs

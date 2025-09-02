@@ -11,6 +11,8 @@ curl http://localhost:5174/health
 
 # Are D_anchor endpoints working?
 curl "http://localhost:5174/api/d_anchor?category=chipotle&mode=drive" | head -50
+# Test airports category
+curl "http://localhost:5174/api/d_anchor?category=airports&mode=drive" | jq 'to_entries | map(select(.value != 65535)) | length'
 
 # Are PMTiles being served?
 curl -I http://localhost:5174/tiles/t_hex_r8_drive.pmtiles

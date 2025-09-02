@@ -25,7 +25,7 @@ OSM Data → Anchors → T_hex Computation → PMTiles → Frontend
 
 ### 1. Data Sources
 - **OSM PBF Files**: Road networks parsed with Pyrosm
-- **POI Data**: Brand locations extracted from OSM (name/brand/operator filters)
+- **POI Data**: Brand locations extracted from OSM (name/brand/operator filters) and manual CSV for airports
 
 ### 2. Anchor System
 - **Purpose**: Spatial sampling points that reduce computation complexity
@@ -58,6 +58,10 @@ OSM Data → Anchors → T_hex Computation → PMTiles → Frontend
 **Input**: Anchor locations + POI category locations  
 **Algorithm**: Single-source Dijkstra from each POI to all anchors  
 **Output**: For each anchor, store travel time to nearest POI in each category
+
+**Airport-Specific Optimization**: Airports use specialized snapping to public arterials (motorway/trunk/primary/secondary/tertiary/residential) within 5km to avoid connectivity issues with private/service roads inside aerodromes.
+
+**Storage Format**: Data stored in Hive-partitioned parquet: `mode={0,2}/category_id={1,2,3}/part-*.parquet` where partition values appear in directory names, not as columns inside files.
 
 ```python
 # D_anchor API format  
@@ -157,7 +161,7 @@ function buildFilterExpression(criteria, dAnchorData) {
 
 ### Frontend Assumptions
 - `K_ANCHORS = 4` (configurable, must match T_hex computation)
-- Categories: extendable (currently `chipotle`, `costco`)
+- Categories: extendable (currently `chipotle`, `costco`, `airports`)
 - Mode: `drive` (walk mode uses separate tiles)
 - Time units: seconds (UI converts from minutes)
 
