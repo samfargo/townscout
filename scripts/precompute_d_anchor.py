@@ -30,7 +30,7 @@ Inputs expected:
 import argparse
 import os
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 
 import numpy as np
 import pandas as pd
@@ -139,6 +139,79 @@ def snap_points_to_nodes(G: nx.MultiDiGraph, pts: gpd.GeoDataFrame, max_m: float
 
 
 # -----------------------------
+# Airport-specific snapping: project to nearest PUBLIC arterial node
+# -----------------------------
+def snap_points_to_public_arterials(G: nx.MultiDiGraph, pts: gpd.GeoDataFrame, max_m: float = 5000.0) -> List[int]:
+    """
+    Snap each point to the nearest node that is connected to at least one
+    PUBLIC, non-service carriageway (arterial/residential/unclassified, incl. _link).
+
+    Rationale: Airports often sit on service/private fabric. Snapping to public
+    arterials guarantees connectivity to the main road network and avoids
+    stranding the source on internal loops/parking aisles.
+    """
+    if pts is None or pts.empty:
+        return []
+
+    allowed_highways: Set[str] = {
+        "motorway", "motorway_link",
+        "trunk", "trunk_link",
+        "primary", "primary_link",
+        "secondary", "secondary_link",
+        "tertiary", "tertiary_link",
+        "residential", "unclassified", "living_street",
+    }
+
+    # Collect candidate nodes that touch an allowed public edge
+    candidate_nodes: Set[int] = set()
+    for u, v, k, d in G.edges(keys=True, data=True):
+        hw = str(d.get("highway", "")).lower()
+        if hw not in allowed_highways:
+            continue
+        access = str(d.get("access", "")).lower()
+        if access in ("private", "no"):
+            # Keep private edges for routing elsewhere, but do not use them as snap targets
+            continue
+        if u in G and v in G:
+            candidate_nodes.add(int(u))
+            candidate_nodes.add(int(v))
+
+    if not candidate_nodes:
+        # Fallback: no filtering, use general snapping
+        return snap_points_to_nodes(G, pts, max_m=max_m, mode="drive")
+
+    # Build KD-tree on candidate nodes only (in meters)
+    ids = np.fromiter(candidate_nodes, dtype=np.int64)
+    xs = np.array([G.nodes[n]["x"] for n in ids], dtype="float64")
+    ys = np.array([G.nodes[n]["y"] for n in ids], dtype="float64")
+    lat0 = float(np.deg2rad(np.mean(ys)))
+    m_per_deg = 111000.0
+    X = np.c_[(xs * np.cos(lat0)) * m_per_deg, ys * m_per_deg]
+    tree = cKDTree(X)
+
+    chosen: List[int] = []
+    for geom in pts.geometry:
+        if geom is None:
+            continue
+        if hasattr(geom, 'x'):
+            qx, qy = float(geom.x), float(geom.y)
+        else:
+            c = geom.centroid
+            qx, qy = float(c.x), float(c.y)
+
+        Xq = np.array([(qx * np.cos(lat0)) * m_per_deg, qy * m_per_deg])
+        d, idx = tree.query(Xq, k=1)
+        if np.isfinite(d) and float(d) <= float(max_m):
+            chosen.append(int(ids[int(idx)]))
+
+    if not chosen:
+        # Last resort
+        return snap_points_to_nodes(G, pts, max_m=max_m, mode="drive")
+
+    return list(pd.Index(chosen).unique().astype("int64"))
+
+
+# -----------------------------
 # POI loading (one category file)
 # -----------------------------
 def load_pois_for_category(state_slug: str, cat_slug: str) -> gpd.GeoDataFrame:
@@ -244,7 +317,11 @@ def main():
 
         print(f"[cat] {slug} (category_id={int(cat.id)}) cutoff={cutoff_sec_eff//60} min")
         pois = load_pois_for_category(args.state, slug)
-        src_nodes = snap_points_to_nodes(Gq, pois, max_m=snap_max_m, mode=args.mode)
+        if slug == "airports" and args.mode == "drive":
+            # Use arterial snapping to avoid getting stranded on service/private fabric
+            src_nodes = snap_points_to_public_arterials(G, pois, max_m=max(5000, snap_max_m))
+        else:
+            src_nodes = snap_points_to_nodes(Gq, pois, max_m=snap_max_m, mode=args.mode)
         if not src_nodes:
             print(f"[cat] {slug}: 0 POIs snapped; skipping.")
             continue

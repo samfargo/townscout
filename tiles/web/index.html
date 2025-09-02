@@ -36,6 +36,11 @@
     <input id="costco" type="range" min="5" max="60" step="5" value="20">
     <span id="costco_v">20</span>
   </div>
+  <div class="row">
+    <label>Airports ≤ min</label>
+    <input id="airports" type="range" min="15" max="240" step="15" value="60">
+    <span id="airports_v">60</span>
+  </div>
   <!-- Add more sliders here if needed -->
   <div id="status" class="status"></div>
   <div id="nudge" class="nudge">Try increasing minutes to see more areas.</div>
@@ -124,6 +129,7 @@
     return {
       chipotle: +document.getElementById('chipotle').value * 60, // convert min to sec
       costco:   +document.getElementById('costco').value * 60,
+      airports: +document.getElementById('airports').value * 60,
     };
   }
 
@@ -199,7 +205,7 @@
   
   // ---------- UI & Event Listeners ----------
   function initUI() {
-    const sliders = ['chipotle', 'costco'];
+    const sliders = ['chipotle', 'costco', 'airports'];
     const debouncedUpdate = debounce(updateMap, 250);
 
     sliders.forEach(id => {

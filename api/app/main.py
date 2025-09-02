@@ -3,7 +3,8 @@
 
 import os
 import math
-from functools import lru_cache
+import glob
+import pyarrow.dataset as ds
 from typing import Dict, List, Tuple, Optional
 
 import numpy as np
@@ -28,12 +29,26 @@ STATE = os.environ.get("TS_STATE", "massachusetts")
 UNREACH_U16 = np.uint16(65535)
 
 # ---------- Data loading (cached) ----------
-@lru_cache(maxsize=8)
 def load_D_anchor(mode: str) -> pd.DataFrame:
     """
     Load seconds-based anchor→category table produced by precompute_d_anchor.py.
     Expected columns: anchor_int_id(int32), category_id(int32), seconds_u16(uint16)
     """
+    # Prefer partitioned dataset if present (mode={0,2}/category_id=*)
+    mode_map = {"drive": 0, "walk": 2}
+    mode_id = mode_map.get(mode, 0)
+    part_dir = os.path.join(DATA_DIR, f"mode={mode_id}")
+    if os.path.isdir(part_dir):
+        # Read the Hive-partitioned dataset so partition columns (category_id) are materialized
+        dataset = ds.dataset(part_dir, format="parquet", partitioning="hive")
+        table = dataset.to_table(columns=["anchor_int_id", "category_id", "seconds"])  # seconds written by pipeline
+        df = table.to_pandas()
+        # Normalize dtype/name to API contract
+        df = df.rename(columns={"seconds": "seconds_u16"})
+        df["seconds_u16"] = df["seconds_u16"].astype("uint16", errors="ignore")
+        return df[["anchor_int_id", "category_id", "seconds_u16"]]
+
+    # Fallback: legacy unified file
     path = os.path.join(DATA_DIR, f"{STATE}_anchor_to_category_{mode}.parquet")
     if not os.path.exists(path):
         raise RuntimeError(f"D_anchor parquet missing at {path}")

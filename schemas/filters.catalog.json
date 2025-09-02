@@ -21,6 +21,17 @@
                 "step": 5,
                 "initial": 30
             }
+        },
+        {
+            "id": "airports",
+            "name": "Airports",
+            "categoryId": 103,
+            "params": {
+                "min": 15,
+                "max": 240,
+                "step": 15,
+                "initial": 60
+            }
         }
     ]
 }
