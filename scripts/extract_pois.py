@@ -1,17 +1,26 @@
 import os
+from typing import Dict
 import geopandas as gpd
 from src.config import STATES, POI_BRANDS, STATE_SLUG_TO_CODE
 from src.util_osm import pois_from_pbf, ogr_find_brand_features, find_major_airports, airports_from_csv
+from src.poi_ski import fetch_and_build_ski_areas_for_state
+from src.poi_transit import fetch_and_build_public_transit_for_state
 
 # Expected minimum counts per brand for validation (adjust based on geography)
 EXPECTED_MIN_COUNTS = {
 	"costco": 8,     # MA has ~10 warehouses
 	"chipotle": 20,  # MA has ~56 locations
 	"airports": 1,
+	"ski-areas": 1,
+	"public-transit": 10,
 	# Default for unknown brands: 3 (can be overridden here)
 }
 
 os.makedirs("data/poi", exist_ok=True)
+os.makedirs("data/poi/cache", exist_ok=True)
+
+
+ONLY_CATEGORY = os.environ.get("TS_ONLY_CATEGORY")
 
 
 def extract_and_validate_pois(state: str, brand: str, cfg: dict) -> gpd.GeoDataFrame:
@@ -33,6 +42,14 @@ def extract_and_validate_pois(state: str, brand: str, cfg: dict) -> gpd.GeoDataF
 		print(f"[airports] found {len(gdf)} entries from CSV")
 		return gdf
 	
+	# Special handler for ski-areas (fetch via Overpass + dedupe)
+	if brand == "ski-areas":
+		return fetch_and_build_ski_areas_for_state(state)
+
+	# Special handler for public-transit (fetch via Overpass template)
+	if brand == "public-transit":
+		return fetch_and_build_public_transit_for_state(state)
+
 	# Stage 1: Try Pyrosm with exact shop/amenity filters
 	print(f"[stage1] {brand}: Pyrosm with shop/amenity filters")
 	gdf = pois_from_pbf(
@@ -113,28 +130,53 @@ def extract_and_validate_pois(state: str, brand: str, cfg: dict) -> gpd.GeoDataF
 	
 	return gdf
 
+
+# Ski-areas Overpass/dedupe logic moved to src.poi_ski
+
+def _should_process(brand: str) -> bool:
+	if not ONLY_CATEGORY:
+		return True
+	return brand == ONLY_CATEGORY
+
 # Main extraction loop
 for state in STATES:
 	for brand, cfg in POI_BRANDS.items():
+		if not _should_process(brand):
+			continue
 		out = f"data/poi/{state}_{brand}.parquet"
 		if os.path.exists(out):
 			print(f"[skip] {out}")
 			continue
-		
 		print(f"\n=== Extracting {brand} for {state} ===")
 		gdf = extract_and_validate_pois(state, brand, cfg)
-		
-		# Ensure proper CRS and save
 		if gdf.crs is None:
 			gdf.set_crs("EPSG:4326", inplace=True)
 		gdf = gdf[["geometry"]]
 		gdf.to_parquet(out)
 		print(f"[ok] {out} ({len(gdf)} locations)")
-		
-		# Debug: print sample coordinates
 		if len(gdf) > 0:
 			print(f"     Sample coordinates:")
 			for i, row in gdf.head(3).iterrows():
 				lat, lon = row.geometry.y, row.geometry.x
 				print(f"     - {lat:.6f}, {lon:.6f}")
-		print() 
+		print()
+
+	# Ski-areas (first-class, even if not in POI_BRANDS)
+	if _should_process("ski-areas"):
+		out = f"data/poi/{state}_ski-areas.parquet"
+		if os.path.exists(out):
+			print(f"[skip] {out}")
+		else:
+			print(f"\n=== Extracting ski-areas for {state} ===")
+			gdf = extract_and_validate_pois(state, "ski-areas", cfg={"tags": {}})
+			if gdf.crs is None:
+				gdf.set_crs("EPSG:4326", inplace=True)
+			gdf = gdf[["geometry"]]
+			gdf.to_parquet(out)
+			print(f"[ok] {out} ({len(gdf)} locations)")
+			if len(gdf) > 0:
+				print(f"     Sample coordinates:")
+				for i, row in gdf.head(3).iterrows():
+					lat, lon = row.geometry.y, row.geometry.x
+					print(f"     - {lat:.6f}, {lon:.6f}")
+			print()

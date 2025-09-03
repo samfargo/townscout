@@ -79,6 +79,11 @@ POI_BRANDS = {
             "operator": ["Chipotle", "Chipotle Mexican Grill"]
         }
     },
+    "public-transit": {
+        "tags": {
+            # Extracted via Overpass template (queries/MA_public_transit.overpass)
+        }
+    },
     "costco": {
         "tags": {
             "shop": ["supermarket", "wholesale", "department_store"], 
@@ -115,4 +120,6 @@ STATE_SLUG_TO_CODE = {
     "rhode-island": "RI",
     "connecticut": "CT",
     "maine": "ME",
+    "vermont": "VT",
+    "new-york": "NY",
 } 

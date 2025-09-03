@@ -39,6 +39,18 @@ CATEGORIES: Dict[str, Category] = {
         default_mode="drive",
         default_cutoff=240
     ),
+    "ski-areas": Category(
+        id=4,
+        slug="ski-areas",
+        default_mode="drive",
+        default_cutoff=150
+    ),
+    "public-transit": Category(
+        id=5,
+        slug="public-transit",
+        default_mode="drive",
+        default_cutoff=90
+    ),
     # Future categories can be added here with sequential IDs
     # "hospitals": Category(id=4, slug="hospitals", default_mode="drive", default_cutoff=45),
     # "major_airport": Category(id=5, slug="major_airport", default_mode="drive", default_cutoff=180),

@@ -21,6 +21,10 @@
     .status { margin-top: 10px; font-size: 12px; }
     .nudge { font-size: 12px; color: #666; background: #eee; padding: 5px; border-radius: 3px; display: none; }
     .footer { position: absolute; bottom: 5px; right: 10px; font-size: 11px; background: rgba(255,255,255,0.7); padding: 2px 5px; border-radius: 3px; z-index: 1; }
+    .hover-box { position: absolute; top: 10px; right: 10px; background: #fff; padding: 10px 12px; border-radius: 6px; z-index: 2; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 220px; max-width: 280px; pointer-events: none; }
+    .hover-box h4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+    .hover-box .kv { display: flex; justify-content: space-between; font-size: 13px; margin: 4px 0; }
+    .hover-box .muted { color: #666; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -41,6 +45,16 @@
     <input id="airports" type="range" min="15" max="240" step="15" value="60">
     <span id="airports_v">60</span>
   </div>
+  <div class="row">
+    <label>Public Transit Station ≤ min</label>
+    <input id="public-transit" type="range" min="5" max="90" step="5" value="20">
+    <span id="public-transit_v">20</span>
+  </div>
+  <div class="row">
+    <label>Ski Area ≤ min</label>
+    <input id="ski-areas" type="range" min="15" max="180" step="15" value="90">
+    <span id="ski-areas_v">90</span>
+  </div>
   <!-- Add more sliders here if needed -->
   <div id="status" class="status"></div>
   <div id="nudge" class="nudge">Try increasing minutes to see more areas.</div>
@@ -48,6 +62,13 @@
 </div>
 
 <div id="map"></div>
+
+<div id="hover-box" class="hover-box">
+  <h4>Hover Info</h4>
+  <div id="hover-content" class="muted">Move cursor over a hex</div>
+  <div id="hover-rows"></div>
+  <div id="hover-note" class="muted"></div>
+ </div>
 
 <div class="footer">
   Map data © OpenStreetMap contributors
@@ -117,6 +138,83 @@
     zoom: 8
   });
 
+  // ---------- Hover Box Helpers ----------
+  function secondsToMinutesText(seconds) {
+    if (seconds == null || !isFinite(seconds)) return 'N/A';
+    const mins = Math.ceil(seconds / 60);
+    return mins + ' min';
+  }
+
+  function computeCategoryBestSeconds(props, category) {
+    const data = dAnchorState[category];
+    if (!data) return null;
+    let best = Infinity;
+    for (let i = 0; i < K_ANCHORS; i++) {
+      const aIdRaw = props[`a${i}_id`];
+      const aSecsRaw = props[`a${i}_s`];
+      if (aIdRaw == null || aSecsRaw == null) continue;
+      const aId = typeof aIdRaw === 'string' ? parseInt(aIdRaw, 10) : aIdRaw;
+      const aSecs = typeof aSecsRaw === 'string' ? parseInt(aSecsRaw, 10) : aSecsRaw;
+      const anchorToCat = (data[aId] ?? data[String(aId)]);
+      const total = aSecs + (anchorToCat ?? 65535);
+      if (total < best) best = total;
+    }
+    if (!isFinite(best) || best >= 65535) return null;
+    return best;
+  }
+
+  function updateHoverBox(feature) {
+    const contentEl = document.getElementById('hover-content');
+    const rowsEl = document.getElementById('hover-rows');
+    const noteEl = document.getElementById('hover-note');
+    if (!feature) {
+      contentEl.textContent = 'Move cursor over a hex';
+      rowsEl.innerHTML = '';
+      noteEl.textContent = '';
+      return;
+    }
+    const props = feature.properties || {};
+    contentEl.textContent = '';
+    const categories = Object.keys(dAnchorState);
+    if (!categories.length) {
+      rowsEl.innerHTML = '';
+      noteEl.textContent = 'Loading data…';
+      return;
+    }
+    const niceName = {
+      chipotle: 'Chipotle',
+      costco: 'Costco',
+      airports: 'Airports',
+      'public-transit': 'Public Transit',
+      'ski-areas': 'Ski Area'
+    };
+    const order = ['chipotle', 'costco', 'airports', 'public-transit', 'ski-areas'];
+    const display = order.filter(k => categories.includes(k));
+    const parts = [];
+    for (const cat of display) {
+      const secs = computeCategoryBestSeconds(props, cat);
+      parts.push(`<div class="kv"><span>${niceName[cat] || cat}</span><span>${secondsToMinutesText(secs)}</span></div>`);
+    }
+    rowsEl.innerHTML = parts.join('');
+    noteEl.textContent = '';
+  }
+
+  // ---------- Hover Interaction ----------
+  map.on('mousemove', (e) => {
+    try {
+      const layers = ['t_hex_r8_layer', 't_hex_r7_layer'];
+      const features = map.queryRenderedFeatures(e.point, { layers });
+      if (features && features.length) {
+        updateHoverBox(features[0]);
+      } else {
+        updateHoverBox(null);
+      }
+    } catch (err) {
+      // In case of errors during early load, show placeholder
+      updateHoverBox(null);
+    }
+  });
+
   function debounce(fn, ms) {
     let timer;
     return (...args) => {
@@ -130,6 +228,8 @@
       chipotle: +document.getElementById('chipotle').value * 60, // convert min to sec
       costco:   +document.getElementById('costco').value * 60,
       airports: +document.getElementById('airports').value * 60,
+      'public-transit': +document.getElementById('public-transit').value * 60,
+      'ski-areas': +document.getElementById('ski-areas').value * 60,
     };
   }
 
@@ -205,7 +305,7 @@
   
   // ---------- UI & Event Listeners ----------
   function initUI() {
-    const sliders = ['chipotle', 'costco', 'airports'];
+    const sliders = ['chipotle', 'costco', 'airports', 'public-transit', 'ski-areas'];
     const debouncedUpdate = debounce(updateMap, 250);
 
     sliders.forEach(id => {

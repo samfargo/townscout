@@ -1,6 +1,6 @@
 PY=PYTHONPATH=. .venv/bin/python
-STATES=massachusetts new-hampshire rhode-island connecticut maine
-CATEGORIES=chipotle costco airports
+STATES=massachusetts new-hampshire rhode-island connecticut maine vermont new-york
+CATEGORIES=chipotle costco airports ski-areas public-transit
 
 .PHONY: help init pbf pois anchors anchors-fresh t-hex d-anchor clean test serve clear-cache all quick fresh
 
@@ -22,6 +22,10 @@ pbf:  ## Download OSM PBF extracts for all states
 
 pois:  ## Extract POI data from PBF files (legacy format, still needed for D_anchor)
 	$(PY) scripts/extract_pois.py
+
+.PHONY: ski-pois
+ski-pois:  ## Extract only ski-areas POIs with Overpass (uses cache)
+	TS_ONLY_CATEGORY=ski-areas $(PY) scripts/extract_pois.py
 
 anchors:  ## Build anchor points for drive and walk networks (uses cached networks)
 	@echo "Building anchors for Massachusetts..."
@@ -48,6 +52,7 @@ t-hex: anchors ## Precompute Hex→Anchor travel times (T_hex matrix) and genera
 		--res 8 \
 		--cutoff 90 \
 		--batch-size 250 \
+		--k-pass-mode \
 		--anchor-index-out out/anchors/anchor_index_drive.parquet \
 		--out data/minutes/massachusetts_hex_to_anchor_drive.parquet
 	$(PY) scripts/precompute_t_hex.py \

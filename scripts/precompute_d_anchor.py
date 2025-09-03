@@ -317,7 +317,7 @@ def main():
 
         print(f"[cat] {slug} (category_id={int(cat.id)}) cutoff={cutoff_sec_eff//60} min")
         pois = load_pois_for_category(args.state, slug)
-        if slug == "airports" and args.mode == "drive":
+        if slug in ("airports", "ski-areas") and args.mode == "drive":
             # Use arterial snapping to avoid getting stranded on service/private fabric
             src_nodes = snap_points_to_public_arterials(G, pois, max_m=max(5000, snap_max_m))
         else:
