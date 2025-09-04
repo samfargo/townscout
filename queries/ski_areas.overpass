@@ -42,3 +42,4 @@ way["piste:type"~"downhill|skitour|sled",i](area.MA)->.CTX_PISTES;
 out center;
 >;
 out skel qt;
+
