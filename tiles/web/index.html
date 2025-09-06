@@ -12,12 +12,18 @@
   <style>
     body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
-    .panel { position: absolute; top: 10px; left: 10px; background: #fff; padding: 10px 15px; border-radius: 6px; z-index: 1; box-shadow: 0 1px 3px rgba(0,0,0,0.1); width: 280px; }
-    .panel h3 { margin: 0 0 10px; }
-    .row { display: flex; align-items: center; margin-bottom: 8px; }
-    .row label { flex: 1; font-size: 14px; }
-    .row input[type="range"] { flex: 2; }
-    .row span { font-weight: bold; width: 30px; text-align: right; }
+    .panel { position: absolute; top: 16px; left: 16px; background: #fff; padding: 14px 16px; border-radius: 10px; z-index: 1; box-shadow: 0 6px 20px rgba(0,0,0,0.12); width: 320px; }
+    .panel h3 { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: #1f2937; }
+    .row { display: flex; align-items: center; margin-bottom: 10px; gap: 10px; }
+    .row label { flex: 1; font-size: 13px; color: #374151; }
+    .row input[type="range"] { flex: 1.6; }
+    .row span { font-weight: 600; width: 36px; text-align: right; color: #111827; }
+    .row select { flex: 1; padding: 6px 8px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; color: #111827; font-size: 13px; }
+    .row select:focus { outline: none; border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59,130,246,0.25); }
+    .filter-row { align-items: center; }
+    .filter-row .spacer { flex: 0.2; }
+    .remove-btn { background: transparent; border: none; color: #6b7280; cursor: pointer; padding: 4px 6px; border-radius: 6px; font-size: 13px; }
+    .remove-btn:hover { background: #f3f4f6; color: #111827; }
     .status { margin-top: 10px; font-size: 12px; }
     .nudge { font-size: 12px; color: #666; background: #eee; padding: 5px; border-radius: 3px; display: none; }
     .footer { position: absolute; bottom: 5px; right: 10px; font-size: 11px; background: rgba(255,255,255,0.7); padding: 2px 5px; border-radius: 3px; z-index: 1; }
@@ -30,32 +36,7 @@
 <body>
 <div class="panel">
   <h3>TownScout Criteria</h3>
-  <div class="row">
-    <label>Chipotle ≤ min</label>
-    <input id="chipotle" type="range" min="5" max="45" step="5" value="15">
-    <span id="chipotle_v">15</span>
-  </div>
-  <div class="row">
-    <label>Costco ≤ min</label>
-    <input id="costco" type="range" min="5" max="60" step="5" value="20">
-    <span id="costco_v">20</span>
-  </div>
-  <div class="row">
-    <label>Airports ≤ min</label>
-    <input id="airports" type="range" min="15" max="240" step="15" value="60">
-    <span id="airports_v">60</span>
-  </div>
-  <div class="row">
-    <label>Public Transit Station ≤ min</label>
-    <input id="public-transit" type="range" min="5" max="90" step="5" value="20">
-    <span id="public-transit_v">20</span>
-  </div>
-  <div class="row">
-    <label>Ski Area ≤ min</label>
-    <input id="ski-areas" type="range" min="15" max="180" step="15" value="90">
-    <span id="ski-areas_v">90</span>
-  </div>
-  <!-- Add more sliders here if needed -->
+  <div id="filters"></div>
   <div id="status" class="status"></div>
   <div id="nudge" class="nudge">Try increasing minutes to see more areas.</div>
   <button id="share" style="width: 100%; margin-top: 10px; padding: 5px;">Share Map</button>
@@ -86,6 +67,10 @@
   // Store anchor data: { costco: {123: 360, ...}, chipotle: { ... } }
   const dAnchorState = {};
   const K_ANCHORS = 4; // Should match precompute_t_hex.py --k-best
+
+  // Dynamic filters
+  let FILTER_CATALOG = [];
+  let SELECTED_FILTER_IDS = []; // array of filter ids (e.g., ['chipotle','costco']) in order added
 
   const map = new maplibregl.Map({
     container: 'map',
@@ -175,7 +160,8 @@
     }
     const props = feature.properties || {};
     contentEl.textContent = '';
-    const categories = Object.keys(dAnchorState);
+    // Only display selected filters
+    const categories = SELECTED_FILTER_IDS.slice();
     if (!categories.length) {
       rowsEl.innerHTML = '';
       noteEl.textContent = 'Loading data…';
@@ -188,8 +174,7 @@
       'public-transit': 'Public Transit',
       'ski-areas': 'Ski Area'
     };
-    const order = ['chipotle', 'costco', 'airports', 'public-transit', 'ski-areas'];
-    const display = order.filter(k => categories.includes(k));
+    const display = SELECTED_FILTER_IDS.slice();
     const parts = [];
     for (const cat of display) {
       const secs = computeCategoryBestSeconds(props, cat);
@@ -224,13 +209,13 @@
   }
   
   function getSliderValues() {
-    return {
-      chipotle: +document.getElementById('chipotle').value * 60, // convert min to sec
-      costco:   +document.getElementById('costco').value * 60,
-      airports: +document.getElementById('airports').value * 60,
-      'public-transit': +document.getElementById('public-transit').value * 60,
-      'ski-areas': +document.getElementById('ski-areas').value * 60,
-    };
+    const result = {};
+    for (const id of SELECTED_FILTER_IDS) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      result[id] = +el.value * 60; // convert minutes to seconds
+    }
+    return result;
   }
 
   // ---------- Core Logic: Build Filter Expression ----------
@@ -263,6 +248,10 @@
       expressions.push(["<=", minTravelTime, thresholdSecs]);
     }
     
+    if (!expressions.length) {
+      return 0.2; // No filters selected: show low-opacity context
+    }
+
     // Final expression shows hex if ALL criteria are met
     return ["case", ["all", ...expressions], 0.8, 0.0]; // opacity
   }
@@ -298,29 +287,93 @@
     map.setPaintProperty('t_hex_r7_layer', 'fill-opacity', expression);
     map.setPaintProperty('t_hex_r8_layer', 'fill-opacity', expression);
     
-    document.getElementById('status').textContent = 'Map updated.';
+    // Clear status on success
+    document.getElementById('status').textContent = '';
     // Note: Nudge logic for "zero results" is harder with this architecture
     // as we can't easily count visible hexes. A simpler "no data?" nudge is used.
   }
   
   // ---------- UI & Event Listeners ----------
   function initUI() {
-    const sliders = ['chipotle', 'costco', 'airports', 'public-transit', 'ski-areas'];
-    const debouncedUpdate = debounce(updateMap, 250);
+    const debouncedUpdate = debounce(updateMap, 200);
+    const filtersContainer = document.getElementById('filters');
 
-    sliders.forEach(id => {
-      const slider = document.getElementById(id);
-      const output = document.getElementById(id + '_v');
-      slider.addEventListener('input', () => {
-        output.textContent = slider.value;
-        debouncedUpdate();
+    function getAvailableOptions() {
+      const chosen = new Set(SELECTED_FILTER_IDS);
+      return FILTER_CATALOG.filter(f => !chosen.has(f.id));
+    }
+
+    function renderDropdownRow() {
+      const options = getAvailableOptions();
+      if (!options.length) return; // no more to add
+      const row = document.createElement('div');
+      row.className = 'row filter-row';
+      const select = document.createElement('select');
+      const defaultOpt = document.createElement('option');
+      defaultOpt.value = '';
+      defaultOpt.textContent = 'Add a filter…';
+      select.appendChild(defaultOpt);
+      options.forEach(opt => {
+        const o = document.createElement('option');
+        o.value = opt.id;
+        o.textContent = opt.name;
+        select.appendChild(o);
       });
-    });
+      row.appendChild(select);
+      filtersContainer.appendChild(row);
 
-    // Handle share button
+      select.addEventListener('change', () => {
+        const id = select.value;
+        if (!id) return;
+        const meta = FILTER_CATALOG.find(f => f.id === id);
+        if (!meta) return;
+        SELECTED_FILTER_IDS.push(id);
+        const sliderRow = addSliderRow(meta, meta.params.initial);
+        filtersContainer.replaceChild(sliderRow, row);
+        renderDropdownRow();
+        updateMap();
+      });
+    }
+
+    function ensureDropdownExists() {
+      const hasSelect = !!filtersContainer.querySelector('select');
+      if (!hasSelect && getAvailableOptions().length) {
+        renderDropdownRow();
+      }
+    }
+
+    function addSliderRow(meta, initialValue) {
+      const { id } = meta;
+      const row = document.createElement('div');
+      row.className = 'row filter-row';
+      row.innerHTML = `
+        <label>${meta.name} ≤ min</label>
+        <input id="${id}" type="range" min="${meta.params.min}" max="${meta.params.max}" step="${meta.params.step}" value="${initialValue}">
+        <span id="${id}_v">${initialValue}</span>
+        <button class="remove-btn" aria-label="Remove ${meta.name}" title="Remove ${meta.name}">✕</button>
+      `;
+      const slider = row.querySelector('input');
+      const out = row.querySelector('span');
+      const removeBtn = row.querySelector('.remove-btn');
+      slider.addEventListener('input', () => { out.textContent = slider.value; debouncedUpdate(); });
+      slider.addEventListener('change', () => { updateMap(); });
+      removeBtn.addEventListener('click', () => {
+        const idx = SELECTED_FILTER_IDS.indexOf(id);
+        if (idx >= 0) SELECTED_FILTER_IDS.splice(idx, 1);
+        row.remove();
+        ensureDropdownExists();
+        updateMap();
+      });
+      return row;
+    }
+
+    // Share button copies only selected filters
     document.getElementById('share').addEventListener('click', () => {
       const params = new URLSearchParams();
-      sliders.forEach(id => params.set(id, document.getElementById(id).value));
+      for (const id of SELECTED_FILTER_IDS) {
+        const el = document.getElementById(id);
+        if (el) params.set(id, el.value);
+      }
       const url = new URL(window.location.href);
       url.search = params.toString();
       navigator.clipboard.writeText(url.toString()).then(() => {
@@ -330,21 +383,50 @@
         setTimeout(() => (btn.textContent = originalText), 1500);
       });
     });
-    
-    // Load initial state from URL params
-    const params = new URLSearchParams(window.location.search);
-    sliders.forEach(id => {
-      if (params.has(id)) {
-        const val = params.get(id);
-        document.getElementById(id).value = val;
-        document.getElementById(id + '_v').textContent = val;
+
+    // Initialize with URL params if present
+    const urlParams = new URLSearchParams(window.location.search);
+    const idsInUrl = FILTER_CATALOG.map(f => f.id).filter(id => urlParams.has(id));
+    if (idsInUrl.length) {
+      // Add each from URL in order
+      for (const id of idsInUrl) {
+        const meta = FILTER_CATALOG.find(f => f.id === id);
+        if (!meta) continue;
+        SELECTED_FILTER_IDS.push(id);
+        const val = urlParams.get(id) || meta.params.initial;
+        const sliderRow = addSliderRow(meta, val);
+        filtersContainer.appendChild(sliderRow);
       }
-    });
+      // Allow adding more
+      renderDropdownRow();
+    } else {
+      renderDropdownRow();
+    }
   }
 
-  map.on('load', () => {
+  async function loadFilterCatalog() {
+    try {
+      const resp = await fetch('/schemas/filters.catalog.json');
+      if (!resp.ok) throw new Error('Failed to load filter catalog');
+      const data = await resp.json();
+      FILTER_CATALOG = data.filters || [];
+    } catch (e) {
+      console.error(e);
+      // Fallback to a minimal built-in set
+      FILTER_CATALOG = [
+        { id: 'chipotle', name: 'Chipotle', params: { min: 5, max: 45, step: 5, initial: 15 } },
+        { id: 'costco', name: 'Costco', params: { min: 5, max: 60, step: 5, initial: 20 } },
+        { id: 'airports', name: 'Airports', params: { min: 15, max: 240, step: 15, initial: 60 } },
+        { id: 'public-transit', name: 'Public Transit', params: { min: 5, max: 90, step: 5, initial: 20 } },
+        { id: 'ski-areas', name: 'Ski Areas', params: { min: 15, max: 180, step: 15, initial: 90 } },
+      ];
+    }
+  }
+
+  map.on('load', async () => {
+    await loadFilterCatalog();
     initUI();
-    updateMap(); // Initial map load
+    updateMap(); // Initial map load (no filters => low opacity)
   });
 </script>
 </body>

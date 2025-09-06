@@ -32,6 +32,28 @@
                 "step": 15,
                 "initial": 60
             }
+        },
+        {
+            "id": "public-transit",
+            "name": "Public Transit",
+            "categoryId": 104,
+            "params": {
+                "min": 5,
+                "max": 90,
+                "step": 5,
+                "initial": 20
+            }
+        },
+        {
+            "id": "ski-areas",
+            "name": "Ski Areas",
+            "categoryId": 105,
+            "params": {
+                "min": 15,
+                "max": 180,
+                "step": 15,
+                "initial": 90
+            }
         }
     ]
 }
