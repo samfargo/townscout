@@ -2,7 +2,7 @@ PY=PYTHONPATH=. .venv/bin/python
 STATES=massachusetts new-hampshire rhode-island connecticut maine vermont new-york
 CATEGORIES=chipotle costco airports ski-areas public-transit
 
-.PHONY: help init pbf pois anchors anchors-fresh t-hex d-anchor clean test serve clear-cache all quick fresh
+.PHONY: help init pbf pois anchors anchors-fresh t-hex d-anchor clean test serve clear-cache all quick fresh juris juris-tiles
 
 help:  ## Show this help message
 	@echo "TownScout Anchor-Based Pipeline - Available targets:"
@@ -108,6 +108,19 @@ tiles: geojson ## Build PMTiles from GeoJSON
 		--output tiles/massachusetts_walk.pmtiles \
 		--layer massachusetts_hex_to_anchor_walk
 	@echo "✅ PMTiles build complete."
+
+juris: ## Build jurisdictions NDJSON for Massachusetts
+	@echo "Building jurisdictions NDJSON..."
+	$(PY) scripts/07_build_jurisdictions.py --state-fips 25 --ndjson tiles/ma_jurisdictions.geojson.nd
+	@echo "✅ Jurisdictions NDJSON ready."
+
+juris-tiles: juris ## Build PMTiles for jurisdictions
+	@echo "Building jurisdictions PMTiles..."
+	$(PY) scripts/06_build_tiles.py \
+		--input tiles/ma_jurisdictions.geojson.nd \
+		--output tiles/ma_jurisdictions.pmtiles \
+		--layer ma_jurisdictions
+	@echo "✅ Jurisdictions PMTiles ready."
 
 serve:  ## Start the FastAPI API server
 	@echo "Starting TownScout API server..."

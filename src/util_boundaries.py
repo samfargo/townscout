@@ -13,7 +13,7 @@ from tqdm import tqdm
 from typing import Dict, List, Optional, Tuple
 import logging
 
-from config import (
+from src.config import (
     TIGER_PLACES_URL, TIGER_COUSUB_URL, MCD_STATES, STATE_FIPS
 )
 

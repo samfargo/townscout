@@ -8,7 +8,7 @@
   <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
   <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
   <!-- Use pmtiles.js for protocol -->
-  <script src="/static/pmtiles.js"></script>
+  <script src="/tiles/web/pmtiles.js"></script>
   <style>
     body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
@@ -31,6 +31,10 @@
     .hover-box h4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
     .hover-box .kv { display: flex; justify-content: space-between; font-size: 13px; margin: 4px 0; }
     .hover-box .muted { color: #666; font-size: 12px; }
+    .towns-box { position: absolute; top: 120px; right: 10px; background: #fff; padding: 10px 12px; border-radius: 6px; z-index: 2; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 240px; max-width: 300px; pointer-events: auto; }
+    .towns-box h4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+    .towns-box ul { margin: 0; padding-left: 18px; max-height: 220px; overflow: auto; }
+    .towns-box .muted { color: #666; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -51,6 +55,12 @@
   <div id="hover-note" class="muted"></div>
  </div>
 
+<div id="towns-box" class="towns-box" style="display:none;">
+  <h4>Qualifying towns (view)</h4>
+  <div id="towns-note" class="muted"></div>
+  <ul id="towns-list"></ul>
+</div>
+
 <div class="footer">
   Map data © OpenStreetMap contributors
 </div>
@@ -67,6 +77,7 @@
   // Store anchor data: { costco: {123: 360, ...}, chipotle: { ... } }
   const dAnchorState = {};
   const K_ANCHORS = 4; // Should match precompute_t_hex.py --k-best
+  let LAST_EXPRESSION = 0.2;
 
   // Dynamic filters
   let FILTER_CATALOG = [];
@@ -91,6 +102,10 @@
         't_hex_r8': {
           type: 'vector',
           url: T_HEX_R8_URL
+        },
+        'juris': {
+          type: 'vector',
+          url: 'pmtiles:///tiles/ma_jurisdictions.pmtiles'
         }
       },
       layers: [
@@ -115,6 +130,16 @@
           paint: {
             'fill-color': 'rgba(25, 118, 210, 0.5)',
             'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        {
+          id: 'juris-fill-hit',
+          type: 'fill',
+          source: 'juris',
+          'source-layer': 'ma_jurisdictions',
+          paint: {
+            'fill-color': '#000000',
+            'fill-opacity': 0.0
           }
         }
       ]
@@ -160,6 +185,19 @@
     }
     const props = feature.properties || {};
     contentEl.textContent = '';
+    // Look up town name under cursor using jurisdiction layer
+    try {
+      const hitPoint = feature._point || null;
+      const juris = hitPoint ? map.queryRenderedFeatures(hitPoint, { layers: ['juris-fill-hit'] }) : [];
+      if (juris && juris.length) {
+        const j = juris[0].properties || {};
+        const town = j.juris_name || '';
+        const st = j.state_abbr || '';
+        if (town) {
+          contentEl.textContent = town + (st ? (", " + st) : "");
+        }
+      }
+    } catch (e) {}
     // Only display selected filters
     const categories = SELECTED_FILTER_IDS.slice();
     if (!categories.length) {
@@ -190,7 +228,10 @@
       const layers = ['t_hex_r8_layer', 't_hex_r7_layer'];
       const features = map.queryRenderedFeatures(e.point, { layers });
       if (features && features.length) {
-        updateHoverBox(features[0]);
+        // Attach the point for jurisdiction lookup
+        const f = features[0];
+        f._point = e.point;
+        updateHoverBox(f);
       } else {
         updateHoverBox(null);
       }
@@ -282,15 +323,173 @@
     
     // Only rebuild expression if data changed or it's the first run
     const expression = buildFilterExpression(criteria, dAnchorState);
+    LAST_EXPRESSION = expression;
 
     // Apply the same expression to both layers
     map.setPaintProperty('t_hex_r7_layer', 'fill-opacity', expression);
     map.setPaintProperty('t_hex_r8_layer', 'fill-opacity', expression);
+
+    // Update towns list based on current view and filters
+    updateQualifyingTowns(expression);
     
     // Clear status on success
     document.getElementById('status').textContent = '';
     // Note: Nudge logic for "zero results" is harder with this architecture
     // as we can't easily count visible hexes. A simpler "no data?" nudge is used.
+  }
+
+  function updateQualifyingTowns(expression) {
+    const box = document.getElementById('towns-box');
+    const listEl = document.getElementById('towns-list');
+    const noteEl = document.getElementById('towns-note');
+    listEl.innerHTML = '';
+    noteEl.textContent = '';
+
+    try {
+      // Query visible hex features at current zoom; search both layers, nearest on top
+      const layers = ['t_hex_r8_layer', 't_hex_r7_layer'];
+      const features = map.queryRenderedFeatures(undefined, { layers });
+      if (!features || !features.length) {
+        box.style.display = '';
+        noteEl.textContent = 'No hexes in view';
+        return;
+      }
+
+      // Evaluate opacity expression for each feature to determine if it qualifies
+      const qualifying = [];
+      for (const feat of features) {
+        const props = feat.properties || {};
+        const isShown = evaluateOpacity(expression, props) > 0.0;
+        if (!isShown) continue;
+        // Find jurisdiction intersecting feature approximate centroid
+        const firstRing = (feat.geometry && feat.geometry.coordinates && feat.geometry.coordinates[0]) || [];
+        let cx = 0, cy = 0, n = 0;
+        for (let i = 0; i < firstRing.length; i++) { cx += firstRing[i][0]; cy += firstRing[i][1]; n++; }
+        const lnglat = (n > 0) ? [cx / n, cy / n] : null;
+        const screenPt = lnglat ? map.project(lnglat) : null;
+        const juris = screenPt ? map.queryRenderedFeatures(screenPt, { layers: ['juris-fill-hit'] }) : [];
+        if (juris && juris.length) {
+          const j = juris[0].properties || {};
+          const name = (j.juris_name || '').trim();
+          const st = (j.state_abbr || '').trim();
+          if (name) qualifying.push(st ? `${name}, ${st}` : name);
+        }
+      }
+
+      // Unique & sort
+      const uniq = Array.from(new Set(qualifying)).sort((a,b)=>a.localeCompare(b));
+      if (uniq.length && uniq.length <= 100) {
+        listEl.innerHTML = uniq.map(t => `<li>${t}</li>`).join('');
+        noteEl.textContent = `${uniq.length} town${uniq.length===1?'':'s'} match in view`;
+        box.style.display = '';
+      } else {
+        // Too many or none: keep box visible with explanatory note and blank list
+        listEl.innerHTML = '';
+        if (uniq.length > 100) {
+          noteEl.textContent = `Too many towns (${uniq.length}). Refine filters or zoom.`;
+        } else {
+          noteEl.textContent = 'No matching towns in view';
+        }
+        box.style.display = '';
+      }
+    } catch (e) {
+      listEl.innerHTML = '';
+      noteEl.textContent = '';
+      box.style.display = '';
+    }
+  }
+
+  function evaluateOpacity(expression, props) {
+    // Minimal evaluator for the specific expression structure we generate
+    if (typeof expression === 'number') return expression;
+    if (!Array.isArray(expression)) return 0.0;
+    if (expression[0] === 'case') {
+      const cond = expression[1];
+      const trueVal = expression[2];
+      const falseVal = expression[3];
+      return evaluateCondition(cond, props) ? (typeof trueVal === 'number' ? trueVal : 0.8) : (typeof falseVal === 'number' ? falseVal : 0.0);
+    }
+    return 0.0;
+  }
+
+  function evaluateCondition(expr, props) {
+    if (!Array.isArray(expr)) return false;
+    const op = expr[0];
+    if (op === 'all') {
+      for (let i = 1; i < expr.length; i++) if (!evaluateCondition(expr[i], props)) return false;
+      return true;
+    }
+    if (op === '<=') {
+      const left = evaluateNumeric(expr[1], props);
+      const right = evaluateNumeric(expr[2], props);
+      return left <= right;
+    }
+    if (op === 'min') {
+      let best = Infinity;
+      for (let i = 1; i < expr.length; i++) best = Math.min(best, evaluateNumeric(expr[i], props));
+      return best;
+    }
+    return false;
+  }
+
+  function evaluateNumeric(expr, props) {
+    if (typeof expr === 'number') return expr;
+    if (!Array.isArray(expr)) return (typeof expr === 'string' ? (props[expr] ?? 65535) : 0);
+    const op = expr[0];
+    if (op === '+') return evaluateNumeric(expr[1], props) + evaluateNumeric(expr[2], props);
+    if (op === 'get') {
+      // Two forms:
+      // 1) ['get', 'propName'] -> from props
+      // 2) ['get', keyExpr, objectExpr] -> property lookup from object
+      if (expr.length === 2) return props[expr[1]] ?? 65535;
+      const key = evaluateValue(expr[1], props);
+      const obj = evaluateValue(expr[2], props);
+      if (obj && key != null && Object.prototype.hasOwnProperty.call(obj, key)) return obj[key];
+      // Also try numeric key variant
+      const keyNum = (typeof key === 'string' && /^\d+$/.test(key)) ? parseInt(key, 10) : key;
+      if (obj && keyNum != null && Object.prototype.hasOwnProperty.call(obj, keyNum)) return obj[keyNum];
+      return 65535;
+    }
+    if (op === 'to-string') {
+      const v = evaluateValue(expr[1], props);
+      return (v == null) ? '' : String(v);
+    }
+    if (op === 'literal') {
+      return expr[1];
+    }
+    if (op === 'coalesce') {
+      for (let i = 1; i < expr.length; i++) {
+        const val = evaluateNumeric(expr[i], props);
+        if (val !== undefined && val !== null && isFinite(val)) return val;
+      }
+      return 65535;
+    }
+    if (op === 'match') {
+      // Not used in final numeric path after refactor
+      return 65535;
+    }
+    if (op === 'min') {
+      let best = Infinity;
+      for (let i = 1; i < expr.length; i++) best = Math.min(best, evaluateNumeric(expr[i], props));
+      return best;
+    }
+    return 0;
+  }
+
+  function evaluateValue(expr, props) {
+    if (expr == null) return null;
+    if (typeof expr !== 'object' || !Array.isArray(expr)) return expr;
+    const op = expr[0];
+    if (op === 'get') {
+      if (expr.length === 2) return props[expr[1]];
+      const key = evaluateValue(expr[1], props);
+      const obj = evaluateValue(expr[2], props);
+      return obj ? obj[key] : undefined;
+    }
+    if (op === 'to-string') return String(evaluateValue(expr[1], props));
+    if (op === 'literal') return expr[1];
+    // Fallback to numeric evaluation where sensible
+    return evaluateNumeric(expr, props);
   }
   
   // ---------- UI & Event Listeners ----------
@@ -405,22 +604,32 @@
   }
 
   async function loadFilterCatalog() {
-    try {
-      const resp = await fetch('/schemas/filters.catalog.json');
-      if (!resp.ok) throw new Error('Failed to load filter catalog');
-      const data = await resp.json();
-      FILTER_CATALOG = data.filters || [];
-    } catch (e) {
-      console.error(e);
-      // Fallback to a minimal built-in set
-      FILTER_CATALOG = [
-        { id: 'chipotle', name: 'Chipotle', params: { min: 5, max: 45, step: 5, initial: 15 } },
-        { id: 'costco', name: 'Costco', params: { min: 5, max: 60, step: 5, initial: 20 } },
-        { id: 'airports', name: 'Airports', params: { min: 15, max: 240, step: 15, initial: 60 } },
-        { id: 'public-transit', name: 'Public Transit', params: { min: 5, max: 90, step: 5, initial: 20 } },
-        { id: 'ski-areas', name: 'Ski Areas', params: { min: 15, max: 180, step: 15, initial: 90 } },
-      ];
+    const candidates = [
+      '/schemas/filters.catalog.json',
+      '../../schemas/filters.catalog.json',
+      '../schemas/filters.catalog.json',
+      'schemas/filters.catalog.json'
+    ];
+    for (const url of candidates) {
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`Failed to load filter catalog from ${url}`);
+        const data = await resp.json();
+        FILTER_CATALOG = data.filters || [];
+        return;
+      } catch (e) {
+        // try next
+      }
     }
+    console.error('Error: Failed to load filter catalog');
+    // Fallback to a minimal built-in set
+    FILTER_CATALOG = [
+      { id: 'chipotle', name: 'Chipotle', params: { min: 5, max: 45, step: 5, initial: 15 } },
+      { id: 'costco', name: 'Costco', params: { min: 5, max: 60, step: 5, initial: 20 } },
+      { id: 'airports', name: 'Airports', params: { min: 15, max: 240, step: 15, initial: 60 } },
+      { id: 'public-transit', name: 'Public Transit', params: { min: 5, max: 90, step: 5, initial: 20 } },
+      { id: 'ski-areas', name: 'Ski Areas', params: { min: 15, max: 180, step: 15, initial: 90 } },
+    ];
   }
 
   map.on('load', async () => {
