@@ -1,144 +1,110 @@
-PY=PYTHONPATH=. .venv/bin/python
-STATES=massachusetts new-hampshire rhode-island connecticut maine vermont new-york
-CATEGORIES=chipotle costco airports ski-areas public-transit
+PY=PYTHONPATH=src .venv/bin/python
+STATES=massachusetts
+# Add more states as needed, e.g., STATES=massachusetts new-hampshire
 
-.PHONY: help init pbf pois anchors anchors-fresh t-hex d-anchor clean test serve clear-cache all quick fresh juris juris-tiles
+.PHONY: help init clean all \
+	download pois minutes merge geojson tiles export-csv native
 
 help:  ## Show this help message
-	@echo "TownScout Anchor-Based Pipeline - Available targets:"
+	@echo "TownScout Data Pipeline - Available targets:"
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-init:  ## Initialize virtual environment and install dependencies
-	@if command -v python3.12 >/dev/null 2>&1; then \
-		python3.12 -m venv .venv; \
-	else \
-		python3 -m venv .venv; \
-	fi && . .venv/bin/activate && pip install -r requirements.txt
+init:  ## Initialize virtual environment with Python 3.11 and install dependencies
+	rm -rf .venv
+	python3 -m venv .venv
+	. .venv/bin/activate && pip install -r requirements.txt
+	@echo "✅ Environment initialized. Run 'source .venv/bin/activate' to use it."
 
-# ========== ANCHOR-BASED PIPELINE ==========
+# ========== Data Pipeline (New) ==========
 
-pbf:  ## Download OSM PBF extracts for all states
-	$(PY) scripts/download_osm.py
+native:  ## Build the native Rust extension
+	.venv/bin/maturin develop --manifest-path townscout_native/Cargo.toml
 
-pois:  ## Extract POI data from PBF files (legacy format, still needed for D_anchor)
-	$(PY) scripts/extract_pois.py
+download:  ## 1. Download OSM and Overture data extracts
+	$(PY) src/01_download_extracts.py
 
-.PHONY: ski-pois
-ski-pois:  ## Extract only ski-areas POIs with Overpass (uses cache)
-	TS_ONLY_CATEGORY=ski-areas $(PY) scripts/extract_pois.py
+pois: download  ## 2. Normalize and conflate POIs from all sources
+	$(PY) src/02_normalize_pois.py
 
-anchors:  ## Build anchor points for drive and walk networks (uses cached networks)
-	@echo "Building anchors for Massachusetts..."
-	$(PY) scripts/build_anchors_modular.py --pbf data/osm/massachusetts.osm.pbf --out out/anchors
-	@echo "✅ Anchors complete. Check out/anchors/anchors_map.html for QA visualization."
+# Define a target for each state's minutes file
+MINUTE_FILES := $(patsubst %,data/minutes/%_drive_t_hex.parquet,$(STATES))
+# TODO: Add walk mode back in
+# MINUTE_FILES += $(patsubst %,data/minutes/%_walk_t_hex.parquet,$(STATES))
 
-anchors-fresh:  ## Build anchor points from scratch (clears network cache first)
-	@echo "Building anchors from scratch (clearing cache)..."
-	$(PY) scripts/build_anchors_modular.py --pbf data/osm/massachusetts.osm.pbf --out out/anchors --clear-cache
-	@echo "✅ Fresh anchors complete. Check out/anchors/anchors_map.html for QA visualization."
+minutes: $(MINUTE_FILES)  ## 3. Compute per-state travel time minutes from POIs to hexes
 
-clear-cache:  ## Clear cached network files to force rebuild
-	@echo "Clearing network cache..."
-	rm -f out/anchors/network_*.pkl
-	@echo "✅ Network cache cleared. Next 'make anchors' will rebuild networks."
-
-t-hex: anchors ## Precompute Hex→Anchor travel times (T_hex matrix) and generate anchor indices
-	@echo "Computing T_hex (Hex→Anchor) for Massachusetts..."
-	@mkdir -p data/minutes
-	$(PY) scripts/precompute_t_hex.py \
-		--pbf data/osm/massachusetts.osm.pbf \
-		--anchors out/anchors/anchors_drive.parquet \
+data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet native
+	@echo "--- Computing minutes for $* (drive) ---"
+	$(PY) src/03_compute_minutes_per_state.py \
+		--pbf data/osm/$*.osm.pbf \
+		--pois data/poi/$*_canonical.parquet \
 		--mode drive \
-		--res 8 \
-		--cutoff 90 \
-		--batch-size 250 \
-		--k-pass-mode \
-		--anchor-index-out out/anchors/anchor_index_drive.parquet \
-		--out data/minutes/massachusetts_hex_to_anchor_drive.parquet
-	$(PY) scripts/precompute_t_hex.py \
-		--pbf data/osm/massachusetts.osm.pbf \
-		--anchors out/anchors/anchors_walk.parquet \
-		--mode walk \
-		--res 8 \
 		--cutoff 30 \
-		--k-pass-mode \
-		--anchor-index-out out/anchors/anchor_index_walk.parquet \
-		--out data/minutes/massachusetts_hex_to_anchor_walk.parquet
-	@echo "✅ T_hex matrices complete."
+		--res 7 8 \
+		--out-times $@ \
+		--out-sites data/minutes/$*_drive_sites.parquet
 
-d-anchor: t-hex ## Precompute Anchor→Category travel times (D_anchor matrix)
-	@echo "Computing D_anchor (Anchor→Category) for Massachusetts..."
-	$(PY) scripts/precompute_d_anchor.py \
-		--pbf data/osm/massachusetts.osm.pbf \
-		--anchors out/anchors/anchors_drive.parquet \
-		--mode drive \
-		--state massachusetts \
-		--categories $(CATEGORIES) \
-		--anchor-index out/anchors/anchor_index_drive.parquet \
-		--out data/minutes/
-	$(PY) scripts/precompute_d_anchor.py \
-		--pbf data/osm/massachusetts.osm.pbf \
-		--anchors out/anchors/anchors_walk.parquet \
-		--mode walk \
-		--state massachusetts \
-		--categories $(CATEGORIES) \
-		--anchor-index out/anchors/anchor_index_walk.parquet \
-		--out data/minutes/
-	@echo "✅ D_anchor matrices complete."
+# data/minutes/%_walk_t_hex.parquet: data/poi/%_canonical.parquet native
+# 	@echo "--- Computing minutes for $* (walk) ---"
+# 	$(PY) src/03_compute_minutes_per_state.py \
+# 		--pbf data/osm/$*.osm.pbf \
+# 		--pois data/poi/$*_canonical.parquet \
+# 		--mode walk \
+# 		--cutoff 20 \
+# 		--res 7 8 \
+# 		--out-times $@ \
+# 		--out-sites data/minutes/$*_walk_sites.parquet
 
-geojson: t-hex ## Convert T_hex parquet matrices to GeoJSON
-	@echo "Converting T_hex matrices to GeoJSON..."
+merge: minutes  ## 4. Merge per-state data and create summaries
+	$(PY) src/04_merge_states.py
+
+geojson: merge  ## 5. Convert summary parquet to GeoJSON for tiling
 	@mkdir -p tiles
-	$(PY) scripts/05_h3_to_geojson.py \
-		--input data/minutes/massachusetts_hex_to_anchor_drive.parquet \
-		--output tiles/massachusetts_drive.geojson.nd
-	$(PY) scripts/05_h3_to_geojson.py \
-		--input data/minutes/massachusetts_hex_to_anchor_walk.parquet \
-		--output tiles/massachusetts_walk.geojson.nd
-	@echo "✅ GeoJSON conversion complete."
+	# The input will be the summarized parquet from the merge step.
+	# This needs to be updated once the merge step is implemented.
+	$(PY) src/05_h3_to_geojson.py \
+		--input state_tiles/us_r7.parquet \
+		--output tiles/us_r7.geojson
+	$(PY) src/05_h3_to_geojson.py \
+		--input state_tiles/us_r8.parquet \
+		--output tiles/us_r8.geojson
 
-tiles: geojson ## Build PMTiles from GeoJSON
-	@echo "Building PMTiles from GeoJSON..."
-	$(PY) scripts/06_build_tiles.py \
-		--input tiles/massachusetts_drive.geojson.nd \
-		--output tiles/massachusetts_drive.pmtiles \
-		--layer massachusetts_hex_to_anchor_drive
-	$(PY) scripts/06_build_tiles.py \
-		--input tiles/massachusetts_walk.geojson.nd \
-		--output tiles/massachusetts_walk.pmtiles \
-		--layer massachusetts_hex_to_anchor_walk
-	@echo "✅ PMTiles build complete."
+tiles: geojson  ## 6. Build vector tiles (PMTiles)
+	@mkdir -p tiles/web
+	$(PY) src/06_build_tiles.py \
+		--input tiles/us_r7.geojson \
+		--output tiles/us_r7.pmtiles \
+		--layer us_r7 \
+		--minzoom 4 --maxzoom 8
+	$(PY) src/06_build_tiles.py \
+		--input tiles/us_r8.geojson \
+		--output tiles/us_r8.pmtiles \
+		--layer us_r8 \
+		--minzoom 8 --maxzoom 12
 
-juris: ## Build jurisdictions NDJSON for Massachusetts
-	@echo "Building jurisdictions NDJSON..."
-	$(PY) scripts/07_build_jurisdictions.py --state-fips 25 --ndjson tiles/ma_jurisdictions.geojson.nd
-	@echo "✅ Jurisdictions NDJSON ready."
+export-csv: merge ## 7. Export summary data to CSV
+	@mkdir -p state_tiles
+	$(PY) src/07_export_csv.py \
+		--input state_tiles/us_r7.parquet \
+		--output state_tiles/us_r7.csv
+	$(PY) src/07_export_csv.py \
+		--input state_tiles/us_r8.parquet \
+		--output state_tiles/us_r8.csv
 
-juris-tiles: juris ## Build PMTiles for jurisdictions
-	@echo "Building jurisdictions PMTiles..."
-	$(PY) scripts/06_build_tiles.py \
-		--input tiles/ma_jurisdictions.geojson.nd \
-		--output tiles/ma_jurisdictions.pmtiles \
-		--layer ma_jurisdictions
-	@echo "✅ Jurisdictions PMTiles ready."
+all: tiles export-csv  ## Run the full data pipeline
+	@echo "✅ Full pipeline complete."
 
-serve:  ## Start the FastAPI API server
-	@echo "Starting TownScout API server..."
-	@echo "Access frontend at: http://localhost:5174/"
-	TS_DATA_DIR=data/minutes TS_STATE=massachusetts .venv/bin/uvicorn api.app.main:app --host 0.0.0.0 --port 5174
+# ========== Housekeeping ==========
 
-# ========== SHORTCUTS ==========
+clean:  ## Clean all generated data files
+	rm -rf data/osm/*.pbf data/overture/*.parquet data/poi/*.parquet data/minutes/*.parquet
+	rm -rf state_tiles/*.parquet state_tiles/*.csv
+	rm -rf tiles/*.geojson tiles/*.mbtiles tiles/*.pmtiles
+	rm -rf data/osm/cache
 
-all: clean pbf pois anchors t-hex d-anchor geojson tiles serve  ## Full fresh build of the anchor-matrix pipeline and start the server
-
-quick: anchors t-hex d-anchor geojson tiles serve  ## Skip downloads, build anchors and serve
-
-fresh: clear-cache anchors t-hex d-anchor geojson tiles ## Clear cache and rebuild everything
-
-clean:  ## Clean generated data files
-	rm -rf data/osm/*.pbf data/poi/*.parquet data/minutes/*.parquet
-	rm -rf out/anchors/*.parquet out/anchors/*.html out/anchors/*.pkl
-	rm -rf state_tiles/*.parquet tiles/*.geojson tiles/*.mbtiles tiles/*.pmtiles
+serve: ## Serve the frontend locally
+	@echo "Serving frontend at http://localhost:5173/tiles/web/index.html"
+	python3 -m http.server 5173
 
 .PHONY: clean-graph
 clean-graph:

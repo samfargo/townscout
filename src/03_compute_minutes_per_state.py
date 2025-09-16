@@ -38,10 +38,103 @@ import pyarrow.parquet as pq
 from pyrosm import OSM
 from scipy.spatial import cKDTree
 from tqdm import tqdm
+import uuid
+import polars as pl
 
-from src import util_h3, util_osm, config
+from graph.csr_export import graph_to_csr
+from t_hex import kbest_multisource_csr
+import util_h3
+import util_osm
+import config
 
 SNAPSHOT_TS = time.strftime("%Y-%m-%d")
+
+
+def build_anchor_sites(
+    canonical_pois: gpd.GeoDataFrame, G: nx.MultiDiGraph, mode: str
+) -> pd.DataFrame:
+    """
+    Builds anchor sites from canonical POIs by snapping them to the nearest graph nodes.
+
+    Args:
+        canonical_pois: GeoDataFrame of canonical POIs.
+        G: The road network graph.
+        mode: The travel mode ('drive' or 'walk').
+
+    Returns:
+        A DataFrame of anchor sites with schema from OVERHALL.md.
+    """
+    print(f"--- Building anchor sites for {mode} mode ---")
+    if canonical_pois.empty or not G.nodes:
+        print("[warn] Canonical POIs or graph is empty. No anchor sites will be built.")
+        return pd.DataFrame()
+    
+    # 1. Build a KD-tree from the graph nodes.
+    print(f"[info] Building KD-tree from {len(G.nodes)} graph nodes...")
+    node_ids, tree, lat0, m_per_deg = build_node_kdtree(G)
+    
+    # 2. For each POI, find the nearest node_id.
+    print(f"[info] Snapping {len(canonical_pois)} POIs to nearest graph nodes...")
+    poi_coords = np.c_[
+        (canonical_pois.geometry.x.to_numpy() * np.cos(lat0)) * m_per_deg,
+        canonical_pois.geometry.y.to_numpy() * m_per_deg,
+    ]
+    
+    # Query the tree for nearest neighbors. dists are in meters.
+    dists, indices = tree.query(poi_coords, k=1)
+    
+    pois_with_nodes = canonical_pois.copy()
+    pois_with_nodes['node_id'] = node_ids[indices]
+    pois_with_nodes['snap_dist_m'] = dists
+    
+    # Filter out POIs that are too far from the graph
+    MAX_SNAP_DISTANCE_M = 250 if mode == 'drive' else 75
+    pois_with_nodes = pois_with_nodes[pois_with_nodes['snap_dist_m'] <= MAX_SNAP_DISTANCE_M]
+    print(f"[info] {len(pois_with_nodes)} POIs snapped within {MAX_SNAP_DISTANCE_M}m of the graph.")
+
+    # 3. Group POIs by node_id to create sites.
+    print("[info] Grouping POIs into anchor sites...")
+    
+    # Define aggregations
+    aggs = {
+        'poi_id': lambda x: list(x),
+        'brand_id': lambda x: list(x.dropna().unique()),
+        'category': lambda x: list(x.dropna().unique()),
+    }
+    
+    sites = pois_with_nodes.groupby('node_id').agg(aggs).reset_index()
+    
+    # 4. Add node coordinates and generate a stable site_id.
+    node_coords = pd.DataFrame(
+        [ (nid, data['x'], data['y']) for nid, data in G.nodes(data=True) ],
+        columns=['node_id', 'lon', 'lat']
+    ).set_index('node_id')
+
+    sites = sites.join(node_coords, on='node_id')
+    
+    # Generate site_id
+    sites['site_id'] = sites.apply(
+        lambda row: str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{mode}|{row['node_id']}")),
+        axis=1
+    )
+    
+    # Rename columns to match the old 'anchors_df' structure for now.
+    # The rest of the script expects 'id' for stable id. This can be cleaned up later.
+    # The OVERHAUL.md schema for sites is also more complex, this is a starting point.
+    sites = sites.rename(columns={
+        'poi_id': 'poi_ids',
+        'brand_id': 'brands',
+        'category': 'categories',
+    })
+    
+    # Reorder columns and select the ones needed for the rest of the pipeline
+    final_cols = ['site_id', 'node_id', 'lon', 'lat', 'poi_ids', 'brands', 'categories']
+    sites = sites[final_cols]
+    
+    print(f"[ok] Built {len(sites)} anchor sites from {len(pois_with_nodes)} POIs.")
+
+    return sites
+
 
 # -----------------------------
 # Sentinels & provenance flags
@@ -423,273 +516,202 @@ def k_pass_dijkstra(
 
 
 # -----------------------------
+# Reduce to long-format travel times
+# -----------------------------
+def reduce_to_long_format(
+    hex_pairs: Dict[str, List[Tuple[np.uint16, int]]], K: int
+) -> pd.DataFrame:
+    """
+    From raw hex->[(secs, anchor_id)] pairs, produce a long-format DataFrame:
+    h3_id (uint64), site_id (int32), time_s (uint16)
+    
+    This version simplifies the output to be a pure long-format table,
+    which is easier to process in the merge step.
+    """
+    print(f"[reduce] Processing {len(hex_pairs)} hexes into long format...")
+    rows = []
+    for h, pairs in hex_pairs.items():
+        # Deduplicate and sort to get the best time for each anchor, then take top K overall.
+        # This ensures we don't have multiple entries for the same hex-anchor pair
+        # while still limiting the total number of connections per hex to K.
+        best_pairs = _dedupe_sort_topk(pairs, K)
+        
+        h3_uint64 = cell_to_uint64(h)
+        for secs, anchor_int_id in best_pairs:
+            rows.append({
+                "h3_id": h3_uint64,
+                "site_id": np.int32(anchor_int_id),
+                "time_s": secs,
+            })
+
+    if not rows:
+        return pd.DataFrame({
+            "h3_id": pd.Series([], dtype="uint64"),
+            "site_id": pd.Series([], dtype="int32"),
+            "time_s": pd.Series([], dtype="uint16"),
+        })
+
+    return pd.DataFrame(rows)
+
+
+# -----------------------------
 # Main
 # -----------------------------
 def main():
-    ap = argparse.ArgumentParser(description="Precompute Hex→Anchor seconds (T_hex) with true global top-K")
+    ap = argparse.ArgumentParser(description="Precompute travel times from POIs to H3 hexes.")
     ap.add_argument("--pbf", required=True, help="Path to .pbf extract")
-    ap.add_argument("--anchors", required=True,
-                    help="Parquet with anchors; must have columns: id (stable), node_id (int), [mode]")
+    ap.add_argument("--pois", required=True,
+                    help="Parquet with canonical POIs for the state.")
     ap.add_argument("--mode", required=True, choices=["drive", "walk"])
     ap.add_argument("--res", nargs="+", type=int, default=[8], help="H3 resolutions (e.g., 8 9)")
-    ap.add_argument("--cutoff", type=int, default=90, help="Cutoff MINUTES for node→anchor leg")
-    ap.add_argument("--k-best", type=int, default=2, help="K anchors per hex to keep")
-    ap.add_argument("--borrow-neighbors", action="store_true", help="Borrow neighbors for sparse/empty hexes")
-    ap.add_argument("--out", required=True, help="Output Parquet path for T_hex")
-    ap.add_argument("--anchor-index-out", default="", help="Optional: write anchor_int_id index parquet here")
+    ap.add_argument("--cutoff", type=int, default=30, help="Cutoff MINUTES for node→anchor leg")
+    ap.add_argument("--k-best", type=int, default=5, help="Max anchors per hex to keep")
+    ap.add_argument("--out-times", required=True, help="Output Parquet path for long-format travel times (t_hex)")
+    ap.add_argument("--out-sites", required=True, help="Output Parquet path for the generated anchor sites")
     ap.add_argument("--simplify-graph", action="store_true", help="Simplify graph before routing")
     ap.add_argument("--batch-size", type=int, default=500, help="Batch size for anchor processing (default: 500)")
     ap.add_argument("--k-pass-mode", action="store_true", help="Use K-pass single-label Dijkstra for ultimate memory efficiency")
-    ap.add_argument("--memory-bailout", action="store_true", help="Automatically reduce batch size on memory pressure")
     args = ap.parse_args()
 
-    # Load and validate anchors
-    print("[info] Loading anchor data...")
-    anchors_df = pd.read_parquet(args.anchors)
-    if "node_id" not in anchors_df.columns:
-        raise ValueError("Anchors parquet must contain 'node_id' column")
-    if "id" not in anchors_df.columns:
-        raise ValueError("Anchors parquet must contain 'id' column for stable IDs")
-
-    # Create anchor mappings
-    # stable id (string) -> integer id (for compact parquet)
-    # node_id -> integer_id
-    anchors_df = anchors_df.sort_values("id").reset_index(drop=True)
-    anchors_df["anchor_int_id"] = anchors_df.index.astype(np.int32)
-    node_to_anchor_int = anchors_df.set_index("node_id")["anchor_int_id"].to_dict()
-    int_to_stable = anchors_df[["anchor_int_id", "id"]].rename(columns={"id": "stable_id"})
-
+    # Load canonical POIs
+    print("[info] Loading canonical POI data...")
+    if not os.path.exists(args.pois):
+        raise FileNotFoundError(f"Canonical POI file not found at {args.pois}")
+    
+    # Robustly load GeoParquet file, but without setting CRS to avoid pyproj error
+    df = pd.read_parquet(args.pois)
+    canonical_pois_gdf = gpd.GeoDataFrame(
+        df.drop(columns=['geometry']), 
+        geometry=gpd.GeoSeries.from_wkb(df['geometry'])
+    )
 
     # Load graph using the centralized utility function
     G = util_osm.load_graph(args.pbf, args.mode)
     
-    # Make sure travel_time exists and is compact
-    try:
-        from osmnx import distance as oxd, speed as oxs
-        G = oxd.add_edge_lengths(G)
-        G = oxs.add_edge_speeds(G)
-        G = oxs.add_edge_travel_times(G)
-    except Exception:
-        try: G = ox.add_edge_lengths(G)
-        except: pass
-        try: G = ox.add_edge_speeds(G)
-        except: pass
-        try: G = ox.add_edge_travel_times(G)
-        except: pass
+    # Build Anchor Sites from POIs
+    # This replaces the old logic of loading pre-made anchors.
+    anchors_df = build_anchor_sites(canonical_pois_gdf, G, args.mode)
+    
+    if anchors_df.empty:
+        raise SystemExit("No anchor sites could be built. Aborting.")
 
-    # Compact attribute to float32 to shrink heap usage when copied around
-    print("[info] Compacting edge travel_time attributes to float32...")
-    for u, v, k, d in G.edges(keys=True, data=True):
-        if "travel_time" in d:
-            d["travel_time"] = np.float32(d["travel_time"])
+    # Save the generated anchor sites for the merge step
+    os.makedirs(os.path.dirname(args.out_sites) or ".", exist_ok=True)
+    anchors_df.to_parquet(args.out_sites, index=False)
+    print(f"[ok] Saved {len(anchors_df)} anchor sites to {args.out_sites}")
 
-    if args.simplify_graph:
-        print("[info] Simplifying graph...")
-        G_s = ox.simplify_graph(G)
-        print(f"[info] Simplified graph from {len(G.nodes)} to {len(G_s.nodes)} nodes.")
-        
-        # Recompute lengths/speeds after simplification
-        try:
-            from osmnx import distance as oxd, speed as oxs
-            G_s = oxd.add_edge_lengths(G_s)
-            G_s = oxs.add_edge_speeds(G_s)
-            G_s = oxs.add_edge_travel_times(G_s)
-        except Exception:
-            # older OSMnx fallbacks
-            try: G_s = ox.add_edge_lengths(G_s)
-            except: pass
-            try: G_s = ox.add_edge_speeds(G_s)
-            except: pass
-            try: G_s = ox.add_edge_travel_times(G_s)
-            except: pass
+    # --- Start of new native implementation ---
 
-        # Compact simplified graph edge attributes too
-        print("[info] Compacting simplified graph edge travel_time attributes...")
-        for u, v, k, d in G_s.edges(keys=True, data=True):
-            if "travel_time" in d:
-                d["travel_time"] = np.float32(d["travel_time"])
+    # 1. Export graph to CSR format
+    print("[info] Exporting graph to CSR format...")
+    nodes, indptr, indices, w_sec, node_lats, node_lons, nid_to_idx = graph_to_csr(G, "travel_time")
+    del G  # Free up memory
+    gc.collect()
 
-        # Check anchor presence on simplified graph
-        present_nodes_mask_s = anchors_df["node_id"].isin(G_s.nodes)
-        missing_on_simplified = anchors_df[~present_nodes_mask_s]
+    # 2. Build anchor mappings aligned to CSR indices
+    print("[info] Mapping anchor sites to CSR node indices...")
+    anchors_df = anchors_df.sort_values("site_id").reset_index(drop=True)
+    anchors_df["anchor_int_id"] = anchors_df.index.astype(np.int32)
 
-        if not missing_on_simplified.empty:
-            print(f"[info] Remapping {len(missing_on_simplified)} anchors dropped by simplification...")
-            # build KDTree on simplified graph in meters (not raw degrees)
-            node_ids_s = np.array(list(G_s.nodes), dtype=object)
-            xs = np.array([G_s.nodes[n]["x"] for n in node_ids_s], dtype="float64")
-            ys = np.array([G_s.nodes[n]["y"] for n in node_ids_s], dtype="float64")
-            lat0 = float(np.deg2rad(np.mean(ys))); m_per_deg = 111000.0
-            X_s = np.c_[(xs * np.cos(lat0)) * m_per_deg, ys * m_per_deg]
-            tree_s = cKDTree(X_s)
+    anchor_idx = np.full(len(nodes), -1, dtype=np.int32)
+    for node_id, aint in anchors_df[["node_id","anchor_int_id"]].itertuples(index=False):
+        j = nid_to_idx.get(node_id)
+        if j is not None:
+            anchor_idx[j] = aint
 
-            # get missing anchor coords from the original (pre-simplify) graph
-            missing_ids = missing_on_simplified["node_id"].tolist()
-            ax = np.array([G.nodes[n]["x"] for n in missing_ids], dtype="float64")
-            ay = np.array([G.nodes[n]["y"] for n in missing_ids], dtype="float64")
-            A = np.c_[(ax * np.cos(lat0)) * m_per_deg, ay * m_per_deg]
+    source_idxs = np.flatnonzero(anchor_idx >= 0).astype(np.int32)
+    print(f"[info] Found {len(source_idxs)} valid anchor source nodes in the graph.")
 
-            _, idx = tree_s.query(A, k=1)
-            anchors_df.loc[missing_on_simplified.index, "node_id"] = node_ids_s[idx]
-            node_to_anchor_int = anchors_df.set_index("node_id")["anchor_int_id"].to_dict()
-            print(f"[info] Remapped {len(missing_on_simplified)} anchors to nearest nodes in simplified graph.")
-        
-        G = G_s # Use simplified graph for routing
+    if not source_idxs.any():
+        raise SystemExit("No valid anchor nodes found in the graph. Aborting.")
 
-    # Prepare metadata to embed in output
+    # 3. Call the native kernel
+    print(f"[info] Calling native kernel for k-best search (k={args.k_best}, cutoff={args.cutoff} min)...")
+    cutoff_s = int(args.cutoff) * 60
+    K = int(args.k_best)
+    
+    best_src_idx, time_s = kbest_multisource_csr(
+        indptr, indices, w_sec, source_idxs, K, cutoff_s, os.cpu_count()
+    )
+
+    # Map source node indices back to the stable anchor_int_id
+    print("[info] Mapping results back to anchor IDs...")
+    best_anchor_int = np.where(best_src_idx >= 0, anchor_idx[best_src_idx], -1).astype(np.int32)
+
+    # 4. Vectorized node->H3 reduction using Polars
+    print("[info] Aggregating results into H3 hexes using Polars...")
+
+    # Precompute node->hex per res once
+    hex_by_res: Dict[int, np.ndarray] = {}
+    for r in args.res:
+        hex_by_res[r] = np.array([
+            h3.latlng_to_cell(float(lat), float(lon), r)
+            for lat, lon in zip(node_lats, node_lons)
+        ], dtype=np.uint64)
+
+    out_parts = []
+    for r in args.res:
+        print(f"[info] Processing resolution {r}...")
+        Hn = hex_by_res[r]  # [N]
+
+        # Build long form without huge global repeats if possible
+        # Fall back to simple approach for now; optimize if memory hits
+        H = np.repeat(Hn, K)
+        A = best_anchor_int.ravel()
+        T = time_s.ravel()
+
+        M = (A >= 0) & (T < UNREACH_U16)
+        df = (
+            pl.DataFrame({"h3_id": H[M], "site_id": A[M], "time_s": T[M]})
+              .with_columns(pl.col("time_s").cast(pl.UInt16))
+        )
+
+        # Min per (hex, site), then per-hex top-K using group-wise sort
+        df_min = (
+            df.group_by(["h3_id", "site_id"])  # dedup
+              .agg(pl.min("time_s").alias("time_s"))
+              .with_columns(pl.col("time_s").cast(pl.UInt16))
+        )
+
+        df_topk = (
+            df_min.group_by("h3_id").agg([
+                pl.col("site_id").sort_by("time_s").head(K).alias("site_id"),
+                pl.col("time_s").sort_by("time_s").head(K).alias("time_s"),
+            ]).explode(["site_id", "time_s"]).with_columns([
+                pl.lit(args.mode).alias("mode"),
+                pl.lit(np.int32(r)).alias("res"),
+                pl.lit(SNAPSHOT_TS).alias("snapshot_ts"),
+            ])
+        )
+        out_parts.append(df_topk)
+
+    out_df = pl.concat(out_parts)
+    print(f"[info] Aggregation complete. Total rows: {len(out_df)}")
+
+    # 5. Save final output
+    os.makedirs(os.path.dirname(args.out_times) or ".", exist_ok=True)
+
+    print(f"[info] Writing final output to {args.out_times}...")
+    table = out_df.to_arrow()
+
     metadata = {
         "source_pbf": os.path.basename(args.pbf),
         "mode": args.mode,
         "k_best": str(args.k_best),
         "cutoff_minutes": str(args.cutoff),
-        "borrow_neighbors": str(args.borrow_neighbors),
-        "graph_config": str(config.GRAPH_CONFIG.get(args.mode, {})),
-        "simplify_graph": str(args.simplify_graph),
         "creation_date": SNAPSHOT_TS,
         "dataset_version": config.DATASET_VERSION,
-        "id_space": "anchor_int_id",
     }
-
-    # Guardrail: Check that most anchors are actually in the graph
-    anchor_nodes = anchors_df["node_id"].unique()
-    present_nodes_mask = anchors_df["node_id"].isin(G.nodes)
-    present_nodes = anchors_df.loc[present_nodes_mask, "node_id"].unique()
-    present_pct = len(present_nodes) / len(anchor_nodes) * 100 if len(anchor_nodes) > 0 else 0
-    print(f"[guardrail] Anchor presence in graph: {present_pct:.1f}% ({len(present_nodes)} / {len(anchor_nodes)})")
-    if present_pct < 80.0:
-        print("[warning] Low anchor coverage. Many sources will be dropped. Consider re-running without --simplify-graph or checking anchor quality.")
-
-
-    # Prepare global collectors per res
-    global_hex_pairs_by_res: Dict[int, Dict[str, List[Tuple[np.uint16, int]]]] = {
-        r: defaultdict(list) for r in args.res
-    }
-
-    # Choose algorithm based on memory mode
-    all_source_nodes = [int(n) for n in anchors_df["node_id"].unique() if n in G]
-    
-    if not all_source_nodes:
-        raise SystemExit("No valid anchor nodes found in the graph. Aborting.")
-
-    if args.k_pass_mode:
-        # Ultimate memory efficiency: K-pass single-label Dijkstra
-        print(f"[info] Running K-pass single-label Dijkstra from {len(all_source_nodes)} anchors...")
-        node_best = k_pass_dijkstra(G, all_source_nodes, "travel_time", 
-                                   cutoff_s=args.cutoff * 60, k_best=args.k_best)
-    else:
-        # Memory-efficient batched multi-label Dijkstra
-        print(f"[info] Running batched multi-source Dijkstra from {len(all_source_nodes)} anchors...")
-        
-        batch_size = min(args.batch_size, len(all_source_nodes))  # Limit batch size to control memory
-        node_best = {}
-        
-        for i in range(0, len(all_source_nodes), batch_size):
-            batch_nodes = all_source_nodes[i:i + batch_size]
-            print(f"[info] Processing batch {i//batch_size + 1}/{(len(all_source_nodes) + batch_size - 1)//batch_size}: "
-                  f"{len(batch_nodes)} anchors (nodes {i+1}-{min(i+batch_size, len(all_source_nodes))})")
-            
-            batch_results = multi_source_kbest(G, batch_nodes, "travel_time", 
-                                             cutoff_s=args.cutoff * 60, k_best=args.k_best)
-            
-            # Merge batch results into global results, maintaining k-best per node
-            for node_id, batch_labels in batch_results.items():
-                if node_id not in node_best:
-                    node_best[node_id] = batch_labels
-                else:
-                    # Merge and keep top-k
-                    combined = node_best[node_id] + batch_labels
-                    combined.sort(key=lambda t: t[0])  # sort by seconds
-                    node_best[node_id] = combined[:args.k_best]
-            
-            # Memory cleanup
-            del batch_results
-            gc.collect()
-            
-            print(f"[info] Batch {i//batch_size + 1} complete. Total nodes with results: {len(node_best)}")
-
-    if not node_best:
-        raise SystemExit(f"No coverage found within cutoff of {args.cutoff} minutes.")
-
-    # Quick QA of the global run
-    secs0 = [labels[0][0] for labels in node_best.values() if labels]
-    if secs0:
-        med = float(np.median(secs0))
-        p95 = float(np.percentile(secs0, 95))
-        print(f"[QA] node→nearest anchor: median={med:.0f}s p95={p95:.0f}s")
-
-    # Collect results into hex buckets for each resolution
-    print("[info] Collecting results into H3 hexes...")
-    for r in args.res:
-        bucket = collect_hex_pairs(G, node_best, node_to_anchor_int, res=r)
-        # Directly assign to the global collector, no merging needed
-        global_hex_pairs_by_res[r] = bucket
-
-
-    # Build final per-res DataFrames with borrowing + global top-K
-    out_parts = []
-    for r in args.res:
-        print(f"[reduce] res={r} borrowing={args.borrow_neighbors}")
-        T_hex = reduce_with_borrowing(global_hex_pairs_by_res[r], K=args.k_best,
-                                      borrow_neighbors=args.borrow_neighbors)
-        if not len(T_hex):
-            continue
-        T_hex["mode"] = args.mode
-        T_hex["res"] = np.int32(r)
-        T_hex["snapshot_ts"] = SNAPSHOT_TS
-        out_parts.append(T_hex)
-
-        # QA per res from hex table
-        a0 = T_hex["a0_s"].replace({NODATA_U16: np.nan, UNREACH_U16: np.nan}).astype("float")
-        med = float(np.nanmedian(a0)) if np.isfinite(a0).any() else float("nan")
-        p95 = float(np.nanpercentile(a0, 95)) if np.isfinite(a0).any() else float("nan")
-        pct_k = 100.0 * float((T_hex["k"] >= args.k_best).mean()) if len(T_hex) else 0.0
-        print(f"[QA] res={r} a0_s median={med:.0f}s p95={p95:.0f}s  hexes with ≥{args.k_best} anchors={pct_k:.1f}%")
-
-    if not out_parts:
-        raise SystemExit("No output produced; check anchors/graph/cutoff.")
-
-    out_df = pd.concat(out_parts, ignore_index=True)
-
-    # Final column order
-    cols = ["h3_id", "k", "prov"]
-    for k in range(args.k_best):
-        cols += [f"a{k}_id", f"a{k}_s", f"a{k}_flags"]
-    cols += ["mode", "res", "snapshot_ts"]
-    out_df = out_df[cols]
-
-    # Schema validation
-    for i in range(args.k_best):
-        assert out_df.dtypes[f"a{i}_s"] == "uint16"
-        assert out_df.dtypes[f"a{i}_id"] == "int32"
-        assert out_df.dtypes[f"a{i}_flags"] == "uint8"
-    assert out_df.dtypes["k"] == "uint8"
-
-    # Write T_hex parquet
-    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    
-    table = pa.Table.from_pandas(out_df, preserve_index=False)
-    
-    # Add metadata
     metadata_bytes = {k: v.encode('utf-8') for k, v in metadata.items()}
     table = table.replace_schema_metadata(metadata_bytes)
 
     pq.write_table(
         table,
-        args.out,
+        args.out_times,
         compression="zstd",
         use_dictionary=True
     )
-    print(f"[ok] wrote {args.out}  rows={len(out_df)}  (one row per hex per res)")
-
-    # Optional: write anchor index parquet (int32 → stable id)
-    if not args.anchor_index_out:
-        args.anchor_index_out = os.path.splitext(args.out)[0] + ".anchor_index.parquet"
-
-    if args.anchor_index_out:
-        os.makedirs(os.path.dirname(args.anchor_index_out) or ".", exist_ok=True)
-        int_to_stable.to_parquet(args.anchor_index_out, index=False)
-        print(f"[ok] wrote anchor index → {args.anchor_index_out} "
-              f"(rows={len(int_to_stable)})")
+    print(f"[ok] wrote {args.out_times}  rows={len(out_df)}  (long format)")
 
 
 if __name__ == "__main__":

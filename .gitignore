@@ -63,3 +63,10 @@ dump.rdb
 *.pkl
 *.parquet
 *.nd
+*.o
+*.d
+*.bin
+*.rlib
+*.rmeta
+*.json
+townscout_native/target/debug

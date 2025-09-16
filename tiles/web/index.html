@@ -40,8 +40,18 @@
 <body>
 <div class="panel">
   <h3>TownScout Criteria</h3>
-  <div id="filters"></div>
-  <div id="status" class="status"></div>
+  <div id="filters">
+    <div class="row">
+      <label for="chipotle_drive_min">Chipotle (minutes)</label>
+      <input id="chipotle_drive_min" type="range" min="5" max="45" step="5" value="15">
+      <span id="chipotle_drive_min_v">15</span>
+    </div>
+    <div class="row">
+      <label for="costco_drive_min">Costco (minutes)</label>
+      <input id="costco_drive_min" type="range" min="5" max="60" step="5" value="20">
+      <span id="costco_drive_min_v">20</span>
+    </div>
+  </div>
   <div id="nudge" class="nudge">Try increasing minutes to see more areas.</div>
   <button id="share" style="width: 100%; margin-top: 10px; padding: 5px;">Share Map</button>
 </div>
@@ -49,16 +59,8 @@
 <div id="map"></div>
 
 <div id="hover-box" class="hover-box">
-  <h4>Hover Info</h4>
+  <h4>Drive Time (minutes)</h4>
   <div id="hover-content" class="muted">Move cursor over a hex</div>
-  <div id="hover-rows"></div>
-  <div id="hover-note" class="muted"></div>
- </div>
-
-<div id="towns-box" class="towns-box" style="display:none;">
-  <h4>Qualifying towns (view)</h4>
-  <div id="towns-note" class="muted"></div>
-  <ul id="towns-list"></ul>
 </div>
 
 <div class="footer">
@@ -70,18 +72,8 @@
   let protocol = new pmtiles.Protocol();
   maplibregl.addProtocol("pmtiles", protocol.tile);
 
-  const T_HEX_R7_URL = "pmtiles:///tiles/t_hex_r7_drive.pmtiles";
-  const T_HEX_R8_URL = "pmtiles:///tiles/t_hex_r8_drive.pmtiles";
-  const D_ANCHOR_API = "http://localhost:5174/api/d_anchor"; // Port from api/app/main.py
-
-  // Store anchor data: { costco: {123: 360, ...}, chipotle: { ... } }
-  const dAnchorState = {};
-  const K_ANCHORS = 4; // Should match precompute_t_hex.py --k-best
-  let LAST_EXPRESSION = 0.2;
-
-  // Dynamic filters
-  let FILTER_CATALOG = [];
-  let SELECTED_FILTER_IDS = []; // array of filter ids (e.g., ['chipotle','costco']) in order added
+  const R7_URL = "pmtiles:///tiles/us_r7.pmtiles";
+  const R8_URL = "pmtiles:///tiles/us_r8.pmtiles";
 
   const map = new maplibregl.Map({
     container: 'map',
@@ -94,152 +86,87 @@
           tileSize: 256,
           attribution: '© OpenStreetMap contributors'
         },
-        't_hex_r7': {
+        'us_r7': {
           type: 'vector',
-          url: T_HEX_R7_URL,
+          url: R7_URL,
           attribution: "TownScout"
         },
-        't_hex_r8': {
+        'us_r8': {
           type: 'vector',
-          url: T_HEX_R8_URL
-        },
-        'juris': {
-          type: 'vector',
-          url: 'pmtiles:///tiles/ma_jurisdictions.pmtiles'
+          url: R8_URL
         }
       },
       layers: [
         { id: 'osm-base', type: 'raster', source: 'osm', paint: { 'raster-opacity': 0.7 } },
         {
-          id: 't_hex_r7_layer',
+          id: 'layer_r7',
           type: 'fill',
-          source: 't_hex_r7',
-          'source-layer': 't_hex_r7_drive', // Must match --layer in 06_build_tiles.py
+          source: 'us_r7',
+          'source-layer': 'us_r7',
           maxzoom: 8,
           paint: {
-            'fill-color': 'rgba(25, 118, 210, 0.5)',
+            'fill-color': '#1976d2',
+            'fill-opacity': 0.5,
             'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
           }
         },
         {
-          id: 't_hex_r8_layer',
+          id: 'layer_r8',
           type: 'fill',
-          source: 't_hex_r8',
-          'source-layer': 't_hex_r8_drive', // Must match --layer in 06_build_tiles.py
+          source: 'us_r8',
+          'source-layer': 'us_r8',
           minzoom: 8,
           paint: {
-            'fill-color': 'rgba(25, 118, 210, 0.5)',
+            'fill-color': '#1976d2',
+            'fill-opacity': 0.5,
             'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
-          }
-        },
-        {
-          id: 'juris-fill-hit',
-          type: 'fill',
-          source: 'juris',
-          'source-layer': 'ma_jurisdictions',
-          paint: {
-            'fill-color': '#000000',
-            'fill-opacity': 0.0
           }
         }
       ]
     },
-    center: [-71.06, 42.36],
-    zoom: 8
+    center: [-98.58, 39.83], // US center
+    zoom: 4
   });
 
-  // ---------- Hover Box Helpers ----------
-  function secondsToMinutesText(seconds) {
-    if (seconds == null || !isFinite(seconds)) return 'N/A';
-    const mins = Math.ceil(seconds / 60);
-    return mins + ' min';
-  }
-
-  function computeCategoryBestSeconds(props, category) {
-    const data = dAnchorState[category];
-    if (!data) return null;
-    let best = Infinity;
-    for (let i = 0; i < K_ANCHORS; i++) {
-      const aIdRaw = props[`a${i}_id`];
-      const aSecsRaw = props[`a${i}_s`];
-      if (aIdRaw == null || aSecsRaw == null) continue;
-      const aId = typeof aIdRaw === 'string' ? parseInt(aIdRaw, 10) : aIdRaw;
-      const aSecs = typeof aSecsRaw === 'string' ? parseInt(aSecsRaw, 10) : aSecsRaw;
-      const anchorToCat = (data[aId] ?? data[String(aId)]);
-      const total = aSecs + (anchorToCat ?? 65535);
-      if (total < best) best = total;
-    }
-    if (!isFinite(best) || best >= 65535) return null;
-    return best;
-  }
-
+  // ---------- Hover Box ----------
   function updateHoverBox(feature) {
     const contentEl = document.getElementById('hover-content');
-    const rowsEl = document.getElementById('hover-rows');
-    const noteEl = document.getElementById('hover-note');
-    if (!feature) {
-      contentEl.textContent = 'Move cursor over a hex';
-      rowsEl.innerHTML = '';
-      noteEl.textContent = '';
+    if (!feature || !feature.properties) {
+      contentEl.innerHTML = '<span class="muted">Move cursor over a hex</span>';
       return;
     }
-    const props = feature.properties || {};
-    contentEl.textContent = '';
-    // Look up town name under cursor using jurisdiction layer
-    try {
-      const hitPoint = feature._point || null;
-      const juris = hitPoint ? map.queryRenderedFeatures(hitPoint, { layers: ['juris-fill-hit'] }) : [];
-      if (juris && juris.length) {
-        const j = juris[0].properties || {};
-        const town = j.juris_name || '';
-        const st = j.state_abbr || '';
-        if (town) {
-          contentEl.textContent = town + (st ? (", " + st) : "");
-        }
-      }
-    } catch (e) {}
-    // Only display selected filters
-    const categories = SELECTED_FILTER_IDS.slice();
-    if (!categories.length) {
-      rowsEl.innerHTML = '';
-      noteEl.textContent = 'Loading data…';
-      return;
-    }
-    const niceName = {
-      chipotle: 'Chipotle',
-      costco: 'Costco',
-      airports: 'Airports',
-      'public-transit': 'Public Transit',
-      'ski-areas': 'Ski Area'
-    };
-    const display = SELECTED_FILTER_IDS.slice();
-    const parts = [];
-    for (const cat of display) {
-      const secs = computeCategoryBestSeconds(props, cat);
-      parts.push(`<div class="kv"><span>${niceName[cat] || cat}</span><span>${secondsToMinutesText(secs)}</span></div>`);
-    }
-    rowsEl.innerHTML = parts.join('');
-    noteEl.textContent = '';
+    const props = feature.properties;
+    const chipotle_min = props.chipotle_drive_min;
+    const costco_min = props.costco_drive_min;
+    
+    let html = '';
+    html += `<div class="kv"><span>Chipotle</span><span>${chipotle_min ? chipotle_min + ' min' : 'N/A'}</span></div>`;
+    html += `<div class="kv"><span>Costco</span><span>${costco_min ? costco_min + ' min' : 'N/A'}</span></div>`;
+    contentEl.innerHTML = html;
   }
+  
+  // ---------- Filter Logic ----------
+  const chipotleSlider = document.getElementById('chipotle_drive_min');
+  const costcoSlider = document.getElementById('costco_drive_min');
+  const chipotleValue = document.getElementById('chipotle_drive_min_v');
+  const costcoValue = document.getElementById('costco_drive_min_v');
 
-  // ---------- Hover Interaction ----------
-  map.on('mousemove', (e) => {
-    try {
-      const layers = ['t_hex_r8_layer', 't_hex_r7_layer'];
-      const features = map.queryRenderedFeatures(e.point, { layers });
-      if (features && features.length) {
-        // Attach the point for jurisdiction lookup
-        const f = features[0];
-        f._point = e.point;
-        updateHoverBox(f);
-      } else {
-        updateHoverBox(null);
-      }
-    } catch (err) {
-      // In case of errors during early load, show placeholder
-      updateHoverBox(null);
-    }
-  });
+  function updateMapFilter() {
+    const chipotleMax = parseInt(chipotleSlider.value, 10);
+    const costcoMax = parseInt(costcoSlider.value, 10);
+    
+    chipotleValue.textContent = chipotleMax;
+    costcoValue.textContent = costcoMax;
+
+    const filter = [
+      "all",
+      ["<=", ["coalesce", ["get", "chipotle_drive_min"], 9999], chipotleMax],
+      ["<=", ["coalesce", ["get", "costco_drive_min"], 9999], costcoMax]
+    ];
+    
+    map.setFilter('layer_r7', filter);
+    map.setFilter('layer_r8', filter);
+  }
 
   function debounce(fn, ms) {
     let timer;
@@ -249,394 +176,51 @@
     };
   }
   
-  function getSliderValues() {
-    const result = {};
-    for (const id of SELECTED_FILTER_IDS) {
-      const el = document.getElementById(id);
-      if (!el) continue;
-      result[id] = +el.value * 60; // convert minutes to seconds
-    }
-    return result;
-  }
+  const debouncedUpdate = debounce(updateMapFilter, 50);
 
-  // ---------- Core Logic: Build Filter Expression ----------
-  function buildFilterExpression(criteria, dAnchorData) {
-    const UNREACHABLE = 65535; // Sentinel for unreachable in uint16
-    const expressions = [];
+  chipotleSlider.addEventListener('input', debouncedUpdate);
+  costcoSlider.addEventListener('input', debouncedUpdate);
 
-    for (const [category, thresholdSecs] of Object.entries(criteria)) {
-      const categoryData = dAnchorData[category];
-      if (!categoryData) continue; // Skip if data not loaded
-
-      // For each category, calculate minimum travel time across all anchors
-      const travelTimeOptions = [];
-      for (let i = 0; i < K_ANCHORS; i++) {
-        // Calculate total travel time: hex→anchor + anchor→category
-        travelTimeOptions.push([
-          "+",
-          ["coalesce", ["get", `a${i}_s`], UNREACHABLE], // hex → anchor travel time
-          ["coalesce", 
-            ["get", ["to-string", ["get", `a${i}_id`]], ["literal", categoryData]], 
-            UNREACHABLE
-          ] // anchor → category travel time
-        ]);
-      }
-      
-      // Take minimum travel time across all anchor options
-      const minTravelTime = ["min", ...travelTimeOptions];
-      
-      // Check if minimum travel time is within threshold
-      expressions.push(["<=", minTravelTime, thresholdSecs]);
-    }
-    
-    if (!expressions.length) {
-      return 0.2; // No filters selected: show low-opacity context
-    }
-
-    // Final expression shows hex if ALL criteria are met
-    return ["case", ["all", ...expressions], 0.8, 0.0]; // opacity
-  }
-
-  // ---------- Main Update Function ----------
-  async function updateMap() {
-    document.getElementById('status').textContent = 'Updating...';
-    
-    const criteria = getSliderValues();
-    const categories = Object.keys(criteria);
-    let needsUpdate = false;
-
-    // Fetch any missing D_anchor data
-    for (const cat of categories) {
-      if (!dAnchorState[cat]) {
-        try {
-          const resp = await fetch(`${D_ANCHOR_API}?category=${cat}&mode=drive`);
-          if (!resp.ok) throw new Error(`API fetch failed for ${cat}: ${resp.status}`);
-          dAnchorState[cat] = await resp.json();
-          needsUpdate = true;
-        } catch (err) {
-          console.error(err);
-          document.getElementById('status').textContent = `Error: ${err.message}`;
-          return;
-        }
-      }
-    }
-    
-    // Only rebuild expression if data changed or it's the first run
-    const expression = buildFilterExpression(criteria, dAnchorState);
-    LAST_EXPRESSION = expression;
-
-    // Apply the same expression to both layers
-    map.setPaintProperty('t_hex_r7_layer', 'fill-opacity', expression);
-    map.setPaintProperty('t_hex_r8_layer', 'fill-opacity', expression);
-
-    // Update towns list based on current view and filters
-    updateQualifyingTowns(expression);
-    
-    // Clear status on success
-    document.getElementById('status').textContent = '';
-    // Note: Nudge logic for "zero results" is harder with this architecture
-    // as we can't easily count visible hexes. A simpler "no data?" nudge is used.
-  }
-
-  function updateQualifyingTowns(expression) {
-    const box = document.getElementById('towns-box');
-    const listEl = document.getElementById('towns-list');
-    const noteEl = document.getElementById('towns-note');
-    listEl.innerHTML = '';
-    noteEl.textContent = '';
-
-    try {
-      // Query visible hex features at current zoom; search both layers, nearest on top
-      const layers = ['t_hex_r8_layer', 't_hex_r7_layer'];
-      const features = map.queryRenderedFeatures(undefined, { layers });
-      if (!features || !features.length) {
-        box.style.display = '';
-        noteEl.textContent = 'No hexes in view';
-        return;
-      }
-
-      // Evaluate opacity expression for each feature to determine if it qualifies
-      const qualifying = [];
-      for (const feat of features) {
-        const props = feat.properties || {};
-        const isShown = evaluateOpacity(expression, props) > 0.0;
-        if (!isShown) continue;
-        // Find jurisdiction intersecting feature approximate centroid
-        const firstRing = (feat.geometry && feat.geometry.coordinates && feat.geometry.coordinates[0]) || [];
-        let cx = 0, cy = 0, n = 0;
-        for (let i = 0; i < firstRing.length; i++) { cx += firstRing[i][0]; cy += firstRing[i][1]; n++; }
-        const lnglat = (n > 0) ? [cx / n, cy / n] : null;
-        const screenPt = lnglat ? map.project(lnglat) : null;
-        const juris = screenPt ? map.queryRenderedFeatures(screenPt, { layers: ['juris-fill-hit'] }) : [];
-        if (juris && juris.length) {
-          const j = juris[0].properties || {};
-          const name = (j.juris_name || '').trim();
-          const st = (j.state_abbr || '').trim();
-          if (name) qualifying.push(st ? `${name}, ${st}` : name);
-        }
-      }
-
-      // Unique & sort
-      const uniq = Array.from(new Set(qualifying)).sort((a,b)=>a.localeCompare(b));
-      if (uniq.length && uniq.length <= 100) {
-        listEl.innerHTML = uniq.map(t => `<li>${t}</li>`).join('');
-        noteEl.textContent = `${uniq.length} town${uniq.length===1?'':'s'} match in view`;
-        box.style.display = '';
-      } else {
-        // Too many or none: keep box visible with explanatory note and blank list
-        listEl.innerHTML = '';
-        if (uniq.length > 100) {
-          noteEl.textContent = `Too many towns (${uniq.length}). Refine filters or zoom.`;
-        } else {
-          noteEl.textContent = 'No matching towns in view';
-        }
-        box.style.display = '';
-      }
-    } catch (e) {
-      listEl.innerHTML = '';
-      noteEl.textContent = '';
-      box.style.display = '';
-    }
-  }
-
-  function evaluateOpacity(expression, props) {
-    // Minimal evaluator for the specific expression structure we generate
-    if (typeof expression === 'number') return expression;
-    if (!Array.isArray(expression)) return 0.0;
-    if (expression[0] === 'case') {
-      const cond = expression[1];
-      const trueVal = expression[2];
-      const falseVal = expression[3];
-      return evaluateCondition(cond, props) ? (typeof trueVal === 'number' ? trueVal : 0.8) : (typeof falseVal === 'number' ? falseVal : 0.0);
-    }
-    return 0.0;
-  }
-
-  function evaluateCondition(expr, props) {
-    if (!Array.isArray(expr)) return false;
-    const op = expr[0];
-    if (op === 'all') {
-      for (let i = 1; i < expr.length; i++) if (!evaluateCondition(expr[i], props)) return false;
-      return true;
-    }
-    if (op === '<=') {
-      const left = evaluateNumeric(expr[1], props);
-      const right = evaluateNumeric(expr[2], props);
-      return left <= right;
-    }
-    if (op === 'min') {
-      let best = Infinity;
-      for (let i = 1; i < expr.length; i++) best = Math.min(best, evaluateNumeric(expr[i], props));
-      return best;
-    }
-    return false;
-  }
-
-  function evaluateNumeric(expr, props) {
-    if (typeof expr === 'number') return expr;
-    if (!Array.isArray(expr)) return (typeof expr === 'string' ? (props[expr] ?? 65535) : 0);
-    const op = expr[0];
-    if (op === '+') return evaluateNumeric(expr[1], props) + evaluateNumeric(expr[2], props);
-    if (op === 'get') {
-      // Two forms:
-      // 1) ['get', 'propName'] -> from props
-      // 2) ['get', keyExpr, objectExpr] -> property lookup from object
-      if (expr.length === 2) return props[expr[1]] ?? 65535;
-      const key = evaluateValue(expr[1], props);
-      const obj = evaluateValue(expr[2], props);
-      if (obj && key != null && Object.prototype.hasOwnProperty.call(obj, key)) return obj[key];
-      // Also try numeric key variant
-      const keyNum = (typeof key === 'string' && /^\d+$/.test(key)) ? parseInt(key, 10) : key;
-      if (obj && keyNum != null && Object.prototype.hasOwnProperty.call(obj, keyNum)) return obj[keyNum];
-      return 65535;
-    }
-    if (op === 'to-string') {
-      const v = evaluateValue(expr[1], props);
-      return (v == null) ? '' : String(v);
-    }
-    if (op === 'literal') {
-      return expr[1];
-    }
-    if (op === 'coalesce') {
-      for (let i = 1; i < expr.length; i++) {
-        const val = evaluateNumeric(expr[i], props);
-        if (val !== undefined && val !== null && isFinite(val)) return val;
-      }
-      return 65535;
-    }
-    if (op === 'match') {
-      // Not used in final numeric path after refactor
-      return 65535;
-    }
-    if (op === 'min') {
-      let best = Infinity;
-      for (let i = 1; i < expr.length; i++) best = Math.min(best, evaluateNumeric(expr[i], props));
-      return best;
-    }
-    return 0;
-  }
-
-  function evaluateValue(expr, props) {
-    if (expr == null) return null;
-    if (typeof expr !== 'object' || !Array.isArray(expr)) return expr;
-    const op = expr[0];
-    if (op === 'get') {
-      if (expr.length === 2) return props[expr[1]];
-      const key = evaluateValue(expr[1], props);
-      const obj = evaluateValue(expr[2], props);
-      return obj ? obj[key] : undefined;
-    }
-    if (op === 'to-string') return String(evaluateValue(expr[1], props));
-    if (op === 'literal') return expr[1];
-    // Fallback to numeric evaluation where sensible
-    return evaluateNumeric(expr, props);
-  }
-  
-  // ---------- UI & Event Listeners ----------
-  function initUI() {
-    const debouncedUpdate = debounce(updateMap, 200);
-    const filtersContainer = document.getElementById('filters');
-
-    function getAvailableOptions() {
-      const chosen = new Set(SELECTED_FILTER_IDS);
-      return FILTER_CATALOG.filter(f => !chosen.has(f.id));
-    }
-
-    function renderDropdownRow() {
-      const options = getAvailableOptions();
-      if (!options.length) return; // no more to add
-      const row = document.createElement('div');
-      row.className = 'row filter-row';
-      const select = document.createElement('select');
-      const defaultOpt = document.createElement('option');
-      defaultOpt.value = '';
-      defaultOpt.textContent = 'Add a filter…';
-      select.appendChild(defaultOpt);
-      options.forEach(opt => {
-        const o = document.createElement('option');
-        o.value = opt.id;
-        o.textContent = opt.name;
-        select.appendChild(o);
-      });
-      row.appendChild(select);
-      filtersContainer.appendChild(row);
-
-      select.addEventListener('change', () => {
-        const id = select.value;
-        if (!id) return;
-        const meta = FILTER_CATALOG.find(f => f.id === id);
-        if (!meta) return;
-        SELECTED_FILTER_IDS.push(id);
-        const sliderRow = addSliderRow(meta, meta.params.initial);
-        filtersContainer.replaceChild(sliderRow, row);
-        renderDropdownRow();
-        updateMap();
-      });
-    }
-
-    function ensureDropdownExists() {
-      const hasSelect = !!filtersContainer.querySelector('select');
-      if (!hasSelect && getAvailableOptions().length) {
-        renderDropdownRow();
-      }
-    }
-
-    function addSliderRow(meta, initialValue) {
-      const { id } = meta;
-      const row = document.createElement('div');
-      row.className = 'row filter-row';
-      row.innerHTML = `
-        <label>${meta.name} ≤ min</label>
-        <input id="${id}" type="range" min="${meta.params.min}" max="${meta.params.max}" step="${meta.params.step}" value="${initialValue}">
-        <span id="${id}_v">${initialValue}</span>
-        <button class="remove-btn" aria-label="Remove ${meta.name}" title="Remove ${meta.name}">✕</button>
-      `;
-      const slider = row.querySelector('input');
-      const out = row.querySelector('span');
-      const removeBtn = row.querySelector('.remove-btn');
-      slider.addEventListener('input', () => { out.textContent = slider.value; debouncedUpdate(); });
-      slider.addEventListener('change', () => { updateMap(); });
-      removeBtn.addEventListener('click', () => {
-        const idx = SELECTED_FILTER_IDS.indexOf(id);
-        if (idx >= 0) SELECTED_FILTER_IDS.splice(idx, 1);
-        row.remove();
-        ensureDropdownExists();
-        updateMap();
-      });
-      return row;
-    }
-
-    // Share button copies only selected filters
-    document.getElementById('share').addEventListener('click', () => {
-      const params = new URLSearchParams();
-      for (const id of SELECTED_FILTER_IDS) {
-        const el = document.getElementById(id);
-        if (el) params.set(id, el.value);
-      }
-      const url = new URL(window.location.href);
-      url.search = params.toString();
-      navigator.clipboard.writeText(url.toString()).then(() => {
-        const btn = document.getElementById('share');
-        const originalText = btn.textContent;
-        btn.textContent = 'Copied!';
-        setTimeout(() => (btn.textContent = originalText), 1500);
-      });
+  // ---------- Share URL ----------
+  document.getElementById('share').addEventListener('click', () => {
+    const params = new URLSearchParams();
+    params.set('chipotle', chipotleSlider.value);
+    params.set('costco', costcoSlider.value);
+    const url = new URL(window.location.href);
+    url.search = params.toString();
+    navigator.clipboard.writeText(url.toString()).then(() => {
+      const btn = document.getElementById('share');
+      const originalText = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => (btn.textContent = originalText), 1500);
     });
-
-    // Initialize with URL params if present
-    const urlParams = new URLSearchParams(window.location.search);
-    const idsInUrl = FILTER_CATALOG.map(f => f.id).filter(id => urlParams.has(id));
-    if (idsInUrl.length) {
-      // Add each from URL in order
-      for (const id of idsInUrl) {
-        const meta = FILTER_CATALOG.find(f => f.id === id);
-        if (!meta) continue;
-        SELECTED_FILTER_IDS.push(id);
-        const val = urlParams.get(id) || meta.params.initial;
-        const sliderRow = addSliderRow(meta, val);
-        filtersContainer.appendChild(sliderRow);
-      }
-      // Allow adding more
-      renderDropdownRow();
-    } else {
-      renderDropdownRow();
-    }
-  }
-
-  async function loadFilterCatalog() {
-    const candidates = [
-      '/schemas/filters.catalog.json',
-      '../../schemas/filters.catalog.json',
-      '../schemas/filters.catalog.json',
-      'schemas/filters.catalog.json'
-    ];
-    for (const url of candidates) {
-      try {
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`Failed to load filter catalog from ${url}`);
-        const data = await resp.json();
-        FILTER_CATALOG = data.filters || [];
-        return;
-      } catch (e) {
-        // try next
-      }
-    }
-    console.error('Error: Failed to load filter catalog');
-    // Fallback to a minimal built-in set
-    FILTER_CATALOG = [
-      { id: 'chipotle', name: 'Chipotle', params: { min: 5, max: 45, step: 5, initial: 15 } },
-      { id: 'costco', name: 'Costco', params: { min: 5, max: 60, step: 5, initial: 20 } },
-      { id: 'airports', name: 'Airports', params: { min: 15, max: 240, step: 15, initial: 60 } },
-      { id: 'public-transit', name: 'Public Transit', params: { min: 5, max: 90, step: 5, initial: 20 } },
-      { id: 'ski-areas', name: 'Ski Areas', params: { min: 15, max: 180, step: 15, initial: 90 } },
-    ];
-  }
-
-  map.on('load', async () => {
-    await loadFilterCatalog();
-    initUI();
-    updateMap(); // Initial map load (no filters => low opacity)
   });
+
+  function applyUrlParams() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('chipotle')) {
+      chipotleSlider.value = params.get('chipotle');
+    }
+    if (params.has('costco')) {
+      costcoSlider.value = params.get('costco');
+    }
+  }
+
+  // ---------- Map Events ----------
+  map.on('load', () => {
+    applyUrlParams();
+    updateMapFilter();
+
+    map.on('mousemove', (e) => {
+      const features = map.queryRenderedFeatures(e.point, { layers: ['layer_r7', 'layer_r8'] });
+      if (features && features.length > 0) {
+        updateHoverBox(features[0]);
+      } else {
+        updateHoverBox(null);
+      }
+    });
+  });
+
 </script>
 </body>
 </html>

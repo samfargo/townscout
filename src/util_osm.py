@@ -2,6 +2,7 @@ import os
 import urllib.request
 import subprocess
 import tempfile
+import shutil
 from typing import List, Dict
 
 import geopandas as gpd
@@ -10,7 +11,7 @@ import osmnx as ox
 from pyrosm import OSM, get_data
 from shapely.geometry import Point
 
-from src import config
+import config
 
 
 def download_geofabrik(state: str, base: str, out_dir="data/osm"):
@@ -292,78 +293,45 @@ def _ensure_node_coords(G: nx.MultiDiGraph) -> nx.MultiDiGraph:
     return G
 
 
-def _build_graph_from_pbf_with_pyrosm(pbf_path: str, network_type: str) -> nx.MultiDiGraph:
+def _build_graph_with_osmnx_from_file(pbf_path: str, network_type: str) -> nx.MultiDiGraph:
+    """Build a NetworkX MultiDiGraph from a local OSM extract using OSMnx only.
+
+    Strategy:
+    1) Try ox.graph_from_file (supports multiple formats in newer OSMnx).
+    2) Fallback: convert PBF to OSM XML via 'osmium' CLI if available, then ox.graph_from_xml.
     """
-    Build a NetworkX MultiDiGraph from a .pbf using Pyrosm for parsing,
-    then OSMnx's graph_from_gdfs for graph construction.
-    """
-    import gc
-    
-    print(f"[graph] Parsing {network_type} network from {os.path.basename(pbf_path)}...")
-    osm = OSM(pbf_path)
+    print(f"[graph] Attempting OSMnx load from file: {os.path.basename(pbf_path)} ({network_type})")
+    G = None
 
-    # Map our network_type to Pyrosm's expected values
-    pyrosm_nt = "driving" if network_type == "drive" else "walking"
+    # 1) Try direct graph_from_file if available
+    try:
+        if hasattr(ox.graph, "graph_from_file"):
+            G = ox.graph.graph_from_file(pbf_path, network_type=network_type, retain_all=False, simplify=False)
+        elif hasattr(ox, "graph_from_file"):
+            # older API style
+            G = ox.graph_from_file(pbf_path, network_type=network_type, retain_all=False, simplify=False)
+    except Exception as e:
+        print(f"[graph] graph_from_file failed: {e}")
+        G = None
 
-    # ✅ Ask for nodes explicitly but be conservative with attributes
-    print(f"[graph] Extracting {pyrosm_nt} network data...")
-    nodes, edges = osm.get_network(
-        network_type=pyrosm_nt,
-        nodes=True,
-        extra_attributes=["maxspeed", "highway"]  # Reduce memory by limiting attributes
-    )
-    
-    # Force garbage collection after Pyrosm parsing
-    del osm
-    gc.collect()
-    print(f"[graph] Extracted {len(nodes)} nodes, {len(edges)} edges")
+    # 2) Fallback to converting to XML and using graph_from_xml
+    if G is None:
+        if shutil.which("osmium") is None:
+            raise RuntimeError("'osmium' CLI not found. Install with 'brew install osmium-tool' or provide an OSM XML file.")
+        with tempfile.TemporaryDirectory(prefix="ts_osm_") as td:
+            xml_path = os.path.join(td, "extract.osm")
+            print("[graph] Converting PBF to OSM XML via osmium...")
+            subprocess.run(["osmium", "cat", pbf_path, "-o", xml_path, "-O"], check=True)
+            print("[graph] Loading graph from XML via OSMnx...")
+            if hasattr(ox.graph, "graph_from_xml"):
+                G = ox.graph.graph_from_xml(xml_path, retain_all=False, simplify=False)
+            else:
+                G = ox.graph_from_xml(xml_path, retain_all=False, simplify=False)
 
-    if nodes is None or edges is None or edges.empty:
-        raise RuntimeError(f"Pyrosm returned empty network for {pyrosm_nt} on {pbf_path}")
+    if G is None:
+        raise RuntimeError("Failed to build graph with OSMnx from local file.")
 
-    # Normalize CRS
-    if nodes.crs is None:
-        nodes = nodes.set_crs("EPSG:4326")
-    else:
-        nodes = nodes.to_crs("EPSG:4326")
-
-    if edges.crs is None:
-        edges = edges.set_crs("EPSG:4326")
-    else:
-        edges = edges.to_crs("EPSG:4326")
-
-    # OSMnx expects node ID as index and explicit x/y columns
-    if "id" in nodes.columns:
-        nodes = nodes.set_index("id", drop=True)
-    nodes.index = nodes.index.astype(int)          # ensure dtype matches edges u/v
-    nodes["x"] = nodes.geometry.x.astype("float64")
-    nodes["y"] = nodes.geometry.y.astype("float64")
-
-    # Ensure edge endpoints are the same dtype
-    edges["u"] = edges["u"].astype(int)
-    edges["v"] = edges["v"].astype(int)
-
-    # ✅ OSMnx expects edges indexed by (u, v, key). Create a proper key per (u,v).
-    if "key" not in edges.columns:
-        # Make parallel edges unique: 0,1,2… within each (u,v)
-        edges = edges.sort_values(["u", "v"]).copy()
-        edges["key"] = edges.groupby(["u", "v"]).cumcount().astype(int)
-    else:
-        edges["key"] = edges["key"].fillna(0).astype(int)
-
-    # Set MultiIndex
-    edges = edges.set_index(["u", "v", "key"])
-
-    print(f"[graph] Building NetworkX graph from GeoDataFrames...")
-    G = ox.graph_from_gdfs(nodes, edges)
-    
-    # Free intermediate DataFrames
-    del nodes, edges
-    gc.collect()
-    print(f"[graph] NetworkX graph created: {len(G.nodes)} nodes, {len(G.edges)} edges")
-
-    # If you keep custom graph_params (speed assumptions, etc.), you can apply them here.
-    # Add speeds and travel times
+    # Ensure lengths/speeds/travel times
     try:
         from osmnx import distance as oxd, speed as oxs
         G = oxd.add_edge_lengths(G)
@@ -377,9 +345,9 @@ def _build_graph_from_pbf_with_pyrosm(pbf_path: str, network_type: str) -> nx.Mu
         try: G = ox.add_edge_travel_times(G)
         except: pass
 
-    # Final check on node coordinates before saving
+    # Guarantee node coordinates x/y
     G = _ensure_node_coords(G)
-
+    print(f"[graph] OSMnx graph ready: {len(G.nodes)} nodes, {len(G.edges)} edges")
     return G
 
 
@@ -413,30 +381,14 @@ def load_graph(pbf_path: str, mode: str, force_rebuild: bool = False) -> nx.Mult
                 except:
                     pass
 
-    # Build from PBF using Pyrosm → OSMnx
-    print(f"[{mode}] Building graph from {pbf_path} via Pyrosm (this might take a while)...")
-    G = _build_graph_from_pbf_with_pyrosm(pbf_path, network_type)
-
-    # If you keep custom graph_params (speed assumptions, etc.), you can apply them here.
-    # Add speeds and travel times
-    try:
-        from osmnx import distance as oxd, speed as oxs
-        G = oxd.add_edge_lengths(G)
-        G = oxs.add_edge_speeds(G)
-        G = oxs.add_edge_travel_times(G)
-    except Exception:
-        try: G = ox.add_edge_lengths(G)
-        except: pass
-        try: G = ox.add_edge_speeds(G)
-        except: pass
-        try: G = ox.add_edge_travel_times(G)
-        except: pass
+    # Build from local file using OSMnx only (avoid Pyrosm)
+    print(f"[{mode}] Building graph from local extract via OSMnx (this may take a while)...")
+    G = _build_graph_with_osmnx_from_file(pbf_path, network_type)
 
     # Final check on node coordinates before saving
     G = _ensure_node_coords(G)
 
-    # Save to cache (skip for now to avoid memory pressure during serialization)
-    print(f"[{mode}] Skipping graph caching to avoid memory pressure during GraphML serialization...")
-    # ox.save_graphml(G, graphml_cache_path)
+    # Skip caching for now
+    print(f"[{mode}] Skipping graph caching to avoid serialization costs...")
 
     return G

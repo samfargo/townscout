@@ -49,13 +49,12 @@ def coerce_jsonable(props: dict):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True, help="Input T_hex parquet file")
-    ap.add_argument("--output", required=True, help="Output NDJSON (one feature per line)")
+    ap.add_argument("--input", required=True, help="Input parquet file with hex data")
+    ap.add_argument("--output", required=True, help="Output GeoJSON features (NDJSON)")
     ap.add_argument("--h3-col", default="h3_id")
     ap.add_argument("--keep-cols", nargs="*", default=[
-        "k","a0_id","a0_s","a0_flags","a1_id","a1_s","a1_flags",
-        "a2_id","a2_s","a2_flags","a3_id","a3_s","a3_flags","walkscore"
-    ])
+        "chipotle_drive_min", "costco_drive_min"
+    ], help="Columns to keep as properties in the GeoJSON features.")
     args = ap.parse_args()
 
     if not os.path.exists(args.input):
