@@ -1,233 +1,454 @@
-🗺️ TownScout — Anchor-Matrix Architecture
+# TownScout: System Overview & LLM Implementation Spec
 
-TownScout is an interactive, stackable-filter map that answers one deceptively simple question:
+## 1) Purpose, Context, Goals
 
-“Where should I live given my criteria?”
+**Purpose.** TownScout helps a user answer: *“Where should I live given my criteria?”* by computing travel‑time proximity to things that matter (Chipotle, Costco, airports, schools, etc.) and rendering results as a fast, interactive map.
 
-The user sees a map of the United States. Every time they add a filter —
-“≤ 10 min to Costco”, “walkability ≥ 70”, “within 2 hrs of skiing” —
-the livable area visibly shrinks in real time.
+**Context.** Instead of precomputing every hex→category path, TownScout factorizes the problem into **hex→anchor** and **anchor→category** legs. The frontend combines these in real time with GPU expressions. This architecture keeps costs near‑zero to operate and makes adding new categories cheap.
 
-Not Zillow filters. A compute engine disguised as a magical map.
+**Primary Goals.**
 
-⸻
+* Each time a POI from OSM or Overture is added, the livable land for that user visually shrinks based on what the filter was.
+* Sub‑second (≤250ms) slider→map response with zero server round‑trips.
+* Add/extend categories without recomputing hex tiles.
+* Keep deployment simple: static tiles on CDN, thin API for D\_anchor.
+* Scale from a single state to nationwide without blowing up storage/compute.
 
-🔑 Core Idea
+**Non‑Goals.** Live traffic, multimodal chaining (walk→transit→drive), and route turn‑by‑turn.
 
-Routing every query on the fly is prohibitively expensive. TownScout avoids it by precomputing travel networks once and storing them in a compact, factorized form.
+---
 
-At runtime, every filter is answered with a single algebraic lookup:
+## 2) Core Model: Matrix Factorization
 
-(Hex \to Anchor) \times (Anchor \to Category) = (Hex \to Category)
+```
+Total Travel Time = T_hex[hex→anchor] + D_anchor[anchor→category]
+```
 
-Two offline truth tables:
-	•	T_hex (Hex → Anchors)
-For each H3 hex, store its travel time to top-K nearby anchors.
-Example row:
+* **T\_hex**: For each H3 hex, store travel time to its top‑K nearest anchors.
+* **D\_anchor**: For each anchor, store travel time to the *nearest* POI in each category/brand.
+* **Frontend**: Calculates the min over K anchors per criterion entirely on the GPU.
 
-h3_id=…, a0_id=123, a0_s=540s, a1_id=456, a1_s=720s …
+Sentinel: `65535` (uint16) means unreachable / ≥ cutoff.
 
+---
 
-	•	D_anchor (Anchor → Category)
-For each anchor, store its travel time to the nearest POI in a category.
-Example row:
+## 3) End‑to‑End Dataflow (Concise)
 
-anchor_id=123, category_id=Costco, seconds=360
+```
+OSM PBF  ─┐                 ┌─>  T_hex parquet  ──> GeoJSON NDJSON ──> PMTiles (r7/r8) ─┐
+          ├─> Anchor Sites ─┤                                                         ├─> Frontend (MapLibre)
+Overture ─┘                 └─>  D_anchor parquet (per category/brand)  ──────────────┘
+```
 
+* **OSM (Pyrosm/OGR)** for road graph + civic/natural POIs.
+* **Overture Places (GeoParquet)** for brand/commercial spine.
+* **Optional CSVs** (e.g., airports).
 
-At runtime, the browser computes:
+---
 
-TT(hex, Costco) = \min_k (a_k.s + D[a_k.id, Costco])
+## 4) Sources & Baselines (Massachusetts examples)
 
-Stacking filters is just a boolean AND over conditions — all evaluated client-side on the GPU.
+* OSM broad POIs ≈ 76,688 (many are low‑value street furniture).
+* Overture Places (MA clip) ≈ 461,249 with strong brand normalization.
+* Conclusion: **Hybrid** ≫ either alone. Overture for brands; OSM for civic/natural/tag richness.
 
-⸻
+---
 
-📂 Repo Structure
+## 5) Anchors & Sites
 
-.
-├── scripts/
-│   ├── precompute_t_hex.py    # Build T_hex (Hex→Anchors)
-│   ├── precompute_d_anchor.py # Build D_anchor (Anchors→Categories)
-│   ├── 05_h3_to_geojson.py    # Convert T_hex to GeoJSON
-│   └── 06_build_tiles.py      # Build PMTiles from GeoJSON
-│
-├── api/
-│   └── app/
-│       └── main.py            # FastAPI server (frontend + D_anchor API)
-│
-├── tiles/
-│   ├── web/
-│   │   ├── index.html         # Map UI with filter panel
-│   │   └── pmtiles.js         # PMTiles library (local)
-│   ├── t_hex_r7_drive.pmtiles # Low-res tiles (zoom < 8)
-│   └── t_hex_r8_drive.pmtiles # High-res tiles (zoom ≥ 8)
-│
-└── schemas/
-    ├── filters.catalog.json   # Filter definitions, IDs, metadata
-    └── tiles.manifest.json    # Tile/PMTiles locations per dataset version
+**Anchor Sites (definition).** A site is a *road‑node–centric* aggregation of nearby POIs for a mode (drive/walk). Multiple POIs (across sources) can share one site.
 
+**Why sites?**
 
-⸻
+* One precompute per site instead of per POI ⇒ 2–5× routing reduction in dense areas.
+* Stable IDs tied to the road graph, not noisy POI centroids.
 
-📐 Data Contracts
+**Generation.**
 
-T_hex.pmtiles
-	•	Geometry: H3 hex boundaries (res=8)
-	•	Attributes per feature:
-	•	h3_id: string
-	•	k: uint8 (# of anchor slots used)
-	•	Repeated slots i ∈ [0..K-1]:
-	•	a{i}_id: uint32 (stable anchor ID)
-	•	a{i}_s: uint16 (seconds; 65535=UNREACH, 65534=NODATA)
-	•	a{i}_flags: uint8 (bit 0=borrowed, bit 1=pruned, …)
+1. Build routable graph from OSM.
+2. Snap POIs to nearest graph node by mode.
+3. Group by `(mode, node_id)` ⇒ `site_id`.
+4. Store aggregated brand/category membership.
 
-Invariants
-	•	a{i}_s ≤ cutoff_s or equals sentinel.
-	•	Anchors in strictly increasing order for SIMD-friendly min.
+**Counts.** \~23k drive‑mode anchors for Massachusetts (target range; not a hard promise).
 
-D_anchor.parquet
-	•	Columns:
-	•	anchor_int_id: int32
-	•	seconds: uint16 (65535=UNREACH, 65534=NODATA)
-	•	snapshot_ts: string (YYYY-MM-DD format)
+---
 
-Partitioning: mode=<m>/category_id=<c>/part-*.parquet
-Note: Also merged into flat files for API: massachusetts_anchor_to_category_{mode}.parquet
+## 6) Computations
 
-Invariants
-	•	One row per (anchor_id, category_id, mode)
-	•	No duplicates, no nulls
+### 6.1 T\_hex (`scripts/precompute_t_hex.py`)
 
-⸻
+* **Inputs:** OSM graph, anchor sites.
+* **Algorithm:** K‑pass single‑label Dijkstra (batched) from all anchors to H3 hexes.
+* **Output (per hex):** top‑K anchors `{a{i}_id, a{i}_s, a{i}_flags}`.
+* **Memory tactics:** batches (\~500 anchors), float32 edges, uint16 times, ZSTD parquet.
 
-🏗️ How It Works
-	1.	Offline Precompute
-	•	precompute_t_hex.py: hex → top-K anchors (with memory-efficient batching)
-	•	precompute_d_anchor.py: anchor → POI categories
-	2.	Tile Build  
-	•	05_h3_to_geojson.py: Convert T_hex parquet → GeoJSON (H3 v3/v4 compatible)
-	•	06_build_tiles.py: GeoJSON → MBTiles → PMTiles (via tippecanoe)
-	3.	Serving
-	•	FastAPI serves frontend + PMTiles via static routes
-	•	API serves D_anchor slices for real-time filtering
-	4.	Frontend
-	•	MapLibre loads multi-resolution PMTiles (r7/r8 zoom switching)
-	•	Local pmtiles.js library (no CDN dependency)
-	•	Filter expressions applied as MapLibre paint properties
+**Row example:**
 
-⸻
+```json
+{
+  "h3_id": "882a306043fffff",
+  "k": 2,
+  "a0_id": 4585, "a0_s": 0,   "a0_flags": 0,
+  "a1_id": 2066, "a1_s": 30,  "a1_flags": 0
+}
+```
 
-🧮 Runtime Math (Client-Side)
+### 6.2 D\_anchor (`scripts/precompute_d_anchor.py`)
 
-Example: “≤10 min to Costco AND ≥70 walkability AND ≤2 hr to skiing”
+* **Inputs:** Anchor sites + POIs (category/brand aware).
+* **Algorithm:** Single‑source Dijkstra from each POI (or site) into anchors; record *nearest* per category and optionally per brand.
+* **Airports:** Special snap to public arterials within 5km to avoid private/service roads inside aerodromes.
+* **Layout:** Hive‑partitioned parquet e.g. `mode={0,2}/category_id={1}/part-*.parquet`.
 
-// Compute travel time to Costco
-["min",
-  ["+", ["get","a0_s"], ["literal", dAnchor.get(["get","a0_id"]) || 65535]],
-  ["+", ["get","a1_s"], ["literal", dAnchor.get(["get","a1_id"]) || 65535]],
-  ["+", ["get","a2_s"], ["literal", dAnchor.get(["get","a2_id"]) || 65535]],
-  ["+", ["get","a3_s"], ["literal", dAnchor.get(["get","a3_id"]) || 65535]]
-]
+**API shape:**
 
-// Apply all filters
-["case",
-  ["all",
-    ["<=", ["var","tt_costco"], 600],   // ≤ 10 min
-    [">=", ["get","walkscore"], 70],    // walkability ≥ 70
-    ["<=", ["var","tt_ski"], 7200]      // ≤ 2 hr
-  ],
-  0.9, 0.05 // visible vs masked
-]
+```json
+{
+  "4585": 101,
+  "2066": 65535,
+  "1509": 326
+}
+```
 
+---
 
-⸻
+## 7) Tiles & Serving
 
-🚀 Demo Workflow
+**GeoJSON Conversion** (`scripts/05_h3_to_geojson.py`): T\_hex parquet → NDJSON (H3 polygons). Use `.itertuples()` to preserve uint64 H3 IDs.
 
-# Complete pipeline (run from repo root)
-make all
+**PMTiles Build** (`scripts/06_build_tiles.py`): tippecanoe → MBTiles → PMTiles. Two layers: r7 (\<z8) and r8 (≥z8). Layer names must match frontend source IDs.
 
-# Or step by step:
+**Static Serving (FastAPI):**
 
-# 1. Build T_hex for Massachusetts (with memory optimizations)
-PYTHONPATH=. .venv/bin/python scripts/precompute_t_hex.py \
-  --pbf data/osm/massachusetts.osm.pbf \
-  --anchors out/anchors/anchors_drive.parquet \
-  --mode drive --res 8 --cutoff 90 --batch-size 250 \
-  --anchor-index-out out/anchors/anchor_index_drive.parquet \
-  --out data/minutes/massachusetts_hex_to_anchor_drive.parquet
+```python
+app.mount("/static", StaticFiles(directory="tiles/web"), name="static")
+app.mount("/tiles", StaticFiles(directory="tiles"), name="tiles")
+```
 
-# 2. Build D_anchor 
-PYTHONPATH=. .venv/bin/python scripts/precompute_d_anchor.py \
-  --anchors out/anchors/anchors_drive.parquet \
-  --anchor-index out/anchors/anchor_index_drive.parquet \
-  --mode drive --state massachusetts \
-  --out data/minutes/
+---
 
-# 3. Build map tiles
-PYTHONPATH=. .venv/bin/python scripts/05_h3_to_geojson.py \
-  --input data/minutes/massachusetts_hex_to_anchor_drive.parquet \
-  --output tiles/t_hex_r8_drive.geojson.nd --h3-col h3_id
+## 8) Frontend (MapLibre)
 
-PYTHONPATH=. .venv/bin/python scripts/06_build_tiles.py \
-  --input tiles/t_hex_r8_drive.geojson.nd \
-  --output tiles/t_hex_r8_drive.pmtiles \
-  --layer t_hex_r8_drive
+**PMTiles protocol:** local import, no CDN.
 
-# 4. Run server
-make serve
+```js
+let protocol = new pmtiles.Protocol();
+maplibregl.addProtocol("pmtiles", protocol.tile);
+const T_HEX_R7_URL = "pmtiles:///tiles/t_hex_r7_drive.pmtiles";
+const T_HEX_R8_URL = "pmtiles:///tiles/t_hex_r8_drive.pmtiles";
+```
 
-# Open in browser
-http://localhost:5174
+**GPU Filter Expression (core):**
 
+```js
+function buildFilterExpression(criteria, dAnchorData) {
+  const UNREACHABLE = 65535;
+  const expressions = [];
+  for (const [category, thresholdSecs] of Object.entries(criteria)) {
+    const categoryData = dAnchorData[category];
+    const travelTimeOptions = [];
+    for (let i = 0; i < K_ANCHORS; i++) {
+      travelTimeOptions.push([
+        "+",
+        ["coalesce", ["get", `a${i}_s`], UNREACHABLE],
+        ["coalesce",
+          ["get", ["to-string", ["get", `a${i}_id`]], ["literal", categoryData]],
+          UNREACHABLE
+        ]
+      ]);
+    }
+    const minTravelTime = ["min", ...travelTimeOptions];
+    expressions.push(["<=", minTravelTime, thresholdSecs]);
+  }
+  return ["case", ["all", ...expressions], 0.8, 0.0];
+}
+```
 
-⸻
+**Performance levers:** client‑side only after initial load; r7/r8 swap; 250ms debounce; cache D\_anchor per category.
 
-## Current Status & Known Issues
+---
 
-### ✅ Working
-- **Data Pipeline**: T_hex and D_anchor computation complete
-- **Map Visualization**: Interactive hex map with multi-resolution tiles
-- **Frontend**: PMTiles loading, zoom-based layer switching
-- **Memory Optimizations**: Batched processing, H3 v3/v4 compatibility
+## 9) Data Contracts (hard requirements)
 
-### ⚠️ Previous Issues (Resolved)  
-- **D_anchor API**: ~~Missing required columns~~ → Fixed with Hive-partitioned dataset reading via PyArrow
-- **Airport Connectivity**: ~~Poor coverage~~ → Fixed with arterial-snapping for airports in drive mode
-  ```
-- **Filter Controls**: Frontend expects API data for dynamic filtering
-- **Category Mapping**: Need to map POI names to category IDs
+**T\_hex tiles must provide:**
 
-### ✅ MVP Complete (December 2024)
-**All pieces connected! Interactive filtering is now working:**
+* `k`, `a{i}_id`, `a{i}_s` for i∈\[0,k).
+* Polygon geometry = H3 cell boundary.
+* Layer names = PMTiles source IDs.
+* Anchor IDs consistent across all hexes.
 
-1. ✅ **D_anchor API**: Fixed data schema and serving  
-2. ✅ **Category Integration**: Chipotle and Costco fully functional
-3. ✅ **Filter Implementation**: Real-time slider-based filtering active
-4. 🚧 **Walk Mode**: Ready for implementation (data pipeline supports it)
+**D\_anchor API must return:**
 
-### 📊 Performance Achieved
-- **Memory**: Handles 23K+ hexes with K-pass batched processing
-- **Tiles**: ~6MB total (1MB r7 + 5MB r8) for Massachusetts
-- **Frontend**: <250ms filter updates using GPU acceleration
-- **Data Types**: Full uint64 precision preserved throughout pipeline
-- **Compatibility**: Robust H3 v3/v4 support
+* JSON `{anchor_id: seconds}` with `65535` sentinel for unreachable.
+* Anchor IDs that appear in T\_hex tiles.
+* Mode partitioning if multiple modes are supported.
 
-⸻
+**Frontend assumptions:**
 
-🧭 Summary
+* `K_ANCHORS = 4` (configurable; must match T\_hex build).
+* Current categories: `chipotle`, `costco`, `airports` (extensible).
+* Mode: `drive` (walk is separate tiles + partitions).
+* Units: seconds (UI can display minutes).
 
-TownScout is not a filter UI.
-It's a geospatial compute engine packaged as a map:
-	•	Heavy math precomputed once
-	•	Compact tiles served from static routes  
-	•	Browser evaluates livability filters with MapLibre expressions
+---
 
-**Status: The core vision is realized.**
-- Matrix factorization ✅
-- Visualization ✅  
-- Data pipeline ✅
-- Interactive filtering ✅
+## 10) POI Overhaul (In Progress)
 
-**Try it:** `make serve` → http://localhost:5174
+**Problem.** Current coverage is too narrow; brand aliasing and taxonomy drift will wreck filters; OSM alone undercounts chains; Overture lacks some civic richness.
+
+**Goals.**
+
+* Cover all livability‑relevant categories broadly: food, retail, education, health, recreation, civic, transport, natural amenities.
+* Support both *category* (e.g., supermarket) and *brand* (e.g., Whole Foods) queries.
+* Use **Anchor Sites** for co‑located POIs to cut routing cost 2–5×.
+* Make additions **config‑driven**, not code‑driven.
+* Each time a POI from OSM or Overture is added, the livable land for that user visually shrinks based on what the filter was.
+
+**Key insight.** Use **Overture** for the *brand/commercial spine* and **OSM** for civic/natural/local detail. Normalize both into a **TownScout Taxonomy** with a **brand registry**.
+
+---
+
+## 11) Canonical Schemas
+
+**POI**
+
+* `poi_id: str` (uuid5 over `source|ext_id|rounded lon/lat`)
+* `name: str`
+* `brand_id: str|null` (canonical)
+* `brand_name: str|null`
+* `class: str` (venue|civic|transport|natural|…)
+* `category: str` (supermarket|hospital|…)
+* `subcat: str` (ER|preschool|mexican fast food|…)
+* `lon, lat: float32`
+* `geom_type: uint8` (0=point,1=centroid,2=entrance)
+* `area_m2: float32`
+* `source: str` (overture|osm|fdic|cms|csv\:chipotle|user)
+* `ext_id: str|null`
+* `h3_r9: str`
+* `node_drive_id, node_walk_id: int64|null`
+* `dist_drive_m, dist_walk_m: float32`
+* `anchorable: bool` | `exportable: bool`
+* `license, source_updated_at, ingested_at: str`
+* `provenance: list[str]`
+
+**Anchor Site**
+
+* `site_id: str` (uuid5 of `mode|node_id`)
+* `mode: str` (drive|walk)
+* `node_id: int64`
+* `lon, lat: float32`
+* `poi_ids: list[str]`
+* `brands: list[str]`
+* `categories: list[str]`
+* `brand_tiers: list[int]`
+* `weight_hint: int`
+
+**t\_hex (Travel)**
+
+* `hex_r9: str`
+* `site_id: str`
+* `time_s: uint16` (`65535` sentinel)
+
+**Summaries**
+
+* `min_cat(hex_r9, category, min_time_drive_s, min_time_walk_s)`
+* `min_brand(hex_r9, brand_id, min_time_drive_s, min_time_walk_s)`
+
+---
+
+## 12) Pipeline (Deterministic Stages)
+
+1. **Ingest**
+
+* Overture → `data/overture/<state>_places.parquet` (via DuckDB clip).
+* OSM → `data/osm/<state>.osm.pbf` (Pyrosm/OGR).
+* Optional CSVs.
+
+2. **Normalize**
+
+* Lowercase/strip names.
+* Brand resolution: `brand.names.primary > names.primary > alias registry`.
+* Category mapping: Overture `categories.primary/alternate` + OSM `amenity/shop/cuisine` → **TownScout taxonomy**.
+
+3. **Conflate & Deduplicate**
+
+* H3 r9 proximity: walk 0.25 mi, drive 1 mi (tunable, density‑aware).
+* Merge same brand+category; tie‑break: Overture wins chains; OSM wins civic/natural & polygons; record `provenance`.
+
+4. **Build Anchor Sites**
+
+* Snap to nearest road node by mode; group by `(mode,node_id)`.
+* Aggregate `poi_ids`, `brands`, `categories`.
+
+5. **Travel Precompute**
+
+* Multi‑source Dijkstra from sites.
+* Store global top‑K per hex; support category/brand quotas if needed.
+
+6. **Summaries**
+
+* Precompute `min_cat` & `min_brand` for exposed categories & A‑list brands.
+* Long‑tail brands resolved via joins at query time.
+
+7. **Tiles**
+
+* Convert T\_hex → NDJSON → PMTiles (r7/r8 layers, exact layer names).
+
+---
+
+## 13) Query UX (Deterministic Rules)
+
+* **Category filter:** Read `min_cat` (instant) or compute on GPU from D\_anchor chunks.
+* **Brand (A‑list):** Read `min_brand` (instant); otherwise join `t_hex→sites→brands` and take min.
+* **Fallback:** Optional local Dijkstra for rare gaps.
+
+UI rules:
+
+* Choosing a brand auto‑locks its parent category.
+* If no coverage, suggest category fallback.
+* Clicking a hex shows nearest POI from the underlying site with provenance.
+
+---
+
+## 14) Performance Targets (Enforced)
+
+* Initial load (tiles + D\_anchor cache): **< 2s**.
+* Slider response: **< 250ms**.
+* Render on zoom/pan: **< 100ms**.
+* Browser heap (MA full): **< 200MB**.
+* PMTiles size (2 categories, nationwide): **< 400MB**.
+
+---
+
+## 15) Known Limitations
+
+* Free‑flow speeds only; no live traffic.
+* No mode mixing (e.g., walk→transit→drive).
+* POI freshness requires periodic pipeline runs.
+* uint16 cap (≈18h) on times; rounding to seconds.
+
+---
+
+## 16) Implementation Tasks (LLM‑friendly, with I/O and checks)
+
+**A. Taxonomy & Brand Registry**
+
+* **Input:** Overture categories + OSM tags; seed CSV of brand aliases.
+* **Output:** `data/taxonomy/categories.yml`, `data/brands/registry.csv` (columns: `brand_id,canonical,aliases|;‑sep,wikidata?`).
+* **Checks:** Aliases must be unique; map every exposed UI category to ≥1 source tag.
+
+**B. Ingest + Normalize**
+
+* **Input:** Overture parquet, OSM PBF, CSVs.
+* **Output:** `data/poi/normalized.parquet` (schema above).
+* **Checks:** ≥95% of A‑list brands receive `brand_id`; drop obviously wrong geoms (>200km off state bbox).
+
+**C. Conflation**
+
+* **Input:** `normalized.parquet`.
+* **Output:** `data/poi/conflated.parquet` with `provenance` list.
+* **Checks:** For chains (Dunkin, Starbucks, etc.) Overture dominates when both present; polygons preserved.
+
+**D. Anchor Sites**
+
+* **Input:** Conflated POIs; OSM graph.
+* **Output:** `data/anchors/sites_{mode}.parquet`.
+* **Checks:** No site with 0 POIs; record `brands/categories` arrays; `site_id` stable.
+
+**E. T\_hex**
+
+* **Input:** Sites; OSM graph.
+* **Output:** `out/t_hex/{state}_{mode}.parquet` with `k` and `a{i}_*` fields.
+* **Checks:** Each hex has `k≤K_ANCHORS`; flags only in {0, bitfield}; no orphan anchor IDs.
+
+**F. D\_anchor**
+
+* **Input:** Sites; POIs by category/brand.
+* **Output:** Hive‑partitioned parquet per `(mode, category_id|brand_id)`.
+* **Checks:** Every anchor present in T\_hex appears in D\_anchor (or sentinel 65535).
+
+**G. Tiles**
+
+* **Input:** T\_hex parquet.
+* **Output:** `tiles/t_hex_r7_{mode}.pmtiles`, `tiles/t_hex_r8_{mode}.pmtiles`.
+* **Checks:** Layer names match frontend configs; H3 boundaries valid; NDJSON line count == hex count.
+
+**H. Frontend Wiring**
+
+* **Input:** PMTiles, D\_anchor JSON endpoints.
+* **Output:** Working sliders; GPU expressions; debounced updates.
+* **Checks:** Synthetic test: hex with hand‑set `a{i}` times produces correct visibility across thresholds.
+
+---
+
+## 17) Deterministic Config (single source of truth)
+
+* `K_ANCHORS = 4` (env or `config.yml`).
+* `UNREACHABLE = 65535`.
+* Snap radii defaults: walk 0.25 mi; drive 1 mi; allow density‑adaptive overrides.
+* Partitions: `mode ∈ {drive, walk}`.
+* Tile layers: `t_hex_r7_*`, `t_hex_r8_*` only.
+
+---
+
+## 18) Airport Handling (Non‑negotiable)
+
+* Snap internal airport POIs to nearest public arterial (motorway/trunk/primary/secondary/tertiary/residential) within 5km.
+* If none found, mark unreachable rather than routing through private/service ways.
+
+---
+
+## 19) Scaling Guidelines
+
+* Batch sizes for Dijkstra tuned to memory; parallelize across states.
+* ZSTD for all parquet; prefer column pruning.
+* Serve PMTiles via CDN; avoid dynamic map servers.
+
+---
+
+## 20) Snapshots & Deltas
+
+* Monthly snapshots: `snapshot_date=YYYY‑MM‑DD`.
+* Track deltas: added/moved/removed POIs.
+* Incremental recompute: only anchors whose sites changed.
+
+---
+
+## 21) Acceptance Tests (must pass)
+
+1. **Anchor consistency:** Every `a{i}_id` in tiles exists in D\_anchor for every exposed category (or sentinel).
+2. **Determinism:** Re‑running T\_hex/D\_anchor with same inputs yields byte‑identical outputs (modulo parquet row group ordering) — verify with hash of sorted records.
+3. **Performance:** On MA dataset, map responds ≤250ms for a 3‑slider scenario; memory ≤200MB.
+4. **Correctness:** Known hand‑crafted cells verify expected mins across K anchors.
+5. **Schema compliance:** Validate parquet schemas against canonical definitions in CI.
+
+---
+
+## 22) Known Pitfalls (avoid)
+
+* Reducing polygons to points for large venues (hospitals, parks) — keep polygon for UX and snapping sanity.
+* Letting brand alias chaos bleed into queries — **require** registry usage everywhere.
+* Airport routing through service/private roads — always snap to arterials.
+* Breaking contract between T\_hex and D\_anchor — keep IDs stable and complete.
+
+---
+
+## 23) Glossary
+
+* **H3 r9:** Hex resolution used for per‑cell summaries.
+* **Anchor / Site:** Aggregation of POIs snapped to a road node by mode.
+* **T\_hex:** Hex→anchor top‑K travel times.
+* **D\_anchor:** Anchor→nearest POI per category/brand.
+* **A‑list brands:** Pre‑indexed brands with precomputed `min_brand`.
+
+---
+
+## 24) Open Questions (not blockers; track separately)
+
+* Exact tiering for brands (A‑list vs long‑tail) per state.
+* Walk‑mode tiles rollout order and UI toggle design.
+* Density‑adaptive snap radius heuristics.
+---
+
+**Status:** POI overhaul underway. Everything else here is an implementation spec; if reality diverges, update this doc first, then code. No silent drift.

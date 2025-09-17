@@ -35,6 +35,7 @@ wheels/
 # Project specific
 data/osm/*.pbf
 data/osm/cache/*.parquet
+data/osm/cache_csr/*.arrow
 data/poi/*.parquet
 data/minutes/*.parquet
 data/deltas/*.csv
@@ -70,3 +71,5 @@ dump.rdb
 *.rmeta
 *.json
 townscout_native/target/debug
+townscout_native/target/release
+*.npy

@@ -1,1 +1,0 @@
-# TownScout API package 

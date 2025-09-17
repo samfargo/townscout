@@ -11,3 +11,10 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.22.0-beta.1", features = ["extension-module"] }
 numpy = { version = "0.22.0-beta.1" }
 rayon = "1.10.0"
+h3o = "0.5"
+rustc-hash = "1.1"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"

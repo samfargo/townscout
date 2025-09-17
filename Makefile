@@ -1,4 +1,5 @@
 PY=PYTHONPATH=src .venv/bin/python
+PYTHON_BIN?=$(shell command -v python3.11 2>/dev/null || command -v python3 2>/dev/null)
 STATES=massachusetts
 # Add more states as needed, e.g., STATES=massachusetts new-hampshire
 
@@ -11,14 +12,15 @@ help:  ## Show this help message
 
 init:  ## Initialize virtual environment with Python 3.11 and install dependencies
 	rm -rf .venv
-	python3 -m venv .venv
+	$(PYTHON_BIN) -m venv .venv
 	. .venv/bin/activate && pip install -r requirements.txt
+	@. .venv/bin/activate && python -c 'import sys; print(f"Using Python {sys.version.split()[0]}")'
 	@echo "✅ Environment initialized. Run 'source .venv/bin/activate' to use it."
 
 # ========== Data Pipeline (New) ==========
 
-native:  ## Build the native Rust extension
-	.venv/bin/maturin develop --manifest-path townscout_native/Cargo.toml
+native:  ## Build the native Rust extension (release optimized)
+	.venv/bin/maturin develop --release --manifest-path townscout_native/Cargo.toml
 
 download:  ## 1. Download OSM and Overture data extracts
 	$(PY) src/01_download_extracts.py
@@ -41,6 +43,7 @@ data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet native
 		--mode drive \
 		--cutoff 30 \
 		--res 7 8 \
+		--progress \
 		--out-times $@ \
 		--out-sites data/minutes/$*_drive_sites.parquet
 
