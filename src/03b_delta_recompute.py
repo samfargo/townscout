@@ -11,7 +11,7 @@ import osmnx as ox
 from shapely.geometry import Point
 import h3
 from pyrosm import OSM
-from src.config import H3_RES_LOW, H3_RES_HIGH
+from config import H3_RES_LOW, H3_RES_HIGH
 
 DELTA_PATH = "data/deltas/poi_delta.csv"
 

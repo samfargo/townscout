@@ -31,6 +31,11 @@ H3_RES_HIGH = 8  # detail
 UNREACH_U16 = np.uint16(65535)  # Travel time is unknown or >= cutoff
 NODATA_U16 = np.uint16(65534)   # No road node available for a hex
 
+# Snap radii (meters) for anchor creation
+# Align with README guidelines: walk 0.25 mi, drive 1 mi
+SNAP_RADIUS_M_DRIVE = 1609  # 1 mile
+SNAP_RADIUS_M_WALK = 402    # 0.25 mile
+
 # Crime rate enrichment configuration
 CRIME_RATE_SOURCE = "ma_crime_rates.csv"  # Path to crime rate data
 

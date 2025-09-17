@@ -41,16 +41,21 @@
 <div class="panel">
   <h3>TownScout Criteria</h3>
   <div id="filters">
-    <div class="row">
-      <label for="chipotle_drive_min">Chipotle (minutes)</label>
-      <input id="chipotle_drive_min" type="range" min="5" max="45" step="5" value="15">
-      <span id="chipotle_drive_min_v">15</span>
+    <div class="row filter-row">
+      <label>Mode</label>
+      <select id="mode-select">
+        <option value="drive" selected>Drive</option>
+        <option value="walk">Walk</option>
+      </select>
+      <span class="spacer"></span>
     </div>
-    <div class="row">
-      <label for="costco_drive_min">Costco (minutes)</label>
-      <input id="costco_drive_min" type="range" min="5" max="60" step="5" value="20">
-      <span id="costco_drive_min_v">20</span>
+    <!-- POI selector + dynamic sliders -->
+    <div class="row filter-row">
+      <label for="poi-select">Add POI</label>
+      <select id="poi-select"></select>
+      <button id="add-poi" class="remove-btn" title="Add selected POI">Add</button>
     </div>
+    <div id="filter-rows"></div>
   </div>
   <div id="nudge" class="nudge">Try increasing minutes to see more areas.</div>
   <button id="share" style="width: 100%; margin-top: 10px; padding: 5px;">Share Map</button>
@@ -59,7 +64,7 @@
 <div id="map"></div>
 
 <div id="hover-box" class="hover-box">
-  <h4>Drive Time (minutes)</h4>
+  <h4>Travel Time (minutes)</h4>
   <div id="hover-content" class="muted">Move cursor over a hex</div>
 </div>
 
@@ -72,8 +77,12 @@
   let protocol = new pmtiles.Protocol();
   maplibregl.addProtocol("pmtiles", protocol.tile);
 
-  const R7_URL = "pmtiles:///tiles/t_hex_r7_drive.pmtiles";
-  const R8_URL = "pmtiles:///tiles/t_hex_r8_drive.pmtiles";
+  const R7_DRIVE_URL = "pmtiles:///tiles/t_hex_r7_drive.pmtiles";
+  const R8_DRIVE_URL = "pmtiles:///tiles/t_hex_r8_drive.pmtiles";
+  const R8_WALK_URL  = "pmtiles:///tiles/t_hex_r8_walk.pmtiles";
+  const R7_DRIVE_HTTP = R7_DRIVE_URL.replace(/^pmtiles:\/\//, '');
+  const R8_DRIVE_HTTP = R8_DRIVE_URL.replace(/^pmtiles:\/\//, '');
+  const R8_WALK_HTTP  = R8_WALK_URL.replace(/^pmtiles:\/\//, '');
 
   const map = new maplibregl.Map({
     container: 'map',
@@ -86,22 +95,26 @@
           tileSize: 256,
           attribution: '© OpenStreetMap contributors'
         },
-        'us_r7': {
+        'us_r7_drive': {
           type: 'vector',
-          url: R7_URL,
+          url: R7_DRIVE_URL,
           attribution: "TownScout"
         },
-        'us_r8': {
+        'us_r8_drive': {
           type: 'vector',
-          url: R8_URL
+          url: R8_DRIVE_URL
+        },
+        'us_r8_walk': {
+          type: 'vector',
+          url: R8_WALK_URL
         }
       },
       layers: [
         { id: 'osm-base', type: 'raster', source: 'osm', paint: { 'raster-opacity': 0.7 } },
         {
-          id: 'layer_r7',
+          id: 'layer_r7_drive',
           type: 'fill',
-          source: 'us_r7',
+          source: 'us_r7_drive',
           'source-layer': 't_hex_r7_drive',
           maxzoom: 8,
           paint: {
@@ -111,13 +124,26 @@
           }
         },
         {
-          id: 'layer_r8',
+          id: 'layer_r8_drive',
           type: 'fill',
-          source: 'us_r8',
+          source: 'us_r8_drive',
           'source-layer': 't_hex_r8_drive',
           minzoom: 8,
           paint: {
             'fill-color': '#1976d2',
+            'fill-opacity': 0.5,
+            'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        {
+          id: 'layer_r8_walk',
+          type: 'fill',
+          source: 'us_r8_walk',
+          'source-layer': 't_hex_r8_walk',
+          minzoom: 8,
+          layout: { 'visibility': 'none' },
+          paint: {
+            'fill-color': '#10b981',
             'fill-opacity': 0.5,
             'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
           }
@@ -136,36 +162,102 @@
       return;
     }
     const props = feature.properties;
-    const chipotle_min = props.chipotle_drive_min;
-    const costco_min = props.costco_drive_min;
-    
     let html = '';
-    html += `<div class="kv"><span>Chipotle</span><span>${chipotle_min ? chipotle_min + ' min' : 'N/A'}</span></div>`;
-    html += `<div class="kv"><span>Costco</span><span>${costco_min ? costco_min + ' min' : 'N/A'}</span></div>`;
+    // Show the selected POIs in the hover box with their times
+    selectedPOIs.forEach((poi) => {
+      const col = poi.col;
+      const v = props[col];
+      html += `<div class="kv"><span>${poi.label}</span><span>${(v || v === 0) ? v + ' min' : 'N/A'}</span></div>`;
+    });
+    if (!html) html = '<span class="muted">Select a POI to begin</span>';
     contentEl.innerHTML = html;
   }
   
   // ---------- Filter Logic ----------
-  const chipotleSlider = document.getElementById('chipotle_drive_min');
-  const costcoSlider = document.getElementById('costco_drive_min');
-  const chipotleValue = document.getElementById('chipotle_drive_min_v');
-  const costcoValue = document.getElementById('costco_drive_min_v');
+  // ---------- Dynamic POI Filters ----------
+  // Fallback POIs if metadata is unavailable (min-based mode)
+  const FALLBACK_POIS = [
+    { id: 'chipotle', label: 'Chipotle', col: 'chipotle_drive_min', def: 15, min: 5, max: 60, step: 5 },
+    { id: 'costco', label: 'Costco', col: 'costco_drive_min', def: 20, min: 5, max: 60, step: 5 }
+  ];
+
+  // Anchor-mode state (when tiles expose a{i}_id/a{i}_s)
+  let ANCHOR_MODE = false;
+  let CURRENT_MODE = 'drive'; // 'drive' | 'walk'
+  const MAX_K = 4; // support up to 4 anchors; missing ones coalesce to sentinel
+  const dAnchorCache = {}; // { categoryId: { anchorId: seconds } }
+
+  const selectedPOIs = [];
+
+  function buildFilterExpressionMinCols() {
+    // Start with all; add one constraint per selected POI against *_drive_min columns
+    const clauses = ["all"];
+    selectedPOIs.forEach((poi) => {
+      const slider = document.getElementById(`slider_${poi.id}`);
+      const maxV = parseInt(slider.value, 10);
+      clauses.push(["<=", ["coalesce", ["get", poi.col], 9999], maxV]);
+    });
+    return clauses;
+  }
+
+  function buildMinExprForCategory(catId) {
+    // Compose min over top-K anchors: a{i}_s + D_anchor[a{i}_id]
+    const catMap = dAnchorCache[catId] || {};
+    const literalMap = ["literal", catMap];
+    const UNREACHABLE = 65535;
+    const terms = [];
+    for (let i = 0; i < MAX_K; i++) {
+      const aSec = ["coalesce", ["get", `a${i}_s`], UNREACHABLE];
+      const aidStr = ["to-string", ["get", `a${i}_id`]];
+      const catSec = ["coalesce", ["get", aidStr, literalMap], UNREACHABLE];
+      terms.push(["+", aSec, catSec]);
+    }
+    return ["min", ...terms];
+  }
+
+  function buildFilterExpressionCombined() {
+    const clauses = ["all"];
+    selectedPOIs.forEach((p) => {
+      const slider = document.getElementById(`slider_${p.id}`);
+      if (!slider) return;
+      if (p.type === 'category') {
+        const maxMin = parseInt(slider.value, 10) * 60; // seconds
+        const minExpr = buildMinExprForCategory(p.id);
+        clauses.push(["<=", minExpr, maxMin]);
+      } else if (p.type === 'brand' && CURRENT_MODE === 'drive') {
+        const maxV = parseInt(slider.value, 10);
+        const col = `${p.id}_drive_min`;
+        clauses.push(["<=", ["coalesce", ["get", col], 9999], maxV]);
+      }
+    });
+    return clauses;
+  }
 
   function updateMapFilter() {
-    const chipotleMax = parseInt(chipotleSlider.value, 10);
-    const costcoMax = parseInt(costcoSlider.value, 10);
-    
-    chipotleValue.textContent = chipotleMax;
-    costcoValue.textContent = costcoMax;
-
-    const filter = [
-      "all",
-      ["<=", ["coalesce", ["get", "chipotle_drive_min"], 9999], chipotleMax],
-      ["<=", ["coalesce", ["get", "costco_drive_min"], 9999], costcoMax]
-    ];
-    
-    map.setFilter('layer_r7', filter);
-    map.setFilter('layer_r8', filter);
+    // Update inline value bubbles
+    selectedPOIs.forEach((poi) => {
+      const slider = document.getElementById(`slider_${poi.id}`);
+      const valSpan = document.getElementById(`val_${poi.id}`);
+      if (slider && valSpan) valSpan.textContent = slider.value;
+    });
+    const filter = buildFilterExpressionCombined();
+    if (ANCHOR_MODE) {
+      // Apply to current mode layer(s)
+      if (CURRENT_MODE === 'drive') {
+        map.setFilter('layer_r8_drive', filter);
+        map.setFilter('layer_r7_drive', filter);
+        map.setFilter('layer_r8_walk', null);
+      } else {
+        map.setFilter('layer_r8_walk', filter);
+        map.setFilter('layer_r8_drive', null);
+        map.setFilter('layer_r7_drive', null);
+      }
+    } else {
+      // Fallback: apply to drive layers
+      map.setFilter('layer_r7_drive', filter);
+      map.setFilter('layer_r8_drive', filter);
+      map.setFilter('layer_r8_walk', null);
+    }
   }
 
   function debounce(fn, ms) {
@@ -178,14 +270,160 @@
   
   const debouncedUpdate = debounce(updateMapFilter, 50);
 
-  chipotleSlider.addEventListener('input', debouncedUpdate);
-  costcoSlider.addEventListener('input', debouncedUpdate);
+  function addPOIRow(poi) {
+    // Avoid duplicates
+    if (selectedPOIs.find(p => p.id === poi.id && p.type === poi.type)) return;
+    selectedPOIs.push(poi);
+    const container = document.getElementById('filter-rows');
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.id = `row_${poi.type}_${poi.id}`;
+    row.innerHTML = `
+      <label for="slider_${poi.id}">${poi.label} (minutes)</label>
+      <input id="slider_${poi.id}" type="range" min="${poi.min}" max="${poi.max}" step="${poi.step}" value="${poi.def}">
+      <span id="val_${poi.id}">${poi.def}</span>
+      <button class="remove-btn" id="rm_${poi.id}" title="Remove ${poi.label}">✕</button>
+    `;
+    container.appendChild(row);
+    document.getElementById(`slider_${poi.id}`).addEventListener('input', debouncedUpdate);
+    document.getElementById(`rm_${poi.id}`).addEventListener('click', () => {
+      // Remove from selected list and DOM
+      const idx = selectedPOIs.findIndex(p => p.id === poi.id && p.type === poi.type);
+      if (idx >= 0) selectedPOIs.splice(idx, 1);
+      row.remove();
+      updateMapFilter();
+    });
+    if (ANCHOR_MODE && poi.type === 'category') {
+      fetchDAnchor(poi.id).then(() => updateMapFilter());
+    } else {
+      updateMapFilter();
+    }
+  }
+
+  async function fetchJSON(url) {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.json();
+  }
+
+  function inferAvailablePOIsFromMetadata(fallback) {
+    // Detect anchor fields from PMTiles; populate dropdown via /api/catalog
+    const httpUrl = (CURRENT_MODE === 'drive') ? R8_DRIVE_HTTP : R8_WALK_HTTP;
+    try {
+      const pmt = new pmtiles.PMTiles(httpUrl);
+      pmt.getMetadata().then((_md) => {
+        ANCHOR_MODE = true; // presence of tiles implies we can use categories
+        initCatalogSelector();
+      }).catch(() => populatePoiSelector(fallback));
+    } catch (e) {
+      populatePoiSelector(fallback);
+    }
+  }
+
+  function populatePoiSelector(list) {
+    const select = document.getElementById('poi-select');
+    select.innerHTML = '';
+    list.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.label;
+      select.appendChild(opt);
+    });
+    const addBtn = document.getElementById('add-poi');
+    addBtn.onclick = () => {
+      const id = select.value;
+      const poi = list.find(p => p.id === id);
+      if (poi) addPOIRow(poi);
+    };
+    // Stash the list for URL param parsing
+    window._poiList = list;
+  }
+
+  function initPoiSelector() {
+    inferAvailablePOIsFromMetadata(FALLBACK_POIS);
+  }
+
+  // ---------- Catalog + Anchor Mode ----------
+  async function fetchDAnchor(categoryId) {
+    if (dAnchorCache[categoryId]) return dAnchorCache[categoryId];
+    const data = await fetchJSON(`/api/d_anchor?category=${encodeURIComponent(categoryId)}&mode=${encodeURIComponent(CURRENT_MODE)}`);
+    dAnchorCache[categoryId] = data;
+    return data;
+  }
+
+  async function initCatalogSelector() {
+    try {
+      const resp = await fetchJSON(`/api/catalog?mode=${encodeURIComponent(CURRENT_MODE)}`);
+      const categories = Array.isArray(resp.categories) ? resp.categories : [];
+      const brands = Array.isArray(resp.brands) ? resp.brands : [];
+      const catToBrands = resp.cat_to_brands || {};
+      populateCatalogSelector(categories, brands, catToBrands);
+    } catch (e) {
+      populatePoiSelector(FALLBACK_POIS);
+    }
+  }
+
+  function populateCatalogSelector(categories, brands, catToBrands) {
+    const select = document.getElementById('poi-select');
+    select.innerHTML = '';
+    const brandMap = new Map(brands.map(b => [b.id, b.label]));
+    const addedBrands = new Set();
+    categories.forEach(cat => {
+      const og = document.createElement('optgroup');
+      og.label = cat.label;
+      // Category-level selection
+      const optAll = document.createElement('option');
+      optAll.value = `cat:${cat.id}`;
+      optAll.textContent = cat.label;
+      og.appendChild(optAll);
+      const bidList = catToBrands[String(cat.id)] || [];
+      bidList.forEach(bid => {
+        const opt = document.createElement('option');
+        opt.value = `brand:${bid}`;
+        opt.textContent = brandMap.get(bid) || bid;
+        og.appendChild(opt);
+        addedBrands.add(bid);
+      });
+      select.appendChild(og);
+    });
+    // Add any extra brands (no category mapping) under Other Brands
+    const extra = brands.filter(b => !addedBrands.has(b.id));
+    if (extra.length) {
+      const og = document.createElement('optgroup');
+      og.label = 'Other Brands';
+      extra.forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = `brand:${b.id}`;
+        opt.textContent = b.label;
+        og.appendChild(opt);
+      });
+      select.appendChild(og);
+    }
+    const addBtn = document.getElementById('add-poi');
+    addBtn.onclick = async () => {
+      const v = select.value || '';
+      if (v.startsWith('cat:')) {
+        const id = v.slice(4);
+        const label = (categories.find(c => String(c.id) === id)?.label) || `Category ${id}`;
+        addPOIRow({ type: 'category', id, label, def: 15, min: 5, max: 60, step: 5 });
+        await fetchDAnchor(id);
+        updateMapFilter();
+      } else if (v.startsWith('brand:')) {
+        const id = v.slice(6);
+        const label = brandMap.get(id) || id;
+        addPOIRow({ type: 'brand', id, label, col: `${id}_drive_min`, def: 15, min: 5, max: 60, step: 5 });
+      }
+    };
+  }
 
   // ---------- Share URL ----------
   document.getElementById('share').addEventListener('click', () => {
     const params = new URLSearchParams();
-    params.set('chipotle', chipotleSlider.value);
-    params.set('costco', costcoSlider.value);
+    params.set('mode', CURRENT_MODE);
+    const cats = selectedPOIs.filter(p => p.type === 'category').map(p => `${encodeURIComponent(p.id)}:${document.getElementById('slider_' + p.id).value}`);
+    const brands = selectedPOIs.filter(p => p.type === 'brand').map(p => `${encodeURIComponent(p.id)}:${document.getElementById('slider_' + p.id).value}`);
+    if (cats.length) params.set('cat', cats.join(','));
+    if (brands.length) params.set('brand', brands.join(','));
     const url = new URL(window.location.href);
     url.search = params.toString();
     navigator.clipboard.writeText(url.toString()).then(() => {
@@ -196,25 +434,129 @@
     });
   });
 
-  function applyUrlParams() {
+  async function applyUrlParams() {
     const params = new URLSearchParams(window.location.search);
-    if (params.has('chipotle')) {
-      chipotleSlider.value = params.get('chipotle');
+    // Mode
+    const m = params.get('mode');
+    if (m === 'walk' || m === 'drive') {
+      CURRENT_MODE = m;
+      document.getElementById('mode-select').value = m;
+      // Toggle layers now if already loaded
+      try {
+        if (ANCHOR_MODE) {
+          map.setLayoutProperty('layer_r8_drive', 'visibility', m === 'drive' ? 'visible' : 'none');
+          map.setLayoutProperty('layer_r8_walk', 'visibility', m === 'walk' ? 'visible' : 'none');
+          map.setLayoutProperty('layer_r7_drive', 'visibility', 'none');
+        }
+      } catch (e) {}
     }
-    if (params.has('costco')) {
-      costcoSlider.value = params.get('costco');
+    // Categories
+    if (params.has('cat')) {
+      const pairs = params.get('cat').split(',');
+      for (const item of pairs) {
+        const [idEnc, val] = item.split(':');
+        const id = decodeURIComponent(idEnc);
+        addPOIRow({ type: 'category', id, label: `Category ${id}`, def: 15, min: 5, max: 60, step: 5 });
+        const slider = document.getElementById(`slider_${id}`);
+        if (slider && val) slider.value = val;
+        await fetchDAnchor(id);
+      }
+    }
+    // Brands
+    if (params.has('brand')) {
+      const pairs = params.get('brand').split(',');
+      for (const item of pairs) {
+        const [idEnc, val] = item.split(':');
+        const id = decodeURIComponent(idEnc);
+        addPOIRow({ type: 'brand', id, label: id.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), col: `${id}_drive_min`, def: 15, min: 5, max: 60, step: 5 });
+        const slider = document.getElementById(`slider_${id}`);
+        if (slider && val) slider.value = val;
+      }
+    }
+    if (selectedPOIs.length === 0) {
+      // Default: none preselected; user picks from dropdown
     }
   }
 
+  // ---------- Mode Toggle ----------
+  function setLayerVisibility(id, vis) {
+    try {
+      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
+    } catch (e) {}
+  }
+
+  function setMode(mode) {
+    if (CURRENT_MODE === mode) return;
+    CURRENT_MODE = mode;
+    // Toggle layers
+    if (ANCHOR_MODE) {
+      setLayerVisibility('layer_r7_drive', 'none');
+      setLayerVisibility('layer_r8_drive', mode === 'drive' ? 'visible' : 'none');
+      setLayerVisibility('layer_r8_walk', mode === 'walk' ? 'visible' : 'none');
+    } else {
+      // Min-based fallback is drive-only for now
+      setLayerVisibility('layer_r7_drive', 'visible');
+      setLayerVisibility('layer_r8_drive', 'visible');
+      setLayerVisibility('layer_r8_walk', 'none');
+    }
+    // Reset caches and refetch D_anchor for selected categories
+    for (const k in dAnchorCache) delete dAnchorCache[k];
+    if (ANCHOR_MODE) {
+      initCatalogSelector();
+      Promise.all(selectedPOIs.map(p => fetchDAnchor(p.id))).then(() => updateMapFilter());
+    } else {
+      updateMapFilter();
+    }
+    // Re-detect metadata for the new mode so the selector is accurate
+    inferAvailablePOIsFromMetadata(FALLBACK_POIS);
+  }
+
+  document.getElementById('mode-select').addEventListener('change', (e) => {
+    setMode(e.target.value);
+  });
+
   // ---------- Map Events ----------
-  map.on('load', () => {
-    applyUrlParams();
-    updateMapFilter();
+  map.on('load', async () => {
+    initPoiSelector();
+    // Wait a tick for metadata to resolve and selector to populate (anchor vs min mode)
+    setTimeout(async () => {
+      await applyUrlParams();
+      updateMapFilter();
+    }, 50);
 
     map.on('mousemove', (e) => {
-      const features = map.queryRenderedFeatures(e.point, { layers: ['layer_r7', 'layer_r8'] });
+      const layers = ['layer_r8_drive', 'layer_r8_walk', 'layer_r7_drive'];
+      const features = map.queryRenderedFeatures(e.point, { layers });
       if (features && features.length > 0) {
-        updateHoverBox(features[0]);
+        const f = features[0];
+        if (ANCHOR_MODE) {
+          // Build hover details for selected categories and brands
+          const props = f.properties || {};
+          let html = '';
+          selectedPOIs.forEach((p) => {
+            if (p.type === 'category') {
+              const UNREACH = 65535;
+              let minsSec = UNREACH;
+              for (let i = 0; i < MAX_K; i++) {
+                const aSec = (props[`a${i}_s`] ?? UNREACH);
+                const aid = String(props[`a${i}_id`] ?? '');
+                const catMap = dAnchorCache[p.id] || {};
+                const catSec = (aid && catMap[aid] != null) ? catMap[aid] : UNREACH;
+                const tot = aSec + catSec;
+                if (tot < minsSec) minsSec = tot;
+              }
+              const mins = (minsSec >= UNREACH) ? 'N/A' : Math.ceil(minsSec / 60) + ' min';
+              html += `<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`;
+            } else if (p.type === 'brand') {
+              const v = props[`${p.id}_drive_min`];
+              const mins = (v || v === 0) ? v + ' min' : 'N/A';
+              html += `<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`;
+            }
+          });
+          document.getElementById('hover-content').innerHTML = html || '<span class="muted">Select a category or brand</span>';
+        } else {
+          updateHoverBox(f);
+        }
       } else {
         updateHoverBox(null);
       }

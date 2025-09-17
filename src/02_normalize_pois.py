@@ -80,9 +80,33 @@ def load_osm_pois(state: str) -> gpd.GeoDataFrame:
 
     print(f"--- Loading OSM POIs for {state} from {pbf_path} ---")
     osm = OSM(pbf_path)
-    # Broad filter to get a wide range of POIs. Normalization will handle classification.
-    custom_filter = {"amenity": True, "shop": True, "leisure": True, "tourism": True}
-    gdf = osm.get_pois(custom_filter=custom_filter)
+    # Taxonomy-driven filter: only request tags we map into TownScout taxonomy
+    wanted: dict[str, set[str]] = {}
+    for (k, v), _ts in OSM_TAG_MAP.items():
+        wanted.setdefault(k, set()).add(v)
+    # Fallback to broad filter if mapping is empty
+    custom_filter = {k: sorted(list(vals)) for k, vals in wanted.items()} if wanted else {"amenity": True, "shop": True, "leisure": True, "tourism": True}
+
+    # Avoid Shapely relation assembly issues by skipping relations on first pass.
+    # Keep common tag columns used by normalization.
+    tag_cols = ["name", "brand", "operator", "amenity", "shop", "leisure", "tourism"]
+    try:
+        gdf = osm.get_data_by_custom_criteria(
+            custom_filter=custom_filter,
+            tags_as_columns=tag_cols,
+            keep_nodes=True,
+            keep_ways=True,
+            keep_relations=False,  # skip relations to avoid multipolygon assembly
+        )
+    except Exception as e:
+        print(f"[warn] get_data_by_custom_criteria failed (nodes+ways). Falling back to nodes-only. Error: {e}")
+        gdf = osm.get_data_by_custom_criteria(
+            custom_filter=custom_filter,
+            tags_as_columns=tag_cols,
+            keep_nodes=True,
+            keep_ways=False,
+            keep_relations=False,
+        )
     
     if gdf is None or gdf.empty:
         print(f"[warn] No POIs found in {pbf_path} with the current filter.")

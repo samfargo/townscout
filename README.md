@@ -21,7 +21,7 @@
 ## Current Implementation Status (Practical)
 
 - T_hex compute is implemented in `src/03_compute_minutes_per_state.py` with a Rust native kernel.
-- The compute emits a long format per-hex table: `(h3_id, site_id, time_s, res)`.
+- The compute emits a long format per-hex table: `(h3_id, anchor_int_id, time_s, res)`.
 - The demo tiles (`tiles/t_hex_r7_drive.pmtiles`, `tiles/t_hex_r8_drive.pmtiles`) currently contain pre‑aggregated per‑hex minimum minutes for a small set of brands (e.g., Chipotle, Costco) produced by `src/04_merge_states.py`.
 - The D_anchor dataset is optional. If present, the API loads it from Hive‑partitioned parquet at `data/minutes/mode={0|2}/category_id=*/part-*.parquet` or a legacy fallback file. Category resolution is numeric for now (`/api/categories` lists available IDs).
 - The GPU matrix‑factorization path remains the architectural goal and the example expression below shows the intended wiring; the demo UI ships with the pre‑aggregated mins for simplicity.
@@ -90,10 +90,10 @@ Overture ─┘                 └─>  D_anchor parquet (per category/brand)  
 
 * **Inputs:** OSM graph, anchor sites.
 * **Algorithm:** Multi‑source bucketed SSSP composed into K‑best per node (Rust native), aggregated to H3 hexes at requested resolutions.
-* **Output (long per hex row):** `(h3_id:uint64, site_id:int32, time_s:uint16, res:int32)`.
+* **Output (long per hex row):** `(h3_id:uint64, anchor_int_id:int32, time_s:uint16, res:int32)`.
 * **Memory tactics:** CSR graph, uint16 edge weights, ZSTD parquet.
 
-Example long row schema: `h3_id, site_id, time_s, res`
+Example long row schema: `h3_id, anchor_int_id, time_s, res`
 
 ### 6.2 D\_anchor (optional dataset)
 
@@ -123,13 +123,18 @@ Example long row schema: `h3_id, site_id, time_s, res`
 **Static Serving (FastAPI):**
 
 ```python
+# Web assets (HTML/JS/CSS)
 app.mount("/static", StaticFiles(directory="tiles/web"), name="static")
-app.mount("/tiles", StaticFiles(directory="tiles"), name="tiles")
+app.mount("/tiles/web", StaticFiles(directory="tiles/web"), name="tiles-web")
+
+# PMTiles are served via a custom route with HTTP Range support at /tiles/{name}.pmtiles
 ```
 
 ---
 
 ## 8) Frontend (MapLibre)
+
+The dropdow menun on the cleint side should be a list of every POI, and there should be just the name of the category at the start of each category's POI which the user can select to encompass the whole category. Or the user can select individual POI.
 
 **PMTiles protocol:** local import, no CDN. Demo UI lives at `tiles/web/index.html` and currently filters pre‑aggregated mins.
 
@@ -258,8 +263,8 @@ map.setFilter('layer_r8', filter);
 
 **t\_hex (Travel)**
 
-* `hex_r9: str`
-* `site_id: str`
+* `h3_id: uint64`
+* `anchor_int_id: int32`
 * `time_s: uint16` (`65535` sentinel)
 
 **Summaries**

@@ -99,7 +99,7 @@ def build_anchor_sites_from_nodes(
     pois_with_nodes['snap_dist_m'] = dists
     
     # Filter out POIs that are too far from the graph
-    MAX_SNAP_DISTANCE_M = 250 if mode == 'drive' else 75
+    MAX_SNAP_DISTANCE_M = config.SNAP_RADIUS_M_DRIVE if mode == 'drive' else config.SNAP_RADIUS_M_WALK
     pois_with_nodes = pois_with_nodes[pois_with_nodes['snap_dist_m'] <= MAX_SNAP_DISTANCE_M]
     print(f"[info] {len(pois_with_nodes)} POIs snapped within {MAX_SNAP_DISTANCE_M}m of the graph.")
 
@@ -214,7 +214,8 @@ def main():
     ap.add_argument("--cutoff", type=int, default=30, help="Cutoff MINUTES for node→anchor leg")
     ap.add_argument("--k-best", type=int, default=5, help="Max anchors per hex to keep")
     ap.add_argument("--out-times", required=True, help="Output Parquet path for long-format travel times (t_hex)")
-    ap.add_argument("--out-sites", required=True, help="Output Parquet path for the generated anchor sites")
+    ap.add_argument("--out-sites", required=False, help="Output Parquet path for the generated anchor sites (if building inline)")
+    ap.add_argument("--anchors", required=False, help="Optional: path to prebuilt anchor sites parquet (preferred)")
     ap.add_argument("--simplify-graph", action="store_true", help="(no-op) kept for CLI compatibility")
     ap.add_argument("--batch-size", type=int, default=500, help="Batch size for anchor processing (default: 500)")
     ap.add_argument("--k-pass-mode", action="store_true", help="(no-op) K-pass kept for compatibility; kernel handles K-pass internally")
@@ -240,24 +241,29 @@ def main():
     # Only track k-best stage; disable progress elsewhere
     node_ids, indptr, indices, w_sec, node_lats, node_lons, node_h3_by_res, res_used = load_or_build_csr(args.pbf, args.mode, args.res, False)
 
-    # Build Anchor Sites from POIs using node arrays
-    anchors_df = build_anchor_sites_from_nodes(canonical_pois_gdf, node_ids, node_lats, node_lons, args.mode)
-    
-    if anchors_df.empty:
-        raise SystemExit("No anchor sites could be built. Aborting.")
-
-    # Save the generated anchor sites for the merge step
-    os.makedirs(os.path.dirname(args.out_sites) or ".", exist_ok=True)
-    anchors_df.to_parquet(args.out_sites, index=False)
-    print(f"[ok] Saved {len(anchors_df)} anchor sites to {args.out_sites}")
+    # Load prebuilt anchors or build inline
+    if args.anchors and os.path.exists(args.anchors):
+        print(f"[info] Loading prebuilt anchors from {args.anchors} ...")
+        anchors_df = pd.read_parquet(args.anchors)
+    else:
+        print("[info] Building anchors inline (consider precomputing via anchors step)...")
+        anchors_df = build_anchor_sites_from_nodes(canonical_pois_gdf, node_ids, node_lats, node_lons, args.mode)
+        if anchors_df.empty:
+            raise SystemExit("No anchor sites could be built. Aborting.")
+        if args.out_sites:
+            os.makedirs(os.path.dirname(args.out_sites) or ".", exist_ok=True)
+            anchors_df.to_parquet(args.out_sites, index=False)
+            print(f"[ok] Saved {len(anchors_df)} anchor sites to {args.out_sites}")
     
 
     # --- Start of new native implementation ---
 
     # 1. Build anchor mappings aligned to CSR indices
     print("[info] Mapping anchor sites to CSR node indices...")
-    anchors_df = anchors_df.sort_values("site_id").reset_index(drop=True)
-    anchors_df["anchor_int_id"] = anchors_df.index.astype(np.int32)
+    # Use existing anchor_int_id if present; else assign deterministically by site_id
+    if "anchor_int_id" not in anchors_df.columns:
+        anchors_df = anchors_df.sort_values("site_id").reset_index(drop=True)
+        anchors_df["anchor_int_id"] = anchors_df.index.astype(np.int32)
 
     # Build mapping from OSM node id -> CSR index
     nid_to_idx = {int(n): i for i, n in enumerate(node_ids.tolist())}
@@ -316,7 +322,7 @@ def main():
     out_df = (
         pl.DataFrame({
             "h3_id": np.asarray(h3_id_arr, dtype=np.uint64),
-            "site_id": np.asarray(site_id_arr, dtype=np.int32),
+            "anchor_int_id": np.asarray(site_id_arr, dtype=np.int32),
             "time_s": np.asarray(time_arr, dtype=np.uint16),
             "res": np.asarray(res_arr, dtype=np.int32),
         })

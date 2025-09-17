@@ -222,7 +222,9 @@ fn kbest_multisource_csr(
 /// - Deterministically merge per-node across chunks into global top-K using the same
 ///   `insert_label_for_node` semantics, iterating candidates in (time, src_idx) order.
 /// This avoids shared mutable state during relaxations and preserves correctness.
-#[pyfunction]
+#[pyfunction(signature = (
+    indptr, indices, w_sec, source_idxs, k, cutoff_primary_s, cutoff_overflow_s, threads, progress, progress_cb=None
+))]
 fn kbest_multisource_bucket_csr(
     py: Python,
     indptr: PyReadonlyArray1<i64>,
@@ -265,14 +267,16 @@ fn kbest_multisource_bucket_csr(
         let buckets_len = (cutoff_overflow_s as usize) + 1;
         let mut buckets: Vec<Vec<(i32, i32)>> = vec![Vec::new(); buckets_len];
         let mut active: Vec<bool> = vec![false; buckets_len];
-        let mut frontier: BinaryHeap<Reverse<usize>> = BinaryHeap::new();
+        // Dial ring-pointer frontier (no heap)
+        let mut active_count: usize = 0;
+        let mut cur_idx: usize = 0;
         let mut pair_best: FxHashMap<u64, u16> = FxHashMap::default();
         pair_best.reserve(source_idxs.len() * 8);
 
         for &s in source_idxs {
-            if buckets[0].is_empty() && !active[0] { active[0] = true; frontier.push(Reverse(0)); }
             buckets[0].push((s, s));
         }
+        if !buckets[0].is_empty() && !active[0] { active[0] = true; active_count += 1; }
 
         let start_ts = Instant::now();
         let mut last_log = start_ts;
@@ -280,10 +284,13 @@ fn kbest_multisource_bucket_csr(
         let mut pops: usize = 0;
         let mut prim_assigned: usize = 0;
         let mut nodes_full_primary: usize = 0;
-        while let Some(&Reverse(cur_idx)) = frontier.peek() {
-            if buckets[cur_idx].is_empty() {
-                active[cur_idx] = false;
-                let _ = frontier.pop();
+        while active_count > 0 {
+            if !active[cur_idx] || buckets[cur_idx].is_empty() {
+                if active[cur_idx] && buckets[cur_idx].is_empty() {
+                    active[cur_idx] = false;
+                    active_count -= 1;
+                }
+                cur_idx = (cur_idx + 1) % buckets_len;
                 continue;
             }
             let (u_idx, src_idx) = buckets[cur_idx].pop().unwrap();
@@ -341,8 +348,10 @@ fn kbest_multisource_bucket_csr(
                 let vkey: u64 = ((v as u64) << 32) | (src_idx as u32 as u64);
                 if let Some(&best) = pair_best.get(&vkey) { if nd >= best { continue; } }
                 let nd_us = nd as usize;
-                if buckets[nd_us].is_empty() && !active[nd_us] { active[nd_us] = true; frontier.push(Reverse(nd_us)); }
                 buckets[nd_us].push((indices[e], src_idx));
+                if !active[nd_us] {
+                    active[nd_us] = true; active_count += 1;
+                }
             }
 
             // periodic live logging from within chunk
@@ -353,6 +362,11 @@ fn kbest_multisource_bucket_csr(
                     elapsed, cur_idx, pops, pair_best.len(), prim_assigned, nodes_full_primary
                 );
                 last_log = Instant::now();
+            }
+            // After processing one item, if current bucket emptied, deactivate
+            if buckets[cur_idx].is_empty() && active[cur_idx] {
+                active[cur_idx] = false;
+                active_count -= 1;
             }
         }
 
@@ -524,7 +538,7 @@ fn aggregate_h3_topk(
     Py<PyArray1<i32>>, // res
 )> {
     use rustc_hash::FxHashMap;
-    use std::cmp::Ordering;
+    // removed unused Ordering import (we use fully-qualified paths where needed)
     let lats = lats.as_slice()?;
     let lons = lons.as_slice()?;
     let a = best_anchor_int.as_array();

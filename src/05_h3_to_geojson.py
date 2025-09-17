@@ -50,11 +50,15 @@ def coerce_jsonable(props: dict):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, help="Input parquet file with hex data")
+    ap.add_argument("--merge", nargs="*", default=[], help="Optional additional parquet files to left-join on h3/res")
     ap.add_argument("--output", required=True, help="Output GeoJSON features (NDJSON)")
     ap.add_argument("--h3-col", default="h3_id")
-    ap.add_argument("--keep-cols", nargs="*", default=[
-        "chipotle_drive_min", "costco_drive_min"
-    ], help="Columns to keep as properties in the GeoJSON features.")
+    ap.add_argument(
+        "--keep-cols",
+        nargs="*",
+        default=None,
+        help="Columns to keep as properties in the GeoJSON features. If omitted, keeps all columns except h3_col."
+    )
     args = ap.parse_args()
 
     if not os.path.exists(args.input):
@@ -65,13 +69,42 @@ def main():
     # Read in one shot for now; for US scale switch to pyarrow.dataset and row-group streaming.
     df = pd.read_parquet(args.input)
 
+    # Optionally merge in additional properties from other parquet files
+    for mpath in (args.merge or []):
+        if not mpath:
+            continue
+        if not os.path.exists(mpath):
+            print(f"[warn] Merge file not found: {mpath}; skipping")
+            continue
+        mdf = pd.read_parquet(mpath)
+        # Determine join keys: prefer both h3_id and res if available
+        join_keys = [k for k in [args.h3_col, 'res'] if k in df.columns and k in mdf.columns]
+        if not join_keys:
+            # Fall back to h3 only
+            if args.h3_col in mdf.columns:
+                join_keys = [args.h3_col]
+            else:
+                print(f"[warn] Merge file {mpath} lacks join key; skipping")
+                continue
+        # Drop duplicate columns except join keys
+        dup_cols = [c for c in mdf.columns if c in df.columns and c not in join_keys]
+        mdf = mdf.drop(columns=dup_cols)
+        before_cols = set(df.columns)
+        df = pd.merge(df, mdf, on=join_keys, how='left')
+        added = [c for c in df.columns if c not in before_cols]
+        print(f"[merge] {mpath}: +{len(added)} cols")
+
     if args.h3_col not in df.columns:
         sys.exit("[error] Missing h3_id column")
 
-    # Keep only required columns to shrink JSON
-    keep = [c for c in args.keep_cols if c in df.columns]
-    cols = [args.h3_col] + keep
-    df = df[cols]
+    # Keep only required columns to shrink JSON (or keep all if not specified)
+    if args.keep_cols:
+        keep = [c for c in args.keep_cols if c in df.columns]
+        cols = [args.h3_col] + keep
+        df = df[cols]
+    else:
+        # Keep everything except the h3 column itself
+        df = df[[c for c in df.columns if True]]
 
     with open(args.output, "w") as out:
         # Use .itertuples() instead of .iterrows() to preserve dtypes

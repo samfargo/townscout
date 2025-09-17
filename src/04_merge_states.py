@@ -16,7 +16,7 @@ import geopandas as gpd
 from tqdm import tqdm
 import numpy as np
 
-from src.config import STATES, H3_RES_LOW, H3_RES_HIGH
+from config import STATES, H3_RES_LOW, H3_RES_HIGH
 
 def main():
     """Main function to merge state data and create summaries."""
@@ -25,7 +25,9 @@ def main():
     # Use glob to find all per-state outputs from the previous step
     # This makes it easy to add more states by just updating the STATES list.
     drive_time_files = glob.glob("data/minutes/*_drive_t_hex.parquet")
-    sites_files = glob.glob("data/minutes/*_drive_sites.parquet")
+    # Prefer anchors in data/anchors if present; fallback to minutes sites
+    anchors_candidates = glob.glob("data/anchors/*_drive_sites.parquet")
+    sites_files = anchors_candidates if anchors_candidates else glob.glob("data/minutes/*_drive_sites.parquet")
 
     if not drive_time_files or not sites_files:
         raise FileNotFoundError("No input files found from step 03. Run 'make minutes' first.")
@@ -38,41 +40,44 @@ def main():
 
     # 2. Join travel times with site info to get brand/category data
     # We only need a few columns from the sites table for this step.
-    sites_info = all_sites[['site_id', 'brands', 'categories']].copy()
+    # Ensure anchor_int_id is present; if missing, derive from deterministic site_id order
+    if 'anchor_int_id' not in all_sites.columns:
+        all_sites = all_sites.sort_values('site_id').reset_index(drop=True)
+        all_sites['anchor_int_id'] = all_sites.index.astype('int32')
+    sites_info = all_sites[['anchor_int_id', 'brands', 'categories']].copy()
     
     # Explode the 'brands' list so each brand has its own row. This makes joining easier.
     sites_info = sites_info.explode('brands')
     sites_info = sites_info.rename(columns={'brands': 'brand_id'})
     sites_info = sites_info.dropna(subset=['brand_id'])
 
-    merged_data = pd.merge(all_times, sites_info, on='site_id', how='inner')
+    # Join on anchor_int_id emitted by T_hex
+    merged_data = pd.merge(all_times, sites_info, left_on='anchor_int_id', right_on='anchor_int_id', how='inner')
 
-    # 3. For each hex, calculate the minimum travel time to each brand of interest
-    # For the MVP, we only care about chipotle and costco.
-    mvp_brands = ['chipotle', 'costco']
-    merged_data = merged_data[merged_data['brand_id'].isin(mvp_brands)]
+    # 3. For each hex, calculate the minimum travel time to each brand observed
+    # Keep only rows where we have a resolved brand_id
+    merged_data = merged_data.dropna(subset=['brand_id']).copy()
+    if merged_data.empty:
+        raise SystemExit("[error] No brand_id values found in merged data. Ensure BRAND_REGISTRY / normalization emits brand_ids.")
 
     # Group by hex, resolution, and brand, then find the minimum time.
-    min_times = merged_data.groupby(['h3_id', 'res', 'brand_id'])['time_s'].min().reset_index()
+    min_times = merged_data.groupby(['h3_id', 'res', 'brand_id'], as_index=False)['time_s'].min()
 
     # 4. Pivot the table to create the wide format for the frontend
-    # Rows: h3_id, res. Columns: chipotle_drive_min, costco_drive_min
+    # Rows: h3_id, res. Columns: <brand>_drive_min for every observed brand
     final_wide = min_times.pivot_table(
         index=['h3_id', 'res'],
         columns='brand_id',
         values='time_s'
     ).reset_index()
-    
-    # Convert seconds to integer minutes (rounding up)
-    for brand in mvp_brands:
-        col_name = f"{brand}_drive_min"
-        # Check if column exists, as some states might not have all brands
-        if brand in final_wide.columns:
-            final_wide[col_name] = (final_wide[brand] / 60).apply(np.ceil).astype('Int16')
-            final_wide = final_wide.drop(columns=[brand])
-        else:
-            # If a brand is missing entirely, add a null column for schema consistency
-            final_wide[col_name] = pd.NA
+
+    # Convert seconds to integer minutes (rounding up), rename columns
+    # Note: Some brands may be entirely absent at a given resolution; handled implicitly.
+    brand_cols = [c for c in final_wide.columns if c not in ('h3_id', 'res')]
+    for brand in brand_cols:
+        minutes_col = f"{brand}_drive_min"
+        final_wide[minutes_col] = (final_wide[brand] / 60).apply(np.ceil).astype('Int16')
+        final_wide = final_wide.drop(columns=[brand])
 
     # 5. Split by resolution and save
     os.makedirs("state_tiles", exist_ok=True)
