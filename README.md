@@ -18,6 +18,16 @@
 
 ---
 
+## Current Implementation Status (Practical)
+
+- T_hex compute is implemented in `src/03_compute_minutes_per_state.py` with a Rust native kernel.
+- The compute emits a long format per-hex table: `(h3_id, site_id, time_s, res)`.
+- The demo tiles (`tiles/t_hex_r7_drive.pmtiles`, `tiles/t_hex_r8_drive.pmtiles`) currently contain pre‑aggregated per‑hex minimum minutes for a small set of brands (e.g., Chipotle, Costco) produced by `src/04_merge_states.py`.
+- The D_anchor dataset is optional. If present, the API loads it from Hive‑partitioned parquet at `data/minutes/mode={0|2}/category_id=*/part-*.parquet` or a legacy fallback file. Category resolution is numeric for now (`/api/categories` lists available IDs).
+- The GPU matrix‑factorization path remains the architectural goal and the example expression below shows the intended wiring; the demo UI ships with the pre‑aggregated mins for simplicity.
+
+---
+
 ## 2) Core Model: Matrix Factorization
 
 ```
@@ -76,30 +86,21 @@ Overture ─┘                 └─>  D_anchor parquet (per category/brand)  
 
 ## 6) Computations
 
-### 6.1 T\_hex (`scripts/precompute_t_hex.py`)
+### 6.1 T\_hex (`src/03_compute_minutes_per_state.py`)
 
 * **Inputs:** OSM graph, anchor sites.
-* **Algorithm:** K‑pass single‑label Dijkstra (batched) from all anchors to H3 hexes.
-* **Output (per hex):** top‑K anchors `{a{i}_id, a{i}_s, a{i}_flags}`.
-* **Memory tactics:** batches (\~500 anchors), float32 edges, uint16 times, ZSTD parquet.
+* **Algorithm:** Multi‑source bucketed SSSP composed into K‑best per node (Rust native), aggregated to H3 hexes at requested resolutions.
+* **Output (long per hex row):** `(h3_id:uint64, site_id:int32, time_s:uint16, res:int32)`.
+* **Memory tactics:** CSR graph, uint16 edge weights, ZSTD parquet.
 
-**Row example:**
+Example long row schema: `h3_id, site_id, time_s, res`
 
-```json
-{
-  "h3_id": "882a306043fffff",
-  "k": 2,
-  "a0_id": 4585, "a0_s": 0,   "a0_flags": 0,
-  "a1_id": 2066, "a1_s": 30,  "a1_flags": 0
-}
-```
-
-### 6.2 D\_anchor (`scripts/precompute_d_anchor.py`)
+### 6.2 D\_anchor (optional dataset)
 
 * **Inputs:** Anchor sites + POIs (category/brand aware).
-* **Algorithm:** Single‑source Dijkstra from each POI (or site) into anchors; record *nearest* per category and optionally per brand.
-* **Airports:** Special snap to public arterials within 5km to avoid private/service roads inside aerodromes.
-* **Layout:** Hive‑partitioned parquet e.g. `mode={0,2}/category_id={1}/part-*.parquet`.
+* **Algorithm:** Single‑source Dijkstra from each POI/site into anchors; record nearest per category/brand.
+* **Layout:** Hive‑partitioned parquet at `data/minutes/mode={0,2}/category_id={...}/part-*.parquet` (or legacy fallback).
+* **Status:** Produced out‑of‑band at present; the API loads if present. Category resolution is numeric for now (`/api/categories`).
 
 **API shape:**
 
@@ -115,9 +116,9 @@ Overture ─┘                 └─>  D_anchor parquet (per category/brand)  
 
 ## 7) Tiles & Serving
 
-**GeoJSON Conversion** (`scripts/05_h3_to_geojson.py`): T\_hex parquet → NDJSON (H3 polygons). Use `.itertuples()` to preserve uint64 H3 IDs.
+**GeoJSON Conversion** (`src/05_h3_to_geojson.py`): T\_hex summary parquet → NDJSON (H3 polygons). Use `.itertuples()` to preserve uint64 H3 IDs.
 
-**PMTiles Build** (`scripts/06_build_tiles.py`): tippecanoe → MBTiles → PMTiles. Two layers: r7 (\<z8) and r8 (≥z8). Layer names must match frontend source IDs.
+**PMTiles Build** (`src/06_build_tiles.py`): tippecanoe → MBTiles → PMTiles. Two layers: r7 (\<z8) and r8 (≥z8). Layer names must match frontend source IDs.
 
 **Static Serving (FastAPI):**
 
@@ -130,7 +131,7 @@ app.mount("/tiles", StaticFiles(directory="tiles"), name="tiles")
 
 ## 8) Frontend (MapLibre)
 
-**PMTiles protocol:** local import, no CDN.
+**PMTiles protocol:** local import, no CDN. Demo UI lives at `tiles/web/index.html` and currently filters pre‑aggregated mins.
 
 ```js
 let protocol = new pmtiles.Protocol();
@@ -139,7 +140,7 @@ const T_HEX_R7_URL = "pmtiles:///tiles/t_hex_r7_drive.pmtiles";
 const T_HEX_R8_URL = "pmtiles:///tiles/t_hex_r8_drive.pmtiles";
 ```
 
-**GPU Filter Expression (core):**
+**GPU Filter Expression (target design):**
 
 ```js
 function buildFilterExpression(criteria, dAnchorData) {
@@ -165,18 +166,30 @@ function buildFilterExpression(criteria, dAnchorData) {
 }
 ```
 
+**Demo min‑based filter (current):**
+
+```js
+// Example MapLibre filter combining pre-aggregated mins
+const filter = [
+  "all",
+  ["<=", ["coalesce", ["get", "chipotle_drive_min"], 9999], chipotleMax],
+  ["<=", ["coalesce", ["get", "costco_drive_min"], 9999], costcoMax]
+];
+map.setFilter('layer_r7', filter);
+map.setFilter('layer_r8', filter);
+```
+
 **Performance levers:** client‑side only after initial load; r7/r8 swap; 250ms debounce; cache D\_anchor per category.
 
 ---
 
 ## 9) Data Contracts (hard requirements)
 
-**T\_hex tiles must provide:**
+**T\_hex tiles (current demo) provide:**
 
-* `k`, `a{i}_id`, `a{i}_s` for i∈\[0,k).
+* Pre‑aggregated per‑hex minimum minutes for selected brands.
 * Polygon geometry = H3 cell boundary.
-* Layer names = PMTiles source IDs.
-* Anchor IDs consistent across all hexes.
+* Layer names = `t_hex_r7_*`, `t_hex_r8_*`.
 
 **D\_anchor API must return:**
 
@@ -184,12 +197,11 @@ function buildFilterExpression(criteria, dAnchorData) {
 * Anchor IDs that appear in T\_hex tiles.
 * Mode partitioning if multiple modes are supported.
 
-**Frontend assumptions:**
+**Frontend assumptions (demo):**
 
-* `K_ANCHORS = 4` (configurable; must match T\_hex build).
-* Current categories: `chipotle`, `costco`, `airports` (extensible).
-* Mode: `drive` (walk is separate tiles + partitions).
-* Units: seconds (UI can display minutes).
+* Uses pre‑aggregated minute fields in the tiles.
+* Mode: `drive` (walk is separate data and optional).
+* Units: minutes in the UI.
 
 ---
 
@@ -370,7 +382,7 @@ UI rules:
 
 **G. Tiles**
 
-* **Input:** T\_hex parquet.
+* **Input:** T\_hex summary parquet from merge/summarize step.
 * **Output:** `tiles/t_hex_r7_{mode}.pmtiles`, `tiles/t_hex_r8_{mode}.pmtiles`.
 * **Checks:** Layer names match frontend configs; H3 boundaries valid; NDJSON line count == hex count.
 
@@ -392,7 +404,7 @@ UI rules:
 
 ---
 
-## 18) Airport Handling (Non‑negotiable)
+## 18) Airport Handling (Target)
 
 * Snap internal airport POIs to nearest public arterial (motorway/trunk/primary/secondary/tertiary/residential) within 5km.
 * If none found, mark unreachable rather than routing through private/service ways.
@@ -415,7 +427,7 @@ UI rules:
 
 ---
 
-## 21) Acceptance Tests (must pass)
+## 21) Acceptance Tests (targets)
 
 1. **Anchor consistency:** Every `a{i}_id` in tiles exists in D\_anchor for every exposed category (or sentinel).
 2. **Determinism:** Re‑running T\_hex/D\_anchor with same inputs yields byte‑identical outputs (modulo parquet row group ordering) — verify with hash of sorted records.
@@ -451,4 +463,19 @@ UI rules:
 * Density‑adaptive snap radius heuristics.
 ---
 
-**Status:** POI overhaul underway. Everything else here is an implementation spec; if reality diverges, update this doc first, then code. No silent drift.
+**Status:** POI overhaul underway. T_hex compute + demo min‑based tiles are implemented. D_anchor + full GPU composition remain the target design; this doc reflects the current reality and the end‑state architecture.
+
+---
+
+## Quick Start
+
+- Create environment and install deps: `make init`
+- Build native ext: `make native`
+- Download data and normalize POIs: `make pois`
+- Compute minutes (T_hex long format): `make minutes`
+- Merge + summarize, build tiles, and serve demo: `make geojson tiles` then `make serve` and open `http://localhost:5173/tiles/web/index.html`
+
+API (optional, if D_anchor dataset present):
+- Run: `uvicorn api.main:app --reload`
+- Categories: `GET /api/categories?mode=drive`
+- D_anchor slice: `GET /api/d_anchor?category=<id>&mode=drive`

@@ -39,7 +39,6 @@ import polars as pl
 
 from graph.pyrosm_csr import load_or_build_csr
 from t_hex import kbest_multisource_bucket_csr, aggregate_h3_topk_precached
-import util_h3
 import config
 
 SNAPSHOT_TS = time.strftime("%Y-%m-%d")
@@ -67,7 +66,16 @@ def build_anchor_sites_from_nodes(
     if canonical_pois.empty or node_ids.size == 0:
         print("[warn] Canonical POIs or graph is empty. No anchor sites will be built.")
         return pd.DataFrame()
-    
+
+    # Keep only anchor-worthy POIs: those that map into our taxonomy (have category)
+    # or have a recognized brand_id. This dramatically reduces source count and
+    # aligns with the architecture (Anchor Sites built from meaningful POIs).
+    before = len(canonical_pois)
+    poi_mask = canonical_pois["category"].notna() | canonical_pois["brand_id"].notna()
+    canonical_pois = canonical_pois.loc[poi_mask].copy()
+    after = len(canonical_pois)
+    print(f"[info] Anchorable POIs: {after} / {before} (filtered by category/brand)")
+
     # 1. Build a KD-tree from the graph nodes.
     print(f"[info] Building KD-tree from {len(node_ids)} graph nodes...")
     # Build KD-tree from node arrays
@@ -212,6 +220,7 @@ def main():
     ap.add_argument("--k-pass-mode", action="store_true", help="(no-op) K-pass kept for compatibility; kernel handles K-pass internally")
     ap.add_argument("--progress", action="store_true", help="Show progress bars/logs during heavy stages")
     ap.add_argument("--overflow-cutoff", type=int, default=90, help="Overflow cutoff MINUTES for nodes missing K labels (default: 90; set equal to --cutoff to disable overflow)")
+    ap.add_argument("--threads", type=int, default=1, help="Threads for k-best compute. Use 1 to compute all sources in a single pass (fastest, avoids repeated per-chunk traversals).")
     args = ap.parse_args()
 
     # Load canonical POIs
@@ -265,7 +274,7 @@ def main():
         raise SystemExit("No valid anchor nodes found in the graph. Aborting.")
 
     # 3. Call the native kernel
-    print(f"[info] Calling native kernel (bucket K-pass) for k-best search (k={args.k_best}, cutoff={args.cutoff} min)...")
+    print(f"[info] Calling native kernel (bucket K-pass) for k-best search (k={args.k_best}, cutoff={args.cutoff} min, overflow={args.overflow_cutoff} min, threads={args.threads})...")
     cutoff_primary_s = int(args.cutoff) * 60
     # Allow tuning overflow cutoff to trade accuracy for speed
     cutoff_overflow_s = int(args.overflow_cutoff) * 60
@@ -285,8 +294,11 @@ def main():
                 kb_pbar.refresh()
         kb_pbar.update(1)
 
+    # Important: pass threads=1 by default so the kernel computes all sources in a single pass.
+    # The parallel path partitions sources and repeats graph traversals per chunk, which can be
+    # substantially slower overall despite parallelism.
     best_src_idx, time_s = kbest_multisource_bucket_csr(
-        indptr, indices, w_sec, source_idxs, K, cutoff_primary_s, cutoff_overflow_s, os.cpu_count(), bool(args.progress), (_kb_cb if args.progress else None)
+        indptr, indices, w_sec, source_idxs, K, cutoff_primary_s, cutoff_overflow_s, int(max(1, args.threads)), bool(args.progress), (_kb_cb if args.progress else None)
     )
     if kb_pbar is not None:
         kb_pbar.close()

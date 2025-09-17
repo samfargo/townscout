@@ -72,8 +72,8 @@
   let protocol = new pmtiles.Protocol();
   maplibregl.addProtocol("pmtiles", protocol.tile);
 
-  const R7_URL = "pmtiles:///tiles/us_r7.pmtiles";
-  const R8_URL = "pmtiles:///tiles/us_r8.pmtiles";
+  const R7_URL = "pmtiles:///tiles/t_hex_r7_drive.pmtiles";
+  const R8_URL = "pmtiles:///tiles/t_hex_r8_drive.pmtiles";
 
   const map = new maplibregl.Map({
     container: 'map',
@@ -102,7 +102,7 @@
           id: 'layer_r7',
           type: 'fill',
           source: 'us_r7',
-          'source-layer': 'us_r7',
+          'source-layer': 't_hex_r7_drive',
           maxzoom: 8,
           paint: {
             'fill-color': '#1976d2',
@@ -114,7 +114,7 @@
           id: 'layer_r8',
           type: 'fill',
           source: 'us_r8',
-          'source-layer': 'us_r8',
+          'source-layer': 't_hex_r8_drive',
           minzoom: 8,
           paint: {
             'fill-color': '#1976d2',

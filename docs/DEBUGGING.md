@@ -10,9 +10,9 @@ When the map isn't working, check these in order:
 curl http://localhost:5174/health
 
 # Are D_anchor endpoints working?
-curl "http://localhost:5174/api/d_anchor?category=chipotle&mode=drive" | head -50
-# Test airports category
-curl "http://localhost:5174/api/d_anchor?category=airports&mode=drive" | jq 'to_entries | map(select(.value != 65535)) | length'
+# Tip: you can pass a numeric category_id discovered via /api/categories
+curl "http://localhost:5174/api/categories?mode=drive"
+curl "http://localhost:5174/api/d_anchor?category=1&mode=drive" | head -50
 
 # Are PMTiles being served?
 curl -I http://localhost:5174/tiles/t_hex_r8_drive.pmtiles
@@ -119,9 +119,8 @@ print('Sample:', df.head(2).to_dict())
 ```
 
 **Common Fixes**:
-- Rebuild D_anchor data: `make d-anchor`
-- Verify columns match API expectations (`category_id`, `seconds_u16`)
-- Check for corrupted parquet files (0-byte or unreadable)
+- Verify columns match API expectations (`anchor_int_id`, `category_id`, `seconds_u16`)
+- If you switch datasets or partitions, hit `/api/categories` to confirm available ids.
 
 ### 🚨 Memory Issues (SIGKILL during computation)
 **Symptoms**: Processes killed during `make t-hex` with exit code 137/Killed
@@ -218,10 +217,10 @@ print('T_hex shape:', df.shape)
 print('Sample anchors per hex:', df[['a0_id', 'a1_id']].head())
 "
 
-# 3. Check D_anchor computation
+# 3. Check D_anchor dataset presence
 python3 -c "
 import pandas as pd
-df = pd.read_parquet('out/d_anchor/massachusetts_anchor_to_category_drive.parquet')
+df = pd.read_parquet('data/minutes/massachusetts_anchor_to_category_drive.parquet')
 print('D_anchor shape:', df.shape)
 print('Categories:', df['category_id'].unique())
 print('Sample times:', df[['anchor_id', 'seconds_u16']].head())
@@ -247,8 +246,8 @@ grep "\"a0_id\":$ANCHOR_ID\|\"a1_id\":$ANCHOR_ID" tiles/t_hex_r8_drive.geojson.n
 
 # What are its category travel times in D_anchor?
 echo "D_anchor travel times:"
-curl -s "http://localhost:5174/api/d_anchor?category=chipotle&mode=drive" | jq ".\"$ANCHOR_ID\""
-curl -s "http://localhost:5174/api/d_anchor?category=costco&mode=drive" | jq ".\"$ANCHOR_ID\""
+curl -s "http://localhost:5174/api/d_anchor?category=1&mode=drive" | jq ".\"$ANCHOR_ID\""
+curl -s "http://localhost:5174/api/d_anchor?category=2&mode=drive" | jq ".\"$ANCHOR_ID\""
 
 # Is the anchor reachable?
 if [[ $(curl -s "http://localhost:5174/api/d_anchor?category=chipotle&mode=drive" | jq ".\"$ANCHOR_ID\"") == "65535" ]]; then

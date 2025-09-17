@@ -8,10 +8,10 @@ This directory contains technical documentation for the TownScout interactive ma
 
 ### 📖 Core Documentation
 
-**[ARCHITECTURE.md](ARCHITECTURE.md)** - Complete system architecture and design decisions
+Architecture and implementation details now live in the root `README.md` (kept up to date alongside the code). See that file for:
 - Data flow and pipeline overview
-- Frontend-backend integration patterns  
-- Performance optimizations and targets
+- Frontend-backend integration patterns
+- Performance targets and checks
 - Extension points for new features
 
 **[DEBUGGING.md](DEBUGGING.md)** - Practical troubleshooting and diagnostics
@@ -20,13 +20,9 @@ This directory contains technical documentation for the TownScout interactive ma
 - Data flow tracing procedures
 - Recovery and cleanup procedures
 
-### 🗂️ Legacy Documentation (Consolidated)
+### 🗂️ Legacy Documentation
 
-The following files contain historical development notes and have been consolidated into the main documents above:
-
-- ~~`TROUBLESHOOTING.md`~~ → Merged into `DEBUGGING.md`
-- ~~`FRONTEND_ARCHITECTURE.md`~~ → Merged into `ARCHITECTURE.md`  
-- ~~`ARCHITECTURE_NOTES.md`~~ → Merged into `ARCHITECTURE.md`
+Historical notes have been folded into `README.md` and `docs/DEBUGGING.md`. Remove references to non-existent `ARCHITECTURE.md`.
 
 ## Quick Reference
 
@@ -36,12 +32,12 @@ The following files contain historical development notes and have been consolida
 3. Check browser console for JavaScript errors
 
 ### 🏗️ Understanding the System?
-1. Read `ARCHITECTURE.md` → "Data Flow Architecture"
+1. Read the root `README.md` → "System Overview & Spec"
 2. See the matrix factorization: `T_hex + D_anchor = total_travel_time`
-3. Check frontend filter expression implementation
+3. Check the demo UI in `tiles/web/index.html`
 
 ### 🔧 Adding New Features?
-1. `ARCHITECTURE.md` → "Extension Points"
+1. Root `README.md` → "Implementation Tasks" and "Extension Points"
 2. Follow the data pipeline: Data → Compute → Tiles → UI
 3. Maintain the performance targets documented
 

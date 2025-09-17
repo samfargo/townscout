@@ -42,6 +42,8 @@ data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet native
 		--pois data/poi/$*_canonical.parquet \
 		--mode drive \
 		--cutoff 30 \
+		--overflow-cutoff 30 \
+		--k-best 4 \
 		--res 7 8 \
 		--progress \
 		--out-times $@ \
@@ -76,13 +78,13 @@ tiles: geojson  ## 6. Build vector tiles (PMTiles)
 	@mkdir -p tiles/web
 	$(PY) src/06_build_tiles.py \
 		--input tiles/us_r7.geojson \
-		--output tiles/us_r7.pmtiles \
-		--layer us_r7 \
+		--output tiles/t_hex_r7_drive.pmtiles \
+		--layer t_hex_r7_drive \
 		--minzoom 4 --maxzoom 8
 	$(PY) src/06_build_tiles.py \
 		--input tiles/us_r8.geojson \
-		--output tiles/us_r8.pmtiles \
-		--layer us_r8 \
+		--output tiles/t_hex_r8_drive.pmtiles \
+		--layer t_hex_r8_drive \
 		--minzoom 8 --maxzoom 12
 
 export-csv: merge ## 7. Export summary data to CSV

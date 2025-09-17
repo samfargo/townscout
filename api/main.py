@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from src.categories import get_category
+from typing import Any
 
 APP_NAME = "TownScout D_anchor API"
 
@@ -59,6 +59,35 @@ def load_D_anchor(mode: str) -> pd.DataFrame:
         raise RuntimeError(f"D_anchor missing required columns: {missing}")
     return df[["anchor_int_id", "category_id", "seconds_u16"]].copy()
 
+# ---------- Category resolution ----------
+
+def _mode_to_partition(mode: str) -> int:
+    return {"drive": 0, "walk": 2}.get(mode, 0)
+
+def list_available_categories(mode: str) -> list[int]:
+    """Return sorted list of available category_id from Hive partitions for given mode, if present."""
+    base = os.path.join(DATA_DIR, f"mode={_mode_to_partition(mode)}")
+    ids: list[int] = []
+    if os.path.isdir(base):
+        for name in os.listdir(base):
+            if name.startswith("category_id="):
+                try:
+                    ids.append(int(name.split("=", 1)[1]))
+                except Exception:
+                    pass
+    return sorted(set(ids))
+
+def resolve_category_id(category: str, mode: str) -> int:
+    """Resolve a category input to numeric id.
+    Accepts a numeric string directly. If a taxonomy file is present in data/taxonomy, it can be wired later.
+    """
+    # Numeric id is always allowed
+    try:
+        return int(category)
+    except Exception:
+        # No taxonomy wired yet — fall back to available ids and instruct caller
+        raise HTTPException(status_code=404, detail=f"Unknown category '{category}'. Use numeric category_id from /api/categories?mode={mode}.")
+
 # ---------- FastAPI ----------
 app = FastAPI(title=APP_NAME)
 
@@ -84,9 +113,14 @@ async def serve_frontend():
 def health():
     return {"ok": True, "app": APP_NAME}
 
+@app.get("/api/categories")
+def categories(mode: str = Query("drive", description="Travel mode, e.g. 'drive' or 'walk'")):
+    """List available category_id values for current dataset/partitions."""
+    return {"mode": mode, "category_id": list_available_categories(mode)}
+
 @app.get("/api/d_anchor")
 def get_d_anchor_slice(
-    category: str = Query(..., description="Category name, e.g. 'costco'"),
+    category: str = Query(..., description="Category id (numeric) or taxonomy key"),
     mode: str = Query("drive", description="Travel mode, e.g. 'drive' or 'walk'")
 ):
     """
@@ -94,11 +128,8 @@ def get_d_anchor_slice(
     for a given category and travel mode.
     """
     try:
-        cat = get_category(category)
-        cid = int(cat.id)
-    except (ValueError, KeyError) as e:
-        raise HTTPException(status_code=404, detail=f"Category '{category}' not found.")
-
+        cid = resolve_category_id(category, mode)
+    
     try:
         D = load_D_anchor(mode)
         sub = D[D["category_id"] == cid]
@@ -132,4 +163,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5174)) # Default to 5174 to avoid conflict with frontend
     print(f"Starting TownScout D_anchor server on http://0.0.0.0:{port}")
     print(f"Using data from STATE={STATE} in DATA_DIR={DATA_DIR}")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True, app_dir="api/app")
+    uvicorn.run("api.main:app", host="0.0.0.0", port=port, reload=True)
