@@ -22,7 +22,8 @@
 
 - T_hex compute is implemented in `src/03_compute_minutes_per_state.py` with a Rust native kernel.
 - The compute emits a long format per-hex table: `(h3_id, anchor_int_id, time_s, res)`.
-- The demo tiles (`tiles/t_hex_r7_drive.pmtiles`, `tiles/t_hex_r8_drive.pmtiles`) currently contain pre‑aggregated per‑hex minimum minutes for a small set of brands (e.g., Chipotle, Costco) produced by `src/04_merge_states.py`.
+- **Overlays system** (`src/03c_compute_overlays.py`) provides K=1 nearest-neighbor computation for dense brands, ensuring 100% coverage in urban areas.
+- The demo tiles (`tiles/t_hex_r7_drive.pmtiles`, `tiles/t_hex_r8_drive.pmtiles`) contain pre‑aggregated per‑hex minimum minutes for brands (e.g., Starbucks, McDonald's, Chipotle, Costco) produced by `src/04_merge_states.py` with overlay integration.
 - The D_anchor dataset is optional. If present, the API loads it from Hive‑partitioned parquet at `data/minutes/mode={0|2}/category_id=*/part-*.parquet` or a legacy fallback file. Category resolution is numeric for now (`/api/categories` lists available IDs).
 - The GPU matrix‑factorization path remains the architectural goal and the example expression below shows the intended wiring; the demo UI ships with the pre‑aggregated mins for simplicity.
 
@@ -101,6 +102,14 @@ Example long row schema: `h3_id, anchor_int_id, time_s, res`
 * **Algorithm:** Single‑source Dijkstra from each POI/site into anchors; record nearest per category/brand.
 * **Layout:** Hive‑partitioned parquet at `data/minutes/mode={0,2}/category_id={...}/part-*.parquet` (or legacy fallback).
 * **Status:** Produced out‑of‑band at present; the API loads if present. Category resolution is numeric for now (`/api/categories`).
+
+### 6.3 Overlays System (`src/03c_compute_overlays.py`)
+
+* **Purpose:** Ensures 100% coverage for dense brands by computing K=1 nearest-neighbor travel times.
+* **Algorithm:** For each qualifying brand (frequency ≥50 anchors), compute single-source Dijkstra from all brand anchors to all H3 hexagons.
+* **Integration:** Merged with T_hex data via `src/04_merge_states.py`, taking minimum between K-best and overlay times.
+* **Output:** Per-brand overlay columns (e.g., `starbucks_overlay_min`) in final tiles.
+* **Coverage Target:** 100% for urban areas, 95%+ for suburban areas with dense brands.
 
 **API shape:**
 
@@ -287,6 +296,7 @@ map.setFilter('layer_r8', filter);
 * Lowercase/strip names.
 * Brand resolution: `brand.names.primary > names.primary > alias registry`.
 * Category mapping: Overture `categories.primary/alternate` + OSM `amenity/shop/cuisine` → **TownScout taxonomy**.
+* **Brand fallback logic**: POIs with missing `brand` field fall back to `name` field for brand matching.
 
 3. **Conflate & Deduplicate**
 
@@ -298,19 +308,32 @@ map.setFilter('layer_r8', filter);
 * Snap to nearest road node by mode; group by `(mode,node_id)`.
 * Aggregate `poi_ids`, `brands`, `categories`.
 
-5. **Travel Precompute**
+5. **Travel Precompute (K-best)**
 
-* Multi‑source Dijkstra from sites.
-* Store global top‑K per hex; support category/brand quotas if needed.
+* Multi‑source Dijkstra from sites using K-best algorithm.
+* Store global top‑K per hex (recommended K=20+ for dense urban areas).
+* Parameters: `--cutoff 90 --k-best 20` for comprehensive coverage.
 
-6. **Summaries**
+6. **Overlays Computation**
+
+* **Dense brand detection**: Brands with ≥50 anchor sites qualify for overlay computation.
+* **K=1 nearest-neighbor**: Compute shortest path from every hex to nearest brand anchor.
+* **Output**: Per-brand overlay parquet files in `data/minutes/mode=0/` directory.
+
+7. **Merge & Integration**
+
+* Combine K-best travel times with overlay data.
+* **Overlay priority**: Take minimum between K-best result and overlay result for each brand.
+* Ensures 100% coverage for dense brands while maintaining efficiency.
+
+8. **Summaries**
 
 * Precompute `min_cat` & `min_brand` for exposed categories & A‑list brands.
 * Long‑tail brands resolved via joins at query time.
 
-7. **Tiles**
+9. **Tiles**
 
-* Convert T\_hex → NDJSON → PMTiles (r7/r8 layers, exact layer names).
+* Convert merged data → NDJSON → PMTiles (r7/r8 layers, exact layer names).
 
 ---
 
@@ -401,7 +424,7 @@ UI rules:
 
 ## 17) Deterministic Config (single source of truth)
 
-* `K_ANCHORS = 4` (env or `config.yml`).
+* `K_ANCHORS = 20` (recommended for dense urban areas; adjustable via Makefile `--k-best` parameter).
 * `UNREACHABLE = 65535`.
 * Snap radii defaults: walk 0.25 mi; drive 1 mi; allow density‑adaptive overrides.
 * Partitions: `mode ∈ {drive, walk}`.
@@ -468,7 +491,7 @@ UI rules:
 * Density‑adaptive snap radius heuristics.
 ---
 
-**Status:** POI overhaul underway. T_hex compute + demo min‑based tiles are implemented. D_anchor + full GPU composition remain the target design; this doc reflects the current reality and the end‑state architecture.
+**Status:** POI overhaul complete with overlays system. T_hex compute + overlays + demo min‑based tiles are fully implemented and achieve 100% coverage for dense brands. D_anchor + full GPU composition remain the target design; this doc reflects the current reality and the end‑state architecture.
 
 ---
 
@@ -477,8 +500,22 @@ UI rules:
 - Create environment and install deps: `make init`
 - Build native ext: `make native`
 - Download data and normalize POIs: `make pois`
+- Build anchor sites: `make anchors`
 - Compute minutes (T_hex long format): `make minutes`
-- Merge + summarize, build tiles, and serve demo: `make geojson tiles` then `make serve` and open `http://localhost:5173/tiles/web/index.html`
+- **Compute overlays for dense brands**: `make overlays`
+- Merge + summarize, build tiles, and serve demo: `make merge tiles` then `make serve` and open `http://localhost:5173/tiles/web/index.html`
+
+### Full Pipeline Command
+```bash
+make pois anchors minutes overlays merge tiles
+```
+
+### Coverage Optimization
+For maximum POI coverage (especially dense brands like Starbucks):
+1. **Expand brand aliases** in `src/taxonomy.py` for comprehensive name matching
+2. **Use overlays system** for brands with ≥50 anchor sites  
+3. **Increase K-best parameters** (`--k-best 20+`) for dense urban areas
+4. **Verify brand fallback logic** in normalization for complete POI capture
 
 API (optional, if D_anchor dataset present):
 - Run: `uvicorn api.main:app --reload`

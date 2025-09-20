@@ -22,6 +22,8 @@
     .row select:focus { outline: none; border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59,130,246,0.25); }
     .filter-row { align-items: center; }
     .filter-row .spacer { flex: 0.2; }
+    .pins-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #374151; }
+    .pins-toggle input { cursor: pointer; }
     .remove-btn { background: transparent; border: none; color: #6b7280; cursor: pointer; padding: 4px 6px; border-radius: 6px; font-size: 13px; }
     .remove-btn:hover { background: #f3f4f6; color: #111827; }
     .status { margin-top: 10px; font-size: 12px; }
@@ -177,17 +179,18 @@
   // ---------- Dynamic POI Filters ----------
   // Fallback POIs if metadata is unavailable (min-based mode)
   const FALLBACK_POIS = [
-    { id: 'chipotle', label: 'Chipotle', col: 'chipotle_drive_min', def: 15, min: 5, max: 60, step: 5 },
-    { id: 'costco', label: 'Costco', col: 'costco_drive_min', def: 20, min: 5, max: 60, step: 5 }
+    { id: 'chipotle', label: 'Chipotle', col: 'chipotle_drive_min', def: 30, min: 5, max: 240, step: 5 },
+    { id: 'costco', label: 'Costco', col: 'costco_drive_min', def: 30, min: 5, max: 240, step: 5 }
   ];
 
   // Anchor-mode state (when tiles expose a{i}_id/a{i}_s)
   let ANCHOR_MODE = false;
   let CURRENT_MODE = 'drive'; // 'drive' | 'walk'
-  const MAX_K = 4; // support up to 4 anchors; missing ones coalesce to sentinel
+  const MAX_K = 20; // align with tiles: support up to 20 anchors; missing ones coalesce to sentinel
   const dAnchorCache = {}; // { categoryId: { anchorId: seconds } }
 
   const selectedPOIs = [];
+  const activePins = {}; // rowKey -> { brands: string[], sourceId: string, layerIds: string[] }
 
   function buildFilterExpressionMinCols() {
     // Start with all; add one constraint per selected POI against *_drive_min columns
@@ -282,15 +285,23 @@
       <label for="slider_${poi.id}">${poi.label} (minutes)</label>
       <input id="slider_${poi.id}" type="range" min="${poi.min}" max="${poi.max}" step="${poi.step}" value="${poi.def}">
       <span id="val_${poi.id}">${poi.def}</span>
+      <label class="pins-toggle" title="Show pins for ${poi.label}"><input id="pins_${poi.type}_${poi.id}" type="checkbox"> Pins</label>
       <button class="remove-btn" id="rm_${poi.id}" title="Remove ${poi.label}">✕</button>
     `;
     container.appendChild(row);
     document.getElementById(`slider_${poi.id}`).addEventListener('input', debouncedUpdate);
+    const pinsEl = document.getElementById(`pins_${poi.type}_${poi.id}`);
+    if (pinsEl) {
+      pinsEl.addEventListener('change', async (e) => {
+        await togglePinsForPoi(poi, e.target.checked);
+      });
+    }
     document.getElementById(`rm_${poi.id}`).addEventListener('click', () => {
       // Remove from selected list and DOM
       const idx = selectedPOIs.findIndex(p => p.id === poi.id && p.type === poi.type);
       if (idx >= 0) selectedPOIs.splice(idx, 1);
       row.remove();
+      removePinsForPoi(poi);
       updateMapFilter();
     });
     if (ANCHOR_MODE && poi.type === 'category') {
@@ -357,6 +368,10 @@
       const categories = Array.isArray(resp.categories) ? resp.categories : [];
       const brands = Array.isArray(resp.brands) ? resp.brands : [];
       const catToBrands = resp.cat_to_brands || {};
+      // Stash for URL parsing and labels
+      window._categoriesById = new Map(categories.map(c => [String(c.id), c.label]));
+      window._brandLabelById = new Map(brands.map(b => [String(b.id), b.label]));
+      window._catToBrands = catToBrands;
       populateCatalogSelector(categories, brands, catToBrands);
     } catch (e) {
       populatePoiSelector(FALLBACK_POIS);
@@ -366,18 +381,35 @@
   function populateCatalogSelector(categories, brands, catToBrands) {
     const select = document.getElementById('poi-select');
     select.innerHTML = '';
-    const brandMap = new Map(brands.map(b => [b.id, b.label]));
-    const addedBrands = new Set();
+    const brandMap = new Map(brands.map(b => [String(b.id), b.label]));
+    // Group categories by label to avoid repeated labels (e.g., multiple "Restaurant")
+    const groups = new Map(); // label -> { label, ids:Set<string>, brandIds:Set<string> }
     categories.forEach(cat => {
-      const og = document.createElement('optgroup');
-      og.label = cat.label;
-      // Category-level selection
-      const optAll = document.createElement('option');
-      optAll.value = `cat:${cat.id}`;
-      optAll.textContent = cat.label;
-      og.appendChild(optAll);
+      const label = String(cat.label);
+      const scid = String(cat.id);
+      const g = groups.get(label) || { label, ids: new Set(), brandIds: new Set() };
+      g.ids.add(scid);
       const bidList = catToBrands[String(cat.id)] || [];
-      bidList.forEach(bid => {
+      bidList.forEach(bid => g.brandIds.add(String(bid)));
+      groups.set(label, g);
+    });
+
+    // Stash mapping of joined-ids -> label for URL parsing
+    window._groupLabelByIds = new Map();
+
+    const addedBrands = new Set();
+    Array.from(groups.values()).sort((a,b) => a.label.localeCompare(b.label)).forEach(g => {
+      const og = document.createElement('optgroup');
+      og.label = g.label;
+      // Category-level selection (joined ids)
+      const joined = Array.from(g.ids).sort().join(',');
+      const optAll = document.createElement('option');
+      optAll.value = `cat:${joined}`;
+      optAll.textContent = g.label;
+      og.appendChild(optAll);
+      window._groupLabelByIds.set(joined, g.label);
+      // Brand list (union across grouped categories)
+      Array.from(g.brandIds).sort().forEach(bid => {
         const opt = document.createElement('option');
         opt.value = `brand:${bid}`;
         opt.textContent = brandMap.get(bid) || bid;
@@ -386,8 +418,9 @@
       });
       select.appendChild(og);
     });
+
     // Add any extra brands (no category mapping) under Other Brands
-    const extra = brands.filter(b => !addedBrands.has(b.id));
+    const extra = brands.filter(b => !addedBrands.has(String(b.id)));
     if (extra.length) {
       const og = document.createElement('optgroup');
       og.label = 'Other Brands';
@@ -403,17 +436,161 @@
     addBtn.onclick = async () => {
       const v = select.value || '';
       if (v.startsWith('cat:')) {
-        const id = v.slice(4);
-        const label = (categories.find(c => String(c.id) === id)?.label) || `Category ${id}`;
-        addPOIRow({ type: 'category', id, label, def: 15, min: 5, max: 60, step: 5 });
-        await fetchDAnchor(id);
+        const id = v.slice(4); // may be comma-joined ids
+        const label = (window._groupLabelByIds && window._groupLabelByIds.get(String(id))) || (window._categoriesById && window._categoriesById.get(String(id))) || `Category ${id}`;
+        const ids = String(id).split(',').filter(Boolean);
+        addPOIRow({ type: 'category', id, ids, label, def: 30, min: 5, max: 240, step: 5 });
+        await ensureCombinedDAnchor(id, ids);
         updateMapFilter();
       } else if (v.startsWith('brand:')) {
         const id = v.slice(6);
-        const label = brandMap.get(id) || id;
-        addPOIRow({ type: 'brand', id, label, col: `${id}_drive_min`, def: 15, min: 5, max: 60, step: 5 });
+        const label = brandMap.get(id) || (window._brandLabelById && window._brandLabelById.get(id)) || id;
+        addPOIRow({ type: 'brand', id, label, col: `${id}_drive_min`, def: 30, min: 5, max: 240, step: 5 });
       }
     };
+  }
+
+  async function ensureCombinedDAnchor(key, ids) {
+    // Ensure dAnchorCache[key] contains per-anchor seconds = min over ids' maps
+    if (!Array.isArray(ids)) ids = String(key).split(',').filter(Boolean);
+    // Fetch missing pieces
+    await Promise.all(ids.map((cid) => dAnchorCache[cid] ? Promise.resolve(dAnchorCache[cid]) : fetchDAnchor(cid)));
+    const combined = {};
+    ids.forEach((cid) => {
+      const m = dAnchorCache[cid] || {};
+      for (const [aid, sec] of Object.entries(m)) {
+        const v = combined[aid];
+        combined[aid] = (v == null) ? sec : Math.min(v, sec);
+      }
+    });
+    dAnchorCache[key] = combined;
+    return combined;
+  }
+
+  // ---------- Pins (POI locations) ----------
+  function rowKeyForPoi(poi) {
+    return `${poi.type}_${poi.id}`;
+  }
+
+  function getBrandIdsForPoi(poi) {
+    if (poi.type === 'brand') return [String(poi.id)];
+    const mapping = window._catToBrands || {};
+    const ids = Array.isArray(poi.ids) ? poi.ids : String(poi.id).split(',').filter(Boolean);
+    const out = new Set();
+    ids.forEach((cid) => {
+      const arr = mapping[String(cid)] || [];
+      arr.forEach((b) => out.add(String(b)));
+    });
+    return Array.from(out);
+  }
+
+  function currentBboxParam() {
+    try {
+      const b = map.getBounds();
+      return `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function fetchPinsGeoJSON(brands) {
+    const params = new URLSearchParams();
+    params.set('brands', brands.join(','));
+    const bbox = currentBboxParam();
+    if (bbox) params.set('bbox', bbox);
+    return await fetchJSON(`/api/poi_points?${params.toString()}`);
+  }
+
+  function removePinsForPoi(poi) {
+    const key = rowKeyForPoi(poi);
+    const rec = activePins[key];
+    if (!rec) return;
+    // Remove layers first, then source
+    try { if (map.getLayer(rec.layerIds[2])) map.removeLayer(rec.layerIds[2]); } catch (e) {}
+    try { if (map.getLayer(rec.layerIds[1])) map.removeLayer(rec.layerIds[1]); } catch (e) {}
+    try { if (map.getLayer(rec.layerIds[0])) map.removeLayer(rec.layerIds[0]); } catch (e) {}
+    try { if (map.getSource(rec.sourceId)) map.removeSource(rec.sourceId); } catch (e) {}
+    delete activePins[key];
+  }
+
+  async function togglePinsForPoi(poi, checked) {
+    const key = rowKeyForPoi(poi);
+    if (!checked) {
+      removePinsForPoi(poi);
+      return;
+    }
+    const brands = getBrandIdsForPoi(poi);
+    if (!brands || brands.length === 0) {
+      // No known brands under this selection
+      return;
+    }
+    const geo = await fetchPinsGeoJSON(brands);
+    const sourceId = `pins_${key}`;
+    const unclusterId = `pins_${key}_points`;
+    const clusterId = `pins_${key}_clusters`;
+    const clusterCountId = `pins_${key}_count`;
+    // Clean any stale layers/sources
+    try { if (map.getLayer(clusterCountId)) map.removeLayer(clusterCountId); } catch(e) {}
+    try { if (map.getLayer(clusterId)) map.removeLayer(clusterId); } catch(e) {}
+    try { if (map.getLayer(unclusterId)) map.removeLayer(unclusterId); } catch(e) {}
+    try { if (map.getSource(sourceId)) map.removeSource(sourceId); } catch(e) {}
+
+    map.addSource(sourceId, { type: 'geojson', data: geo, cluster: true, clusterRadius: 40, clusterMaxZoom: 14 });
+    // Unclustered points
+    map.addLayer({
+      id: unclusterId,
+      type: 'circle',
+      source: sourceId,
+      filter: ['!', ['has', 'point_count']],
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 2.5, 10, 4, 14, 6],
+        'circle-color': '#8b5cf6',
+        'circle-opacity': 0.85,
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 0.8
+      }
+    });
+    // Cluster circles
+    map.addLayer({
+      id: clusterId,
+      type: 'circle',
+      source: sourceId,
+      filter: ['has', 'point_count'],
+      paint: {
+        'circle-radius': ['step', ['get', 'point_count'], 12, 25, 16, 50, 20],
+        'circle-color': '#8b5cf6',
+        'circle-opacity': 0.6
+      }
+    });
+    // Cluster counts
+    map.addLayer({
+      id: clusterCountId,
+      type: 'symbol',
+      source: sourceId,
+      filter: ['has', 'point_count'],
+      layout: {
+        'text-field': ['get', 'point_count_abbreviated'],
+        'text-size': 12
+      },
+      paint: { 'text-color': '#ffffff' }
+    });
+
+    activePins[key] = { brands, sourceId, layerIds: [unclusterId, clusterId, clusterCountId] };
+  }
+
+  async function refreshActivePins() {
+    const keys = Object.keys(activePins);
+    if (!keys.length) return;
+    for (const key of keys) {
+      const rec = activePins[key];
+      try {
+        const geo = await fetchPinsGeoJSON(rec.brands);
+        const src = map.getSource(rec.sourceId);
+        if (src && src.setData) src.setData(geo);
+      } catch (e) {
+        // ignore transient errors
+      }
+    }
   }
 
   // ---------- Share URL ----------
@@ -456,10 +633,12 @@
       for (const item of pairs) {
         const [idEnc, val] = item.split(':');
         const id = decodeURIComponent(idEnc);
-        addPOIRow({ type: 'category', id, label: `Category ${id}`, def: 15, min: 5, max: 60, step: 5 });
+        const ids = String(id).split(',').filter(Boolean);
+        const label = (window._groupLabelByIds && window._groupLabelByIds.get(String(id))) || (ids.length === 1 ? (window._categoriesById && window._categoriesById.get(String(id))) : null) || `Category ${id}`;
+        addPOIRow({ type: 'category', id, ids, label, def: 30, min: 5, max: 240, step: 5 });
         const slider = document.getElementById(`slider_${id}`);
         if (slider && val) slider.value = val;
-        await fetchDAnchor(id);
+        await ensureCombinedDAnchor(id, ids);
       }
     }
     // Brands
@@ -468,7 +647,8 @@
       for (const item of pairs) {
         const [idEnc, val] = item.split(':');
         const id = decodeURIComponent(idEnc);
-        addPOIRow({ type: 'brand', id, label: id.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), col: `${id}_drive_min`, def: 15, min: 5, max: 60, step: 5 });
+        const label = (window._brandLabelById && window._brandLabelById.get(id)) || id.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        addPOIRow({ type: 'brand', id, label, col: `${id}_drive_min`, def: 30, min: 5, max: 240, step: 5 });
         const slider = document.getElementById(`slider_${id}`);
         if (slider && val) slider.value = val;
       }
@@ -561,6 +741,7 @@
         updateHoverBox(null);
       }
     });
+    map.on('moveend', refreshActivePins);
   });
 
 </script>

@@ -41,8 +41,11 @@ def coerce_jsonable(props: dict):
         elif isinstance(v, (np.floating,)):
             out[k] = float(v)
         elif pd.isna(v):
-            # drop nulls to keep props small
-            continue
+            # Convert nulls to high value for unreachable areas
+            if k.endswith('_drive_min') or k.endswith('_walk_min'):
+                out[k] = 9999  # Unreachable but visible
+            else:
+                continue  # Drop other nulls to keep props small
         else:
             out[k] = v
     return out

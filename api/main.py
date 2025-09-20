@@ -120,7 +120,90 @@ def _load_category_labels() -> Dict[str, str]:
             return out
         except Exception:
             pass
+    # Derive labels from existing data if no explicit mapping is present
+    try:
+        inferred = _infer_category_labels_from_data("drive")
+        if inferred:
+            return inferred
+    except Exception:
+        pass
     return {}
+
+
+# ---------- Derived category labels (fallback) ----------
+_CACHED_CAT_LABELS: dict[str, dict[str, str]] = {}
+
+def _find_sites_parquet(mode: str) -> Optional[str]:
+    """Locate an anchors/sites parquet for the given mode.
+    Preference order:
+      data/anchors/*_{mode}_sites.parquet -> data/minutes/*_{mode}_sites.parquet
+    """
+    pat1 = os.path.join("data", "anchors", f"*_{mode}_sites.parquet")
+    pat2 = os.path.join("data", "minutes", f"*_{mode}_sites.parquet")
+    cands = sorted(glob.glob(pat1)) or sorted(glob.glob(pat2))
+    return cands[0] if cands else None
+
+def _prettify(label: str) -> str:
+    s = str(label).strip()
+    s = s.replace("_", " ")
+    # Title case but keep common acronyms upper (simple heuristics)
+    out = s.title()
+    for ac in ("OSM", "US", "USA", "UK"):
+        out = out.replace(ac.title(), ac)
+    return out
+
+def _infer_category_labels_from_data(mode: str) -> Dict[str, str]:
+    """Best-effort inference of {category_id:str -> label:str}.
+    Strategy: join D_anchor (anchor_int_id, category_id) to anchor sites' categories list,
+    tally the most frequent category string per numeric id, and prettify the label.
+    Results are cached per mode.
+    """
+    if mode in _CACHED_CAT_LABELS:
+        return _CACHED_CAT_LABELS[mode]
+
+    try:
+        D = load_D_anchor(mode)
+    except Exception:
+        return {}
+
+    sites_path = _find_sites_parquet(mode)
+    if not sites_path or D.empty:
+        return {}
+
+    try:
+        import pandas as pd  # type: ignore
+        sites = pd.read_parquet(sites_path, columns=["anchor_int_id", "categories"])  # categories is list[str]
+    except Exception:
+        return {}
+
+    if "anchor_int_id" not in sites.columns or "categories" not in sites.columns:
+        return {}
+
+    # Explode categories for each anchor
+    try:
+        exploded = sites.dropna(subset=["categories"]).explode("categories")
+    except Exception:
+        # If explode fails due to dtype, coerce to list then explode
+        sites = sites.copy()
+        sites["categories"] = sites["categories"].apply(lambda v: v if isinstance(v, list) else ([] if pd.isna(v) else [v]))
+        exploded = sites.explode("categories")
+
+    exploded = exploded.dropna(subset=["categories"]).rename(columns={"categories": "category_label"})
+
+    # Join with D_anchor to associate each (anchor, numeric category_id) pair to textual labels observed at the site
+    merged = D.merge(exploded, how="left", on="anchor_int_id")
+    # Count labels per category_id
+    vc = merged.dropna(subset=["category_label"]).groupby(["category_id", "category_label"]).size().reset_index(name="n")
+    if vc.empty:
+        return {}
+
+    # Pick the most frequent label per id
+    vc = vc.sort_values(["category_id", "n"], ascending=[True, False])
+    best = vc.groupby("category_id").first().reset_index()
+
+    out: Dict[str, str] = {str(int(r["category_id"])): _prettify(str(r["category_label"])) for _, r in best.iterrows()}
+    _CACHED_CAT_LABELS[mode] = out
+    return out
 
 def resolve_category_id(category: str, mode: str) -> int:
     """Resolve a category input to numeric id.
@@ -128,10 +211,17 @@ def resolve_category_id(category: str, mode: str) -> int:
     """
     # Numeric id is always allowed
     try:
-        return int(category)
+        return int(str(category))
     except Exception:
-        # No taxonomy wired yet — fall back to available ids and instruct caller
-        raise HTTPException(status_code=404, detail=f"Unknown category '{category}'. Use numeric category_id from /api/categories?mode={mode}.")
+        # Try label mapping (derived or explicit)
+        labels = _load_category_labels()
+        if labels:
+            inv = {str(v).lower(): int(k) for k, v in labels.items()}
+            cid = inv.get(str(category).lower())
+            if cid is not None:
+                return cid
+        # Fall back to instructive error
+        raise HTTPException(status_code=404, detail=f"Unknown category '{category}'. Use numeric category_id from /api/categories?mode={mode} or a known label.")
 
 # ---------- FastAPI ----------
 app = FastAPI(title=APP_NAME)
@@ -168,7 +258,7 @@ def categories(mode: str = Query("drive", description="Travel mode, e.g. 'drive'
     label_map: Dict[str, str] = {}
     for cid in ids:
         scid = str(cid)
-        label_map[scid] = labels.get(scid, f"Category {scid}")
+        label_map[scid] = labels.get(scid, labels.get(str(cid), f"Category {scid}"))
     return {"mode": mode, "category_id": ids, "labels": label_map}
 
 @app.get("/api/catalog")
@@ -230,6 +320,90 @@ def catalog(mode: str = Query("drive", description="Travel mode, e.g. 'drive' or
         "brands": brands,
         "cat_to_brands": cat_to_brands,
     }
+
+# ---------- POI Pins (GeoJSON) ----------
+_CANON_POI_CACHE: Optional[pd.DataFrame] = None
+
+def _load_canonical_pois() -> pd.DataFrame:
+    global _CANON_POI_CACHE
+    if _CANON_POI_CACHE is not None:
+        return _CANON_POI_CACHE
+    path = os.path.join("data", "poi", f"{STATE}_canonical.parquet")
+    if not os.path.exists(path):
+        # Empty dataframe with expected columns
+        _CANON_POI_CACHE = pd.DataFrame(columns=["brand_id", "lon", "lat", "name"])  # type: ignore
+        return _CANON_POI_CACHE
+    try:
+        df = pd.read_parquet(path, columns=["brand_id", "lon", "lat", "name"])  # type: ignore
+        # Ensure correct dtypes
+        if "brand_id" in df.columns:
+            df["brand_id"] = df["brand_id"].astype(str)
+        if "lon" in df.columns:
+            df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
+        if "lat" in df.columns:
+            df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
+        # Drop invalid rows
+        df = df.dropna(subset=["lon", "lat", "brand_id"]).copy()
+        _CANON_POI_CACHE = df
+        return df
+    except Exception as e:
+        print(f"[warn] Failed to read canonical POIs at {path}: {e}")
+        _CANON_POI_CACHE = pd.DataFrame(columns=["brand_id", "lon", "lat", "name"])  # type: ignore
+        return _CANON_POI_CACHE
+
+
+@app.get("/api/poi_points")
+def poi_points(
+    brands: str = Query(..., description="Comma-separated brand_ids to include"),
+    bbox: Optional[str] = Query(None, description="Optional bbox lonmin,latmin,lonmax,latmax")
+):
+    """Return GeoJSON FeatureCollection of POI points for the given brands.
+
+    Example: /api/poi_points?brands=chipotle,costco
+    Optional bbox filters points server-side to reduce payload.
+    """
+    brand_list = [b.strip() for b in str(brands).split(",") if b.strip()]
+    if not brand_list:
+        raise HTTPException(status_code=400, detail="No brand ids provided")
+
+    df = _load_canonical_pois()
+    if df.empty:
+        return {"type": "FeatureCollection", "features": []}
+
+    sub = df[df["brand_id"].isin(brand_list)][["lon", "lat", "brand_id", "name"]]
+
+    # Optional bbox filter
+    if bbox:
+        try:
+            parts = [float(x) for x in bbox.split(",")]
+            if len(parts) == 4:
+                x0, y0, x1, y1 = parts
+                xmin, xmax = (min(x0, x1), max(x0, x1))
+                ymin, ymax = (min(y0, y1), max(y0, y1))
+                sub = sub[(sub["lon"] >= xmin) & (sub["lon"] <= xmax) & (sub["lat"] >= ymin) & (sub["lat"] <= ymax)]
+        except Exception:
+            pass
+
+    # Build GeoJSON
+    feats = []
+    for _, r in sub.iterrows():
+        lon = float(r["lon"]) if pd.notna(r["lon"]) else None
+        lat = float(r["lat"]) if pd.notna(r["lat"]) else None
+        if lon is None or lat is None:
+            continue
+        props: Dict[str, Any] = {
+            "brand_id": str(r["brand_id"]) if pd.notna(r["brand_id"]) else None,
+        }
+        name = r.get("name") if isinstance(r.get("name"), str) else None
+        if name:
+            props["name"] = name
+        feats.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": props,
+        })
+
+    return {"type": "FeatureCollection", "features": feats}
 
 @app.get("/api/d_anchor")
 def get_d_anchor_slice(

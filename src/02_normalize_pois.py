@@ -136,6 +136,14 @@ def normalize_overture_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             brand_id = _brand_alias_to_id.get(primary_brand.lower())
             if brand_id:
                 brand_name = BRAND_REGISTRY[brand_id][0]
+        
+        # If no brand found from brand field, try the POI name as a fallback
+        if not brand_id:
+            poi_name = row['names']['primary'] if row['names'] and 'primary' in row['names'] else None
+            if poi_name:
+                brand_id = _brand_alias_to_id.get(poi_name.lower())
+                if brand_id:
+                    brand_name = BRAND_REGISTRY[brand_id][0]
 
         # ID Generation
         source_id = row['id']

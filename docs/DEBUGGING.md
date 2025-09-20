@@ -352,4 +352,237 @@ head -1 tiles/t_hex_r8_drive.geojson.nd | jq '.properties.k'    # 2 or 4
 - D_anchor API returns anchor→category mappings
 - Frontend can combine both datasets for filtering
 
+## POI Coverage Debugging (Comprehensive Guide)
+
+### 🚨 Sparse POI Coverage (e.g., "Starbucks coverage is too light")
+
+**Symptoms**: POI brand shows much lower coverage than expected based on real-world density (e.g., Boston should be 100% covered by Starbucks within 15 minutes, but map shows <80%).
+
+**Root Causes** (in order of likelihood):
+1. **Brand aliasing gaps** - POI name variations not in `BRAND_REGISTRY`
+2. **Missing brand fallback logic** - Overture POIs with `brand = None` not captured
+3. **K-best algorithm limitations** - K too small for dense urban areas
+4. **Graph connectivity issues** - Unreachable hexagons due to water/parks
+5. **Overlays system needed** - Requires K=1 nearest-neighbor for comprehensive coverage
+
+### Systematic Investigation Process
+
+#### Step 1: Initial Coverage Assessment
+```bash
+# Check current coverage statistics
+python -c "
+import pandas as pd
+import h3
+
+# Load final merged data
+df = pd.read_parquet('state_tiles/us_r8.parquet')
+
+# Check if brand column exists
+print('Available columns:', [col for col in df.columns if 'starbucks' in col.lower()])
+
+# Overall coverage
+total_hexagons = len(df)
+if 'starbucks_drive_min' in df.columns:
+    covered = df['starbucks_drive_min'].notna().sum()
+    print(f'Total hexagons: {total_hexagons:,}')
+    print(f'Starbucks coverage: {covered:,} ({covered/total_hexagons*100:.1f}%)')
+else:
+    print('ERROR: starbucks_drive_min column missing - brand not in final data')
+"
+```
+
+#### Step 2: Trace POI Count Through Pipeline
+```bash
+# Check canonical POI count
+python -c "
+import pandas as pd
+canonical_df = pd.read_parquet('data/poi/massachusetts_canonical.parquet')
+starbucks_count = len(canonical_df[canonical_df['brand_id'] == 'starbucks'])
+print(f'Canonical Starbucks POIs: {starbucks_count}')
+
+# Check anchor sites count
+anchors_df = pd.read_parquet('data/anchors/massachusetts_drive_sites.parquet')
+import numpy as np
+starbucks_anchors = 0
+for _, row in anchors_df.iterrows():
+    brands = row['brands']
+    if isinstance(brands, (list, np.ndarray)):
+        if isinstance(brands, np.ndarray):
+            brands = brands.tolist()
+        if 'starbucks' in brands:
+            starbucks_anchors += 1
+print(f'Starbucks anchor sites: {starbucks_anchors}')
+"
+```
+
+#### Step 3: Fix Brand Registry Gaps
+```bash
+# Identify missing brand aliases from raw data
+python -c "
+import pandas as pd
+
+# Check Overture brand names
+overture_df = pd.read_parquet('data/overture/massachusetts_places.parquet')
+starbucks_variants = set()
+
+for _, row in overture_df.iterrows():
+    name = None
+    if row['names'] and 'primary' in row['names']:
+        name = row['names']['primary']
+    elif row['brand'] and row['brand']['names'] and 'primary' in row['brand']['names']:
+        name = row['brand']['names']['primary']
+    
+    if name and 'starbucks' in name.lower():
+        starbucks_variants.add(name.lower())
+
+print('Found Starbucks name variants:')
+for variant in sorted(starbucks_variants):
+    print(f'  \"{variant}\"')
+"
+
+# Add missing variants to src/taxonomy.py BRAND_REGISTRY
+# Example: "starbucks": ("Starbucks", ["starbucks coffee", "starbucks reserve", "starbucks mashpee commons"])
+```
+
+#### Step 4: Fix Brand Fallback Logic
+Check `src/02_normalize_pois.py` for fallback logic in `normalize_overture_pois`:
+
+```python
+# Ensure this logic exists (lines ~140-150)
+# If no brand found from brand field, try the POI name as a fallback
+if not brand_id:
+    poi_name = row['names']['primary'] if row['names'] and 'primary' in row['names'] else None
+    if poi_name:
+        brand_id = _brand_alias_to_id.get(poi_name.lower())
+        if brand_id:
+            brand_name = BRAND_REGISTRY[brand_id][0]
+```
+
+#### Step 5: Investigate K-best Parameters
+```bash
+# Check current k-best setting in Makefile
+grep "k-best" Makefile
+
+# For dense urban areas with many POIs, increase k-best:
+# Change from --k-best 4 to --k-best 20 or higher
+# Also consider increasing cutoff from 30 to 90 minutes for broader reach
+```
+
+#### Step 6: Implement Overlays System (for 100% Coverage)
+
+**When K-best is insufficient** (common for dense brands like Starbucks, McDonald's):
+
+1. **Check overlays script exists**: `src/03c_compute_overlays.py`
+
+2. **Verify numpy array handling** in overlays script:
+```python
+# Lines ~65-70: _collect_brand_sources_anchor_ids function
+if not isinstance(brands, (list, np.ndarray)):
+    continue
+if isinstance(brands, np.ndarray):
+    brands = brands.tolist()
+
+# Lines ~175-185: anchor_to_brands mapping
+anchor_to_brands: Dict[int, List[str]] = {}
+for aint, brands in anchors_df[["anchor_int_id", "brands"]].itertuples(index=False):
+    brand_list = []
+    if isinstance(brands, (list, np.ndarray)):
+        if isinstance(brands, np.ndarray):
+            brands = brands.tolist()
+        brand_list = [str(b) for b in brands]
+    anchor_to_brands[int(aint)] = brand_list
+```
+
+3. **Add overlays to Makefile**:
+```makefile
+# Add to .PHONY
+.PHONY: overlays
+
+# Add overlays target
+overlays:
+	source .venv/bin/activate && PYTHONPATH=src python src/03c_compute_overlays.py \
+		--pbf data/osm/massachusetts.osm.pbf \
+		--pois data/poi/massachusetts_canonical.parquet \
+		--mode drive \
+		--cutoff 90 \
+		--res 8 \
+		--out-overlays data/minutes/mode=0/ \
+		--anchors data/anchors/massachusetts_drive_sites.parquet
+
+# Add overlays as dependency to merge
+merge: overlays
+```
+
+#### Step 7: Complete Pipeline Rebuild
+```bash
+# After fixes, rebuild entire pipeline
+make pois      # Re-normalize with fixed brand registry
+make anchors   # Rebuild anchor sites 
+make minutes   # Recompute with updated k-best parameters
+make overlays  # Compute K=1 overlays for dense brands
+make merge     # Merge all data including overlays
+make tiles     # Rebuild tiles with complete coverage
+```
+
+#### Step 8: Verify Final Coverage
+```bash
+# Check final results
+python -c "
+import pandas as pd
+df = pd.read_parquet('state_tiles/us_r8.parquet')
+total = len(df)
+covered = df['starbucks_drive_min'].notna().sum()
+print(f'Final coverage: {covered/total*100:.1f}% ({covered:,}/{total:,} hexagons)')
+
+# Travel time distribution
+times = df['starbucks_drive_min'].dropna()
+print(f'Mean travel time: {times.mean():.1f} minutes')
+print(f'0-15 min coverage: {(times <= 15).sum():,} hexagons')
+"
+```
+
+### Success Indicators for POI Coverage
+
+**✅ Excellent Coverage (target)**:
+- Urban areas: 95-100% coverage within 15-minute threshold
+- Suburban areas: 80-95% coverage  
+- Rural areas: 60-80% coverage (acceptable due to genuine sparsity)
+- Mean travel time: <15 minutes in metro areas
+
+**⚠️ Needs Investigation**:
+- Urban coverage <90% for common brands (Starbucks, McDonald's, CVS)
+- Large gaps in obviously dense areas
+- Mean travel times >20 minutes in cities
+
+**🚨 Serious Issues**:
+- Brand column missing from final tiles
+- Zero POIs making it through normalization
+- All hexagons showing 65535 (unreachable)
+
+### Brand-Specific Debugging Tips
+
+**For Chain Restaurants/Retail**:
+- Expect 95-100% urban coverage with overlays system
+- Check both Overture and OSM sources
+- Verify franchise name variations in brand registry
+
+**For Civic/Government POIs**:
+- Lower expected coverage is normal (genuine sparsity)
+- Focus on OSM source completeness
+- Check category mapping from OSM tags
+
+**For Natural Amenities**:
+- Coverage limited by geographic distribution
+- Polygon vs point representation important
+- Check area calculations for large features
+
+### Prevention Checklist
+
+Before adding new POI categories:
+1. ✅ Research all known name variations and add to `BRAND_REGISTRY`
+2. ✅ Test normalization with sample data from both Overture and OSM
+3. ✅ Verify category mapping from source taxonomies
+4. ✅ For dense brands, plan to use overlays system from start
+5. ✅ Set realistic coverage expectations based on real-world distribution
+
 Remember: Most issues stem from data format mismatches between pipeline stages. Always verify the data contracts in `ARCHITECTURE.md` when debugging.

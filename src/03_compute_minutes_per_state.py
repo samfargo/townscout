@@ -280,6 +280,32 @@ def main():
         raise SystemExit("No valid anchor nodes found in the graph. Aborting.")
 
     # 3. Call the native kernel
+    print(f"[info] Preparing adjacency (transpose for node→anchor times)...")
+    # Build CSR transpose so that multi-source search from anchors yields
+    # node→anchor travel times in a directed graph with oneways.
+    N = int(indptr.shape[0] - 1)
+    M = int(indices.shape[0])
+    indptr_rev = np.zeros(N + 1, dtype=np.int64)
+    # Count incoming edges per node (becomes out-degree in transpose)
+    for u in range(N):
+        start, end = int(indptr[u]), int(indptr[u+1])
+        vs = indices[start:end]
+        for v in vs:
+            indptr_rev[int(v) + 1] += 1
+    # Prefix sum
+    np.cumsum(indptr_rev, out=indptr_rev)
+    indices_rev = np.empty(M, dtype=np.int32)
+    w_rev = np.empty(M, dtype=np.uint16)
+    cursor = indptr_rev.copy()
+    for u in range(N):
+        start, end = int(indptr[u]), int(indptr[u+1])
+        for i in range(start, end):
+            v = int(indices[i])
+            pos = cursor[v]
+            indices_rev[pos] = np.int32(u)
+            w_rev[pos] = w_sec[i]
+            cursor[v] = pos + 1
+
     print(f"[info] Calling native kernel (bucket K-pass) for k-best search (k={args.k_best}, cutoff={args.cutoff} min, overflow={args.overflow_cutoff} min, threads={args.threads})...")
     cutoff_primary_s = int(args.cutoff) * 60
     # Allow tuning overflow cutoff to trade accuracy for speed
@@ -304,7 +330,7 @@ def main():
     # The parallel path partitions sources and repeats graph traversals per chunk, which can be
     # substantially slower overall despite parallelism.
     best_src_idx, time_s = kbest_multisource_bucket_csr(
-        indptr, indices, w_sec, source_idxs, K, cutoff_primary_s, cutoff_overflow_s, int(max(1, args.threads)), bool(args.progress), (_kb_cb if args.progress else None)
+        indptr_rev, indices_rev, w_rev, source_idxs, K, cutoff_primary_s, cutoff_overflow_s, int(max(1, args.threads)), bool(args.progress), (_kb_cb if args.progress else None)
     )
     if kb_pbar is not None:
         kb_pbar.close()

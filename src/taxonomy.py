@@ -35,7 +35,7 @@ BRAND_REGISTRY = {
     # Canonical Brand ID: (Canonical Name, [Aliases])
     "chipotle": ("Chipotle Mexican Grill", ["chipotle"]),
     "costco": ("Costco", ["costco wholesale"]),
-    "starbucks": ("Starbucks", ["starbucks coffee"]),
+    "starbucks": ("Starbucks", ["starbucks coffee", "starbucks reserve", "starbucks mashpee commons", "starbucks wallingford ct"]),
     "mcdonalds": ("McDonald's", ["mcdonalds", "mcdonald's"]),
     # ... more brands to be added
 }
