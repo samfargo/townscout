@@ -32,119 +32,27 @@ import pandas as pd
 import geopandas as gpd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from scipy.spatial import cKDTree
 from tqdm import tqdm
-import uuid
 import polars as pl
 
 from graph.pyrosm_csr import load_or_build_csr
 from t_hex import kbest_multisource_bucket_csr, aggregate_h3_topk_precached
 import config
 
+# Import the shared anchor site builder from 03_build_anchor_sites.py to avoid duplication
+import importlib.util, os
+_THIS_DIR = os.path.dirname(__file__)
+_ANCHOR_BUILDER_PATH = os.path.join(_THIS_DIR, "03_build_anchor_sites.py")
+spec = importlib.util.spec_from_file_location("_build_anchor_sites", _ANCHOR_BUILDER_PATH)
+_mod = importlib.util.module_from_spec(spec)
+assert spec and spec.loader
+spec.loader.exec_module(_mod)
+build_anchor_sites_from_nodes = _mod.build_anchor_sites_from_nodes
+
 SNAPSHOT_TS = time.strftime("%Y-%m-%d")
 
 
-def build_anchor_sites_from_nodes(
-    canonical_pois: gpd.GeoDataFrame,
-    node_ids: np.ndarray,
-    node_lats: np.ndarray,
-    node_lons: np.ndarray,
-    mode: str,
-) -> pd.DataFrame:
-    """
-    Builds anchor sites from canonical POIs by snapping them to the nearest graph nodes.
-
-    Args:
-        canonical_pois: GeoDataFrame of canonical POIs.
-        G: The road network graph.
-        mode: The travel mode ('drive' or 'walk').
-
-    Returns:
-        A DataFrame of anchor sites with schema from OVERHALL.md.
-    """
-    print(f"--- Building anchor sites for {mode} mode ---")
-    if canonical_pois.empty or node_ids.size == 0:
-        print("[warn] Canonical POIs or graph is empty. No anchor sites will be built.")
-        return pd.DataFrame()
-
-    # Keep only anchor-worthy POIs: those that map into our taxonomy (have category)
-    # or have a recognized brand_id. This dramatically reduces source count and
-    # aligns with the architecture (Anchor Sites built from meaningful POIs).
-    before = len(canonical_pois)
-    poi_mask = canonical_pois["category"].notna() | canonical_pois["brand_id"].notna()
-    canonical_pois = canonical_pois.loc[poi_mask].copy()
-    after = len(canonical_pois)
-    print(f"[info] Anchorable POIs: {after} / {before} (filtered by category/brand)")
-
-    # 1. Build a KD-tree from the graph nodes.
-    print(f"[info] Building KD-tree from {len(node_ids)} graph nodes...")
-    # Build KD-tree from node arrays
-    lat0 = float(np.deg2rad(float(np.mean(node_lats))))
-    m_per_deg = 111000.0
-    X = np.c_[ (node_lons.astype(np.float64) * np.cos(lat0)) * m_per_deg, node_lats.astype(np.float64) * m_per_deg ]
-    tree = cKDTree(X)
-    
-    # 2. For each POI, find the nearest node_id.
-    print(f"[info] Snapping {len(canonical_pois)} POIs to nearest graph nodes...")
-    poi_coords = np.c_[
-        (canonical_pois.geometry.x.to_numpy() * np.cos(lat0)) * m_per_deg,
-        canonical_pois.geometry.y.to_numpy() * m_per_deg,
-    ]
-    
-    # Query the tree for nearest neighbors. dists are in meters.
-    dists, indices = tree.query(poi_coords, k=1)
-    
-    pois_with_nodes = canonical_pois.copy()
-    pois_with_nodes['node_id'] = node_ids[indices]
-    pois_with_nodes['snap_dist_m'] = dists
-    
-    # Filter out POIs that are too far from the graph
-    MAX_SNAP_DISTANCE_M = config.SNAP_RADIUS_M_DRIVE if mode == 'drive' else config.SNAP_RADIUS_M_WALK
-    pois_with_nodes = pois_with_nodes[pois_with_nodes['snap_dist_m'] <= MAX_SNAP_DISTANCE_M]
-    print(f"[info] {len(pois_with_nodes)} POIs snapped within {MAX_SNAP_DISTANCE_M}m of the graph.")
-
-    # 3. Group POIs by node_id to create sites.
-    print("[info] Grouping POIs into anchor sites...")
-    
-    # Define aggregations
-    aggs = {
-        'poi_id': lambda x: list(x),
-        'brand_id': lambda x: list(x.dropna().unique()),
-        'category': lambda x: list(x.dropna().unique()),
-    }
-    
-    sites = pois_with_nodes.groupby('node_id').agg(aggs).reset_index()
-    
-    # 4. Add node coordinates and generate a stable site_id.
-    node_coords = pd.DataFrame({
-        'node_id': node_ids,
-        'lon': node_lons.astype(np.float64),
-        'lat': node_lats.astype(np.float64),
-    }).set_index('node_id')
-    sites = sites.join(node_coords, on='node_id', how='left')
-    
-    # Generate site_id
-    sites['site_id'] = sites.apply(
-        lambda row: str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{mode}|{row['node_id']}")),
-        axis=1
-    )
-    
-    # Rename columns to match the old 'anchors_df' structure for now.
-    # The rest of the script expects 'id' for stable id. This can be cleaned up later.
-    # The OVERHAUL.md schema for sites is also more complex, this is a starting point.
-    sites = sites.rename(columns={
-        'poi_id': 'poi_ids',
-        'brand_id': 'brands',
-        'category': 'categories',
-    })
-    
-    # Reorder columns and select the ones needed for the rest of the pipeline
-    final_cols = ['site_id', 'node_id', 'lon', 'lat', 'poi_ids', 'brands', 'categories']
-    sites = sites[final_cols]
-    
-    print(f"[ok] Built {len(sites)} anchor sites from {len(pois_with_nodes)} POIs.")
-
-    return sites
+# build_anchor_sites_from_nodes is now imported from 03_build_anchor_sites.py
 
 
 # -----------------------------

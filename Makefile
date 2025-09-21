@@ -4,7 +4,7 @@ STATES=massachusetts
 # Add more states as needed, e.g., STATES=massachusetts new-hampshire
 
 .PHONY: help init clean all \
-	download pois anchors minutes overlays geojson tiles export-csv native
+	download pois anchors minutes overlays geojson tiles export-csv native d_anchor_category d_anchor_brand
 
 help:  ## Show this help message
 	@echo "TownScout Data Pipeline - Available targets:"
@@ -118,6 +118,20 @@ d_anchor_brand: | build/native.stamp ## 3.6 Compute anchor->brand seconds for al
 	    --cutoff 30 \
 	    --overflow-cutoff 90 \
 	    --out-dir data/d_anchor_brand ; \
+	done
+
+# Compute D_anchor category tables (anchor->category seconds) for categories present in anchors
+.PHONY: d_anchor_category
+d_anchor_category: | build/native.stamp ## 3.6b Compute anchor->category seconds for available categories
+	@for S in $(STATES); do \
+	  echo "--- Computing D_anchor category for $$S (drive) ---"; \
+	  $(PY) src/03e_compute_d_anchor_category.py \
+	    --pbf data/osm/$$S.osm.pbf \
+	    --anchors data/anchors/$$S\_drive_sites.parquet \
+	    --mode drive \
+	    --cutoff 30 \
+	    --overflow-cutoff 90 \
+	    --out-dir data/d_anchor_category ; \
 	done
 
 # --- Merge & Summaries ---
