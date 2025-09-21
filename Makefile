@@ -17,7 +17,7 @@ init:  ## Initialize virtual environment with Python 3.11 and install dependenci
 	@. .venv/bin/activate && python -c 'import sys; print(f"Using Python {sys.version.split()[0]}")'
 	@echo "✅ Environment initialized. Run 'source .venv/bin/activate' to use it."
 
-# ========== Data Pipeline (New) ==========
+# ========== Data Pipeline ==========
 
 # --- Native build (stamp to avoid triggering rebuilds) ---
 build/native.stamp:
@@ -105,16 +105,20 @@ overlays: | build/native.stamp ## 3.5 Compute popular brand overlays (K=1) for n
 	    --out-dir data/overlays $(OVERLAYS_FORCE) ; \
 	done
 
-# data/minutes/%_walk_t_hex.parquet: data/poi/%_canonical.parquet native
-# 	@echo "--- Computing minutes for $* (walk) ---"
-# 	$(PY) src/03_compute_minutes_per_state.py \
-# 		--pbf data/osm/$*.osm.pbf \
-# 		--pois data/poi/$*_canonical.parquet \
-# 		--mode walk \
-# 		--cutoff 20 \
-# 		--res 7 8 \
-# 		--out-times $@ \
-# 		--out-sites data/minutes/$*_walk_sites.parquet
+# Compute D_anchor brand tables for brand-level anchor-mode filtering
+.PHONY: d_anchor_brand
+d_anchor_brand: | build/native.stamp ## 3.6 Compute anchor->brand seconds for all frequent brands
+	@for S in $(STATES); do \
+	  echo "--- Computing D_anchor brand for $$S (drive) ---"; \
+	  $(PY) src/03d_compute_d_anchor.py \
+	    --pbf data/osm/$$S.osm.pbf \
+	    --anchors data/anchors/$$S\_drive_sites.parquet \
+	    --mode drive \
+	    --brands-threshold 5 \
+	    --cutoff 30 \
+	    --overflow-cutoff 90 \
+	    --out-dir data/d_anchor_brand ; \
+	done
 
 # --- Merge & Summaries ---
 # Produce both outputs in one run; use a stamp to avoid duplicate execution.

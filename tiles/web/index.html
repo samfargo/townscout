@@ -159,49 +159,23 @@
   // ---------- Hover Box ----------
   function updateHoverBox(feature) {
     const contentEl = document.getElementById('hover-content');
-    if (!feature || !feature.properties) {
-      contentEl.innerHTML = '<span class="muted">Move cursor over a hex</span>';
-      return;
-    }
-    const props = feature.properties;
-    let html = '';
-    // Show the selected POIs in the hover box with their times
-    selectedPOIs.forEach((poi) => {
-      const col = poi.col;
-      const v = props[col];
-      html += `<div class="kv"><span>${poi.label}</span><span>${(v || v === 0) ? v + ' min' : 'N/A'}</span></div>`;
-    });
-    if (!html) html = '<span class="muted">Select a POI to begin</span>';
-    contentEl.innerHTML = html;
+    // In anchor mode, the mousemove handler renders hover content;
+    // for no-feature cases or non-anchor fallback, show a simple hint.
+    contentEl.innerHTML = '<span class="muted">Move cursor over a hex</span>';
   }
   
   // ---------- Filter Logic ----------
-  // ---------- Dynamic POI Filters ----------
-  // Fallback POIs if metadata is unavailable (min-based mode)
-  const FALLBACK_POIS = [
-    { id: 'chipotle', label: 'Chipotle', col: 'chipotle_drive_min', def: 30, min: 5, max: 240, step: 5 },
-    { id: 'costco', label: 'Costco', col: 'costco_drive_min', def: 30, min: 5, max: 240, step: 5 }
-  ];
-
-  // Anchor-mode state (when tiles expose a{i}_id/a{i}_s)
-  let ANCHOR_MODE = false;
+  // ---------- Dynamic POI Filters (Anchor Mode Only) ----------
+  // Anchor-mode required: we compose a{i}_s with D_anchor maps from the API
+  let ANCHOR_MODE = true;
   let CURRENT_MODE = 'drive'; // 'drive' | 'walk'
   const MAX_K = 20; // align with tiles: support up to 20 anchors; missing ones coalesce to sentinel
-  const dAnchorCache = {}; // { categoryId: { anchorId: seconds } }
+  const dAnchorCache = {}; // { categoryId|brandId: { anchorId: seconds } }
 
   const selectedPOIs = [];
   const activePins = {}; // rowKey -> { brands: string[], sourceId: string, layerIds: string[] }
 
-  function buildFilterExpressionMinCols() {
-    // Start with all; add one constraint per selected POI against *_drive_min columns
-    const clauses = ["all"];
-    selectedPOIs.forEach((poi) => {
-      const slider = document.getElementById(`slider_${poi.id}`);
-      const maxV = parseInt(slider.value, 10);
-      clauses.push(["<=", ["coalesce", ["get", poi.col], 9999], maxV]);
-    });
-    return clauses;
-  }
+  // (min-cols fallback removed)
 
   function buildMinExprForCategory(catId) {
     // Compose min over top-K anchors: a{i}_s + D_anchor[a{i}_id]
@@ -218,19 +192,38 @@
     return ["min", ...terms];
   }
 
+  function buildMinExprForBrand(brandId) {
+    // Like category: min over a{i}_s + D_anchor_brand[a{i}_id]
+    const brandMap = dAnchorCache[brandId] || {};
+    const literalMap = ["literal", brandMap];
+    const UNREACHABLE = 65535;
+    const terms = [];
+    for (let i = 0; i < MAX_K; i++) {
+      const aSec = ["coalesce", ["get", `a${i}_s`], UNREACHABLE];
+      const aidStr = ["to-string", ["get", `a${i}_id`]];
+      const bSec = ["coalesce", ["get", aidStr, literalMap], UNREACHABLE];
+      terms.push(["+", aSec, bSec]);
+    }
+    return ["min", ...terms];
+  }
+
   function buildFilterExpressionCombined() {
     const clauses = ["all"];
     selectedPOIs.forEach((p) => {
       const slider = document.getElementById(`slider_${p.id}`);
       if (!slider) return;
       if (p.type === 'category') {
-        const maxMin = parseInt(slider.value, 10) * 60; // seconds
-        const minExpr = buildMinExprForCategory(p.id);
-        clauses.push(["<=", minExpr, maxMin]);
-      } else if (p.type === 'brand' && CURRENT_MODE === 'drive') {
-        const maxV = parseInt(slider.value, 10);
-        const col = `${p.id}_drive_min`;
-        clauses.push(["<=", ["coalesce", ["get", col], 9999], maxV]);
+        if (dAnchorCache[p.id] && Object.keys(dAnchorCache[p.id]).length > 0) {
+          const maxMin = parseInt(slider.value, 10) * 60; // seconds
+          const minExpr = buildMinExprForCategory(p.id);
+          clauses.push(["<=", minExpr, maxMin]);
+        }
+      } else if (p.type === 'brand') {
+        if (dAnchorCache[p.id] && Object.keys(dAnchorCache[p.id]).length > 0) {
+          const maxMin = parseInt(slider.value, 10) * 60; // seconds
+          const minExpr = buildMinExprForBrand(p.id);
+          clauses.push(["<=", minExpr, maxMin]);
+        }
       }
     });
     return clauses;
@@ -317,41 +310,19 @@
     return resp.json();
   }
 
-  function inferAvailablePOIsFromMetadata(fallback) {
-    // Detect anchor fields from PMTiles; populate dropdown via /api/catalog
-    const httpUrl = (CURRENT_MODE === 'drive') ? R8_DRIVE_HTTP : R8_WALK_HTTP;
-    try {
-      const pmt = new pmtiles.PMTiles(httpUrl);
-      pmt.getMetadata().then((_md) => {
-        ANCHOR_MODE = true; // presence of tiles implies we can use categories
-        initCatalogSelector();
-      }).catch(() => populatePoiSelector(fallback));
-    } catch (e) {
-      populatePoiSelector(fallback);
-    }
-  }
+  // (tile metadata probing and fallback removed)
 
-  function populatePoiSelector(list) {
-    const select = document.getElementById('poi-select');
-    select.innerHTML = '';
-    list.forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.label;
-      select.appendChild(opt);
-    });
-    const addBtn = document.getElementById('add-poi');
-    addBtn.onclick = () => {
-      const id = select.value;
-      const poi = list.find(p => p.id === id);
-      if (poi) addPOIRow(poi);
-    };
-    // Stash the list for URL param parsing
-    window._poiList = list;
-  }
+  // (fallback selector removed)
 
   function initPoiSelector() {
-    inferAvailablePOIsFromMetadata(FALLBACK_POIS);
+    initCatalogSelector().catch(() => {
+      const select = document.getElementById('poi-select');
+      select.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Catalog unavailable';
+      select.appendChild(opt);
+    });
   }
 
   // ---------- Catalog + Anchor Mode ----------
@@ -363,19 +334,18 @@
   }
 
   async function initCatalogSelector() {
-    try {
-      const resp = await fetchJSON(`/api/catalog?mode=${encodeURIComponent(CURRENT_MODE)}`);
-      const categories = Array.isArray(resp.categories) ? resp.categories : [];
-      const brands = Array.isArray(resp.brands) ? resp.brands : [];
-      const catToBrands = resp.cat_to_brands || {};
-      // Stash for URL parsing and labels
-      window._categoriesById = new Map(categories.map(c => [String(c.id), c.label]));
-      window._brandLabelById = new Map(brands.map(b => [String(b.id), b.label]));
-      window._catToBrands = catToBrands;
-      populateCatalogSelector(categories, brands, catToBrands);
-    } catch (e) {
-      populatePoiSelector(FALLBACK_POIS);
+    const resp = await fetchJSON(`/api/catalog?mode=${encodeURIComponent(CURRENT_MODE)}`);
+    const categories = Array.isArray(resp.categories) ? resp.categories : [];
+    const brands = Array.isArray(resp.brands) ? resp.brands : [];
+    const catToBrands = resp.cat_to_brands || {};
+    if (categories.length > 0) {
+      ANCHOR_MODE = true; // Switch to full anchor-based filtering when available
     }
+    // Stash for URL parsing and labels
+    window._categoriesById = new Map(categories.map(c => [String(c.id), c.label]));
+    window._brandLabelById = new Map(brands.map(b => [String(b.id), b.label]));
+    window._catToBrands = catToBrands;
+    populateCatalogSelector(categories, brands, catToBrands);
   }
 
   function populateCatalogSelector(categories, brands, catToBrands) {
@@ -445,7 +415,9 @@
       } else if (v.startsWith('brand:')) {
         const id = v.slice(6);
         const label = brandMap.get(id) || (window._brandLabelById && window._brandLabelById.get(id)) || id;
-        addPOIRow({ type: 'brand', id, label, col: `${id}_drive_min`, def: 30, min: 5, max: 240, step: 5 });
+        addPOIRow({ type: 'brand', id, label, def: 30, min: 5, max: 240, step: 5 });
+        try { await fetchDAnchorBrand(id); } catch (e) {}
+        updateMapFilter();
       }
     };
   }
@@ -465,6 +437,13 @@
     });
     dAnchorCache[key] = combined;
     return combined;
+  }
+
+  async function fetchDAnchorBrand(brandId) {
+    if (dAnchorCache[brandId]) return dAnchorCache[brandId];
+    const data = await fetchJSON(`/api/d_anchor_brand?brand=${encodeURIComponent(brandId)}&mode=${encodeURIComponent(CURRENT_MODE)}`);
+    dAnchorCache[brandId] = data;
+    return data;
   }
 
   // ---------- Pins (POI locations) ----------
@@ -648,9 +627,10 @@
         const [idEnc, val] = item.split(':');
         const id = decodeURIComponent(idEnc);
         const label = (window._brandLabelById && window._brandLabelById.get(id)) || id.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-        addPOIRow({ type: 'brand', id, label, col: `${id}_drive_min`, def: 30, min: 5, max: 240, step: 5 });
+        addPOIRow({ type: 'brand', id, label, def: 30, min: 5, max: 240, step: 5 });
         const slider = document.getElementById(`slider_${id}`);
         if (slider && val) slider.value = val;
+        try { await fetchDAnchorBrand(id); } catch (e) {}
       }
     }
     if (selectedPOIs.length === 0) {
@@ -673,22 +653,17 @@
       setLayerVisibility('layer_r7_drive', 'none');
       setLayerVisibility('layer_r8_drive', mode === 'drive' ? 'visible' : 'none');
       setLayerVisibility('layer_r8_walk', mode === 'walk' ? 'visible' : 'none');
-    } else {
-      // Min-based fallback is drive-only for now
-      setLayerVisibility('layer_r7_drive', 'visible');
-      setLayerVisibility('layer_r8_drive', 'visible');
-      setLayerVisibility('layer_r8_walk', 'none');
     }
     // Reset caches and refetch D_anchor for selected categories
     for (const k in dAnchorCache) delete dAnchorCache[k];
     if (ANCHOR_MODE) {
       initCatalogSelector();
-      Promise.all(selectedPOIs.map(p => fetchDAnchor(p.id))).then(() => updateMapFilter());
+      const loaders = selectedPOIs.map(p => p.type === 'category' ? fetchDAnchor(p.id) : fetchDAnchorBrand(p.id));
+      Promise.all(loaders).then(() => updateMapFilter());
     } else {
       updateMapFilter();
     }
-    // Re-detect metadata for the new mode so the selector is accurate
-    inferAvailablePOIsFromMetadata(FALLBACK_POIS);
+    // No tile-column fallback; catalog remains the source of truth
   }
 
   document.getElementById('mode-select').addEventListener('change', (e) => {
@@ -728,8 +703,17 @@
               const mins = (minsSec >= UNREACH) ? 'N/A' : Math.ceil(minsSec / 60) + ' min';
               html += `<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`;
             } else if (p.type === 'brand') {
-              const v = props[`${p.id}_drive_min`];
-              const mins = (v || v === 0) ? v + ' min' : 'N/A';
+              const UNREACH = 65535;
+              let minsSec = UNREACH;
+              for (let i = 0; i < MAX_K; i++) {
+                const aSec = (props[`a${i}_s`] ?? UNREACH);
+                const aid = String(props[`a${i}_id`] ?? '');
+                const brandMap = dAnchorCache[p.id] || {};
+                const bSec = (aid && brandMap[aid] != null) ? brandMap[aid] : UNREACH;
+                const tot = aSec + bSec;
+                if (tot < minsSec) minsSec = tot;
+              }
+              const mins = (minsSec >= UNREACH) ? 'N/A' : Math.ceil(minsSec / 60) + ' min';
               html += `<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`;
             }
           });

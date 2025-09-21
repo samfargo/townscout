@@ -70,10 +70,64 @@ def load_D_anchor(mode: str) -> pd.DataFrame:
         raise RuntimeError(f"D_anchor missing required columns: {missing}")
     return df[["anchor_int_id", "category_id", "seconds_u16"]].copy()
 
-# ---------- Category resolution ----------
+# ---------- Brand D_anchor loading ----------
 
 def _mode_to_partition(mode: str) -> int:
     return {"drive": 0, "walk": 2}.get(mode, 0)
+
+def load_D_anchor_brand(mode: str, brand_id: str) -> pd.DataFrame:
+    """
+    Load seconds-based anchor→brand table produced by 03d_compute_d_anchor.py.
+    Layout: data/d_anchor_brand/mode={0|2}/brand_id=<brand_id>/part-*.parquet
+    Columns: anchor_int_id:int32, seconds:uint16 (or seconds_u16), optional snapshot_ts
+    """
+    base = os.path.join("data", "d_anchor_brand", f"mode={_mode_to_partition(mode)}", f"brand_id={brand_id}")
+    if os.path.isdir(base):
+        dataset = ds.dataset(base, format="parquet", partitioning="hive")
+        # accept either seconds or seconds_u16
+        cols = set()
+        try:
+            cols = set(dataset.schema.names)
+        except Exception:
+            pass
+        pick = [c for c in ["anchor_int_id", "seconds_u16", "seconds"] if c in cols]
+        if not pick:
+            table = dataset.to_table()
+        else:
+            table = dataset.to_table(columns=pick)
+        df = table.to_pandas()
+        if "seconds" in df.columns and "seconds_u16" not in df.columns:
+            df = df.rename(columns={"seconds": "seconds_u16"})
+        if "seconds_u16" not in df.columns:
+            raise RuntimeError("Brand D_anchor missing 'seconds' column")
+        df["seconds_u16"] = df["seconds_u16"].astype("uint16", errors="ignore")
+        need = {"anchor_int_id", "seconds_u16"}
+        missing = need - set(df.columns)
+        if missing:
+            raise RuntimeError(f"Brand D_anchor missing required columns: {missing}")
+        return df[["anchor_int_id", "seconds_u16"]]
+    # No consolidated fallback; require per-brand Hive partitions
+    raise RuntimeError(f"Brand D_anchor parquet missing at {base}")
+
+# ---------- Category resolution ----------
+
+def _resolve_brand_id(raw: str) -> str:
+    """Resolve a brand input to canonical id using BRAND_REGISTRY aliases."""
+    s = str(raw or "").strip().lower()
+    if not s:
+        return s
+    # direct hit
+    if s in BRAND_REGISTRY:
+        return s
+    # alias or name
+    for bid, (name, aliases) in BRAND_REGISTRY.items():
+        if name and s == str(name).strip().lower():
+            return bid
+        for a in (aliases or []):
+            if s == str(a).strip().lower():
+                return bid
+    # return as-is; caller may still have produced canonical ids we don't know
+    return s
 
 def list_available_categories(mode: str) -> list[int]:
     """Return sorted list of available category_id from Hive partitions for given mode, if present."""
@@ -271,16 +325,18 @@ def catalog(mode: str = Query("drive", description="Travel mode, e.g. 'drive' or
     labels_map = _load_category_labels()
     categories = [{"id": cid, "label": labels_map.get(str(cid), f"Category {cid}")} for cid in ids]
 
-    # Brands present in state_tiles (drive/mins)
+    # Brands: list all canonical brand_ids present in canonical POIs/anchors
     brands: list[dict[str, str]] = []
     present: set[str] = set()
     try:
-        st_path = os.path.join("state_tiles", "us_r8.parquet")
-        if os.path.exists(st_path):
-            cols = list(pd.read_parquet(st_path, columns=None).columns)
-            present = {c[:-10] for c in cols if c.endswith("_drive_min")}
+        canon_path = os.path.join("data", "poi", f"{STATE}_canonical.parquet")
+        if os.path.exists(canon_path):
+            cdf = pd.read_parquet(canon_path, columns=["brand_id"])  # type: ignore
+            present = set(str(b) for b in cdf["brand_id"].dropna().unique().tolist())
     except Exception:
         present = set()
+
+    # No tile-column fallback; catalog is driven by canonical POIs
 
     for bid in sorted(present):
         name = BRAND_REGISTRY.get(bid, (None, []))[0] or bid.replace("_", " ").title()
@@ -442,6 +498,31 @@ def get_d_anchor_slice(
     except Exception as e:
         import traceback
         print(f"ERROR in get_d_anchor_slice: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.get("/api/d_anchor_brand")
+def get_d_anchor_brand(
+    brand: str = Query(..., description="Brand id or alias"),
+    mode: str = Query("drive", description="Travel mode, e.g. 'drive' or 'walk'")
+):
+    """
+    Returns a JSON object mapping anchor_int_id to travel time in seconds
+    for a given brand and travel mode.
+    """
+    bid = _resolve_brand_id(brand)
+    try:
+        D = load_D_anchor_brand(mode, bid)
+        if D.empty:
+            return {}
+        result = pd.Series(D.seconds_u16.values, index=D.anchor_int_id).to_dict()
+        return {str(k): int(v) for k, v in result.items()}
+    except RuntimeError as e:
+        print(f"ERROR in get_d_anchor_brand for brand={brand} mode={mode}: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        import traceback
+        print(f"ERROR in get_d_anchor_brand: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 

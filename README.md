@@ -4,7 +4,7 @@
 
 **Purpose.** TownScout helps a user answer: *“Where should I live given my criteria?”* by computing travel‑time proximity to things that matter (Chipotle, Costco, airports, schools, etc.) and rendering results as a fast, interactive map.
 
-**Context.** Instead of precomputing every hex→category path, TownScout factorizes the problem into **hex→anchor** and **anchor→category** legs. The frontend combines these in real time with GPU expressions. This architecture keeps costs near‑zero to operate and makes adding new categories cheap.
+**Context.** Instead of precomputing every hex→category path, TownScout factorizes the problem into **hex→anchor** and **anchor→category/brand** legs. The frontend combines these in real time with GPU expressions using per‑anchor seconds stored in tiles and per‑anchor category/brand seconds served by the API. This keeps costs near‑zero and makes adding thousands of POIs (brands and categories) cheap.
 
 **Primary Goals.**
 
@@ -21,11 +21,11 @@
 ## Current Implementation Status (Practical)
 
 - T_hex compute is implemented in `src/03_compute_minutes_per_state.py` with a Rust native kernel.
-- The compute emits a long format per-hex table: `(h3_id, anchor_int_id, time_s, res)`.
-- **Overlays system** (`src/03c_compute_overlays.py`) provides K=1 nearest-neighbor computation for dense brands, ensuring 100% coverage in urban areas.
-- The demo tiles (`tiles/t_hex_r7_drive.pmtiles`, `tiles/t_hex_r8_drive.pmtiles`) contain pre‑aggregated per‑hex minimum minutes for brands (e.g., Starbucks, McDonald's, Chipotle, Costco) produced by `src/04_merge_states.py` with overlay integration.
-- The D_anchor dataset is optional. If present, the API loads it from Hive‑partitioned parquet at `data/minutes/mode={0|2}/category_id=*/part-*.parquet` or a legacy fallback file. Category resolution is numeric for now (`/api/categories` lists available IDs).
-- The GPU matrix‑factorization path remains the architectural goal and the example expression below shows the intended wiring; the demo UI ships with the pre‑aggregated mins for simplicity.
+- The compute emits a long format per-hex table: `(h3_id, anchor_int_id, time_s, res)` and tiles store top‑K per hex as `a{i}_id` + `a{i}_s`.
+- The frontend exclusively uses anchor‑mode: it composes `a{i}_s` from tiles with API‑served D\_anchor per category and per brand, enabling thousands of POIs as filter options without tile changes.
+- Category D\_anchor: Hive‑partitioned parquet at `data/minutes/mode={0|2}/category_id=*/part-*.parquet` loaded by the API.
+- Brand D\_anchor: Hive‑partitioned parquet at `data/d_anchor_brand/mode={0|2}/brand_id=*/part-*.parquet` produced by `src/03d_compute_d_anchor.py` and loaded by the API.
+- Brand overlays (`src/03c_compute_overlays.py`) are optional for analysis and validation; the UI no longer relies on per‑brand tile columns.
 
 ---
 
@@ -96,20 +96,20 @@ Overture ─┘                 └─>  D_anchor parquet (per category/brand)  
 
 Example long row schema: `h3_id, anchor_int_id, time_s, res`
 
-### 6.2 D\_anchor (optional dataset)
+### 6.2 D\_anchor (required for categories; brand variant for brands)
 
 * **Inputs:** Anchor sites + POIs (category/brand aware).
-* **Algorithm:** Single‑source Dijkstra from each POI/site into anchors; record nearest per category/brand.
-* **Layout:** Hive‑partitioned parquet at `data/minutes/mode={0,2}/category_id={...}/part-*.parquet` (or legacy fallback).
-* **Status:** Produced out‑of‑band at present; the API loads if present. Category resolution is numeric for now (`/api/categories`).
+* **Algorithm:** Multi‑source search composed per class:
+  - Category: compute anchor→nearest POI in the category, store seconds per anchor.
+  - Brand: compute anchor→nearest site containing the brand, store seconds per anchor.
+* **Layout:**
+  - Categories: `data/minutes/mode={0,2}/category_id={...}/part-*.parquet`
+  - Brands: `data/d_anchor_brand/mode={0,2}/brand_id={...}/part-*.parquet`
+* **Status:** Loaded by the API. Category ids listed by `/api/categories`; full catalog at `/api/catalog`.
 
-### 6.3 Overlays System (`src/03c_compute_overlays.py`)
+### 6.3 Overlays System (optional)
 
-* **Purpose:** Ensures 100% coverage for dense brands by computing K=1 nearest-neighbor travel times.
-* **Algorithm:** For each qualifying brand (frequency ≥50 anchors), compute single-source Dijkstra from all brand anchors to all H3 hexagons.
-* **Integration:** Merged with T_hex data via `src/04_merge_states.py`, taking minimum between K-best and overlay times.
-* **Output:** Per-brand overlay columns (e.g., `starbucks_overlay_min`) in final tiles.
-* **Coverage Target:** 100% for urban areas, 95%+ for suburban areas with dense brands.
+Overlays remain useful for QA and analysis, but the UI no longer depends on per‑brand columns in tiles.
 
 **API shape:**
 
@@ -211,10 +211,10 @@ map.setFilter('layer_r8', filter);
 * Anchor IDs that appear in T\_hex tiles.
 * Mode partitioning if multiple modes are supported.
 
-**Frontend assumptions (demo):**
+**Frontend assumptions:**
 
-* Uses pre‑aggregated minute fields in the tiles.
-* Mode: `drive` (walk is separate data and optional).
+* Uses anchor fields in tiles (`a{i}_id`, `a{i}_s`) and composes with API D_anchor (categories and brands) on the GPU.
+* Mode: `drive` (walk supported if walk tiles + D_anchor provided).
 * Units: minutes in the UI.
 
 ---
@@ -502,22 +502,23 @@ UI rules:
 - Download data and normalize POIs: `make pois`
 - Build anchor sites: `make anchors`
 - Compute minutes (T_hex long format): `make minutes`
-- **Compute overlays for dense brands**: `make overlays`
+- Compute D_anchor brand tables: `make d_anchor_brand`
 - Merge + summarize, build tiles, and serve demo: `make merge tiles` then `make serve` and open `http://localhost:5173/tiles/web/index.html`
 
 ### Full Pipeline Command
 ```bash
-make pois anchors minutes overlays merge tiles
+make pois anchors minutes d_anchor_brand merge tiles
 ```
 
 ### Coverage Optimization
-For maximum POI coverage (especially dense brands like Starbucks):
-1. **Expand brand aliases** in `src/taxonomy.py` for comprehensive name matching
-2. **Use overlays system** for brands with ≥50 anchor sites  
-3. **Increase K-best parameters** (`--k-best 20+`) for dense urban areas
-4. **Verify brand fallback logic** in normalization for complete POI capture
+For maximum POI coverage (especially dense brands):
+1. Expand brand aliases in `src/taxonomy.py` for comprehensive name matching
+2. Compute `make d_anchor_brand` for all desired brands (or threshold)
+3. Increase K-best parameters (`--k-best 20+`) for dense urban areas if needed
+4. Optional: compute overlays for analysis/QA (`make overlays`)
 
-API (optional, if D_anchor dataset present):
+API:
 - Run: `uvicorn api.main:app --reload`
 - Categories: `GET /api/categories?mode=drive`
 - D_anchor slice: `GET /api/d_anchor?category=<id>&mode=drive`
+- D_anchor brand slice: `GET /api/d_anchor_brand?brand=<id or alias>&mode=drive`
