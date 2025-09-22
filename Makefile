@@ -91,7 +91,7 @@ data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_
 
 # Compute D_anchor brand tables for brand-level anchor-mode filtering
 .PHONY: d_anchor_brand
-d_anchor_brand: | build/native.stamp ## 3.6 Compute anchor->brand seconds for all frequent brands
+d_anchor_brand: anchors | build/native.stamp ## 3.6 Compute anchor->brand seconds for all frequent brands
 	@for S in $(STATES); do \
 	  echo "--- Computing D_anchor brand for $$S (drive) ---"; \
 	  $(PY) src/03d_compute_d_anchor.py \
@@ -106,7 +106,7 @@ d_anchor_brand: | build/native.stamp ## 3.6 Compute anchor->brand seconds for al
 
 # Compute D_anchor category tables (anchor->category seconds) for categories present in anchors
 .PHONY: d_anchor_category
-d_anchor_category: | build/native.stamp ## 3.6b Compute anchor->category seconds for available categories
+d_anchor_category: anchors | build/native.stamp ## 3.6b Compute anchor->category seconds for available categories
 	@for S in $(STATES); do \
 	  echo "--- Computing D_anchor category for $$S (drive) ---"; \
 	  $(PY) src/03e_compute_d_anchor_category.py \
@@ -128,6 +128,15 @@ merge: $(MERGE_DEPS) ## 4. Merge per-state data and create summaries
 	$(PY) src/04_merge_states.py
 
 # --- GeoJSON (build from merged summaries) ---
+# Use a stamp file to avoid running merge twice (it produces both r7 and r8 files)
+state_tiles/.merge.stamp: $(MERGE_DEPS)
+	@mkdir -p state_tiles
+	$(PY) src/04_merge_states.py
+	@touch $@
+
+state_tiles/us_r7.parquet: state_tiles/.merge.stamp
+state_tiles/us_r8.parquet: state_tiles/.merge.stamp
+
 tiles/us_r7.geojson: state_tiles/us_r7.parquet
 	@mkdir -p tiles
 	$(PY) src/05_h3_to_geojson.py \
@@ -168,14 +177,28 @@ tiles/t_hex_r8_drive.pmtiles: tiles/us_r8.geojson
 			--minzoom 8 --maxzoom 12 ; \
 	fi
 
-all: tiles  ## Run the full data pipeline
-	@echo "✅ Full pipeline complete."
+## Full pipeline now includes brand/category D_anchor so the API works out of the box
+all:  ## Run the full data pipeline (tiles + D_anchor)
+	@START_TIME=$$(date +%s); \
+	$(MAKE) tiles d_anchor_category d_anchor_brand; \
+	END_TIME=$$(date +%s); \
+	ELAPSED=$$(($$END_TIME - $$START_TIME)); \
+	HOURS=$$(($$ELAPSED / 3600)); \
+	MINUTES=$$((($$ELAPSED % 3600) / 60)); \
+	SECONDS=$$(($$ELAPSED % 60)); \
+	if [ $$HOURS -gt 0 ]; then \
+		echo "✅ Full pipeline complete. Total time: $${HOURS}h $${MINUTES}m $${SECONDS}s"; \
+	elif [ $$MINUTES -gt 0 ]; then \
+		echo "✅ Full pipeline complete. Total time: $${MINUTES}m $${SECONDS}s"; \
+	else \
+		echo "✅ Full pipeline complete. Total time: $${SECONDS}s"; \
+	fi
 
 # ========== Housekeeping ==========
 
 clean:  ## Clean all generated data files
 	rm -rf data/osm/*.pbf data/overture/*.parquet data/poi/*.parquet data/minutes/*.parquet data/anchors/*.parquet
-	rm -rf state_tiles/*.parquet state_tiles/*.csv
+	rm -rf state_tiles/*.parquet state_tiles/*.csv state_tiles/.merge.stamp
 	rm -rf tiles/*.geojson tiles/*.mbtiles tiles/*.pmtiles
 	rm -rf data/osm/cache
 

@@ -237,8 +237,6 @@ OSM_TAG_MAP = {
     # Education
     ("amenity", "school"): ("education", "school", "school"),
     ("amenity", "kindergarten"): ("education", "school", "kindergarten"),
-    ("amenity", "university"): ("education", "university", "university"),
-    ("amenity", "college"): ("education", "university", "college"),
 
     # Civic
     ("amenity", "library"): ("civic", "library", "library"),

@@ -6,9 +6,9 @@ fast_food
 hospital
 clinic
 pharmacy
-railway_station
+park
 bus_station
 subway_station
-airport
 ferry_terminal
-park
+railway_station
+airport
