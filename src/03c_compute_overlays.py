@@ -31,6 +31,8 @@ import pandas as pd
 import polars as pl
 
 from graph.pyrosm_csr import load_or_build_csr
+from graph.csr_utils import build_rev_csr
+from graph.anchors import build_anchor_mappings
 from t_hex import kbest_multisource_bucket_csr, aggregate_h3_topk_precached
 import config
 import re
@@ -44,17 +46,8 @@ def _ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
-def _build_anchor_mappings(anchors_df: pd.DataFrame, node_ids: np.ndarray) -> Tuple[np.ndarray, Dict[int,int]]:
-    if "anchor_int_id" not in anchors_df.columns:
-        anchors_df = anchors_df.sort_values("site_id").reset_index(drop=True)
-        anchors_df["anchor_int_id"] = anchors_df.index.astype(np.int32)
-    nid_to_idx = {int(n): i for i, n in enumerate(node_ids.tolist())}
-    anchor_idx = np.full(len(node_ids), -1, dtype=np.int32)
-    for node_id, aint in anchors_df[["node_id","anchor_int_id"]].itertuples(index=False):
-        j = nid_to_idx.get(int(node_id))
-        if j is not None:
-            anchor_idx[j] = int(aint)
-    return anchor_idx, nid_to_idx
+def _noop():
+    pass
 
 
 def _collect_brand_sources_anchor_ids(anchors_df: pd.DataFrame) -> Dict[str, Set[int]]:
@@ -110,25 +103,7 @@ def compute_brand_overlay_from_sources(
     cutoff_overflow_s = int(overflow_min) * 60
     # Use CSR transpose so that multi-source search from brand sources
     # yields node→brand times respecting one-ways.
-    N = int(indptr.shape[0] - 1)
-    M = int(indices.shape[0])
-    indptr_rev = np.zeros(N + 1, dtype=np.int64)
-    for u in range(N):
-        lo, hi = int(indptr[u]), int(indptr[u+1])
-        for v in indices[lo:hi]:
-            indptr_rev[int(v) + 1] += 1
-    np.cumsum(indptr_rev, out=indptr_rev)
-    indices_rev = np.empty(M, dtype=np.int32)
-    w_rev = np.empty(M, dtype=np.uint16)
-    cursor = indptr_rev.copy()
-    for u in range(N):
-        lo, hi = int(indptr[u]), int(indptr[u+1])
-        for i in range(lo, hi):
-            v = int(indices[i])
-            pos = cursor[v]
-            indices_rev[pos] = np.int32(u)
-            w_rev[pos] = w_sec[i]
-            cursor[v] = pos + 1
+    indptr_rev, indices_rev, w_rev = build_rev_csr(indptr, indices, w_sec)
 
     best_src_idx, time_s = kbest_multisource_bucket_csr(
         indptr_rev, indices_rev, w_rev, source_idxs, K, cutoff_primary_s, cutoff_overflow_s, int(max(1, threads)), False, None
@@ -201,7 +176,7 @@ def main():
 
     # Load CSR ONCE
     node_ids, indptr, indices, w_sec, node_lats, node_lons, node_h3_by_res, res_used = load_or_build_csr(args.pbf, args.mode, args.res, False)
-    anchor_idx, _ = _build_anchor_mappings(anchors_df, node_ids)
+    anchor_idx, _ = build_anchor_mappings(anchors_df, node_ids)
 
     # Precompute brand -> set(anchor_int_id)
     brand_to_anchor_ids = _collect_brand_sources_anchor_ids(anchors_df)

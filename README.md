@@ -305,7 +305,7 @@ function buildFilterExpression(criteria, dAnchorData) {
 
 * **Dense brand detection**: Brands with ≥50 anchor sites qualify for overlay computation.
 * **K=1 nearest-neighbor**: Compute shortest path from every hex to nearest brand anchor.
-* **Output**: Per-brand overlay parquet files in `data/minutes/mode=0/` directory.
+* **Output**: Per-brand overlay parquet files under `data/overlays/mode=0/brand_id=<id>/part-*.parquet`.
 
 7. **Merge & Integration**
 
@@ -519,7 +519,7 @@ For maximum POI coverage (especially dense brands):
 1. Expand brand aliases in `data/brands/registry.csv` for comprehensive name matching
 2. Compute `make d_anchor_brand` for all desired brands (or threshold)
 3. Increase K-best parameters (`--k-best 20+`) for dense urban areas if needed
-4. Optional: compute overlays for analysis/QA (`make overlays`)
+4. Optional: compute overlays for analysis/QA (use `src/03c_compute_overlays.py`)
 
 API:
 - Run: `uvicorn api.main:app --reload`

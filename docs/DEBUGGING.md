@@ -173,7 +173,7 @@ print('v4 API available:', hasattr(h3, 'cell_to_boundary'))
 "
 ```
 
-**Solution**: Always use robust H3 compatibility code (see `scripts/05_h3_to_geojson.py`):
+**Solution**: Always use robust H3 compatibility code (see `src/05_h3_to_geojson.py`):
 ```python
 # Handle H3 v3/v4 compatibility
 try:

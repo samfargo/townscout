@@ -74,46 +74,7 @@ STATE_FIPS = {
     "54": "WV", "55": "WI", "56": "WY"
 }
 
-# Brands/POI categories for MVP
-POI_BRANDS = {
-    "chipotle": {
-        "tags": {
-            "amenity": ["fast_food", "restaurant", "cafe"], 
-            "name": ["Chipotle", "Chipotle Mexican Grill"], 
-            "brand": ["Chipotle", "Chipotle Mexican Grill"],
-            "operator": ["Chipotle", "Chipotle Mexican Grill"]
-        }
-    },
-    "public-transit": {
-        "tags": {
-            # Extracted via Overpass template (queries/MA_public_transit.overpass)
-        }
-    },
-    "costco": {
-        "tags": {
-            "shop": ["supermarket", "wholesale", "department_store"], 
-            "name": ["Costco", "Costco Wholesale"], 
-            "brand": ["Costco", "Costco Wholesale"],
-            "operator": ["Costco", "Costco Wholesale"]
-        }
-    },
-    "airports": {
-        "tags": {
-            "aeroway": ["aerodrome"],
-            "name": ["International"],
-        }
-    },
-    # Template for adding new POI brands:
-    # "brand_name": {
-    #     "tags": {
-    #         "amenity": ["category1", "category2"],  # or omit if not applicable
-    #         "shop": ["category1", "category2"],     # or omit if not applicable  
-    #         "name": ["Brand Name", "Brand Name Inc"],
-    #         "brand": ["Brand Name", "Brand Name Inc"],
-    #         "operator": ["Brand Name", "Brand Name Inc"]
-    #     }
-    # },
-}
+# (Removed legacy POI_BRANDS; taxonomy/registry drive POI selection.)
 
 # Definition examples for future categories
 MAJOR_AIRPORT_MIN_PAX = 500_000  # illustrative

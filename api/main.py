@@ -28,6 +28,10 @@ try:
     from taxonomy import BRAND_REGISTRY
 except Exception:
     BRAND_REGISTRY = {}
+try:
+    from graph.csr_utils import build_rev_csr
+except Exception:
+    build_rev_csr = None  # type: ignore
 
 APP_NAME = "TownScout D_anchor API"
 
@@ -89,9 +93,6 @@ def load_D_anchor(mode: str) -> pd.DataFrame:
     raise RuntimeError(f"Category D_anchor parquet not found under {_DANCHOR_CATEGORY_DIR} or legacy paths for mode={mode}")
 
 # ---------- Brand D_anchor loading ----------
-
-def _mode_to_partition(mode: str) -> int:
-    return {"drive": 0, "walk": 2}.get(mode, 0)
 
 def load_D_anchor_brand(mode: str, brand_id: str) -> pd.DataFrame:
     """
@@ -440,27 +441,7 @@ def _load_graph_and_anchors(mode: str):
     return _GRAPH_CACHE[key], _ANCHOR_CACHE[key]
 
 
-def _build_rev_csr(indptr: np.ndarray, indices: np.ndarray, w_sec: np.ndarray):
-    N = int(indptr.shape[0] - 1)
-    M = int(indices.shape[0])
-    indptr_rev = np.zeros(N + 1, dtype=np.int64)
-    for u in range(N):
-        lo, hi = int(indptr[u]), int(indptr[u + 1])
-        for v in indices[lo:hi]:
-            indptr_rev[int(v) + 1] += 1
-    np.cumsum(indptr_rev, out=indptr_rev)
-    indices_rev = np.empty(M, dtype=np.int32)
-    w_rev = np.empty(M, dtype=np.uint16)
-    cursor = indptr_rev.copy()
-    for u in range(N):
-        lo, hi = int(indptr[u]), int(indptr[u + 1])
-        for i in range(lo, hi):
-            v = int(indices[i])
-            pos = cursor[v]
-            indices_rev[pos] = np.int32(u)
-            w_rev[pos] = w_sec[i]
-            cursor[v] = pos + 1
-    return indptr_rev, indices_rev, w_rev
+    
 
 
 def _nearest_node_index(lons: np.ndarray, lats: np.ndarray, lon: float, lat: float) -> int:
@@ -502,7 +483,7 @@ def get_d_anchor_custom(
 
         # Build CSR transpose and run single-source K=1 from the custom node
         from t_hex import kbest_multisource_bucket_csr  # type: ignore
-        indptr_rev, indices_rev, w_rev = _build_rev_csr(indptr, indices, w_sec)
+        indptr_rev, indices_rev, w_rev = build_rev_csr(indptr, indices, w_sec)
         cutoff_s = int(cutoff) * 60
         overflow_s = int(overflow_cutoff) * 60
         src = np.asarray([j_custom], dtype=np.int32)
