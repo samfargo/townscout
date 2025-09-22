@@ -100,6 +100,7 @@ def main():
     ap.add_argument("--mode", required=True, choices=["drive", "walk"])
     ap.add_argument("--brand", action="append", default=[], help="Brand id (canonical or alias) to compute; can repeat")
     ap.add_argument("--brands-threshold", type=int, default=0, help="If >0, compute for all brands with >= this many anchors")
+    ap.add_argument("--allowlist", default="data/brands/allowlist.txt", help="Optional path to brand allowlist (one canonical brand_id per line)")
     ap.add_argument("--cutoff", type=int, default=30)
     ap.add_argument("--overflow-cutoff", type=int, default=90)
     ap.add_argument("--threads", type=int, default=1)
@@ -125,7 +126,16 @@ def main():
 
     # Resolve brand targets
     targets: List[str] = list(dict.fromkeys(map(str, args.brand)))
-    if args.brands_threshold > 0:
+    # Optional allowlist file
+    if (not targets) and args.allowlist and os.path.isfile(args.allowlist):
+        try:
+            with open(args.allowlist, "r") as f:
+                allowed = [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
+            targets = [b for b in allowed]
+            print(f"[info] Loaded {len(targets)} brands from allowlist {args.allowlist}")
+        except Exception as e:
+            print(f"[warn] Failed to read brand allowlist {args.allowlist}: {e}")
+    if args.brands_threshold > 0 and not targets:
         targets += [b for b, cnt in brand_counts.items() if cnt >= args.brands_threshold]
     targets = sorted(set(targets))
     if not targets:
@@ -183,20 +193,22 @@ def main():
         best_src_idx, time_s = kbest_multisource_bucket_csr(
             indptr_rev, indices_rev, w_rev, src, 1, cutoff_primary_s, cutoff_overflow_s, int(max(1, args.threads)), False, None
         )
-        # For each anchor (node index j where anchor_idx[j] >= 0), pick time_s[j]
+        # For each anchor (node index j where anchor_idx[j] >= 0), pick time_s[j,0]
         records = []
+        ts = np.asarray(time_s)
+        if ts.ndim == 1:
+            ts = ts.reshape(-1, 1)
         for j, aint in enumerate(anchor_idx.tolist()):
             if aint < 0:
                 continue
-            t = int(time_s[j])
+            t = int(ts[j, 0])
             if t < 0:
                 t = int(config.UNREACH_U16)
             records.append((int(aint), np.uint16(t), SNAPSHOT_TS))
-        df = pl.DataFrame(records, schema=[("anchor_int_id", pl.Int32), ("seconds", pl.UInt16), ("snapshot_ts", pl.Utf8)])
+        df = pl.DataFrame(records, schema=[("anchor_int_id", pl.Int32), ("seconds", pl.UInt16), ("snapshot_ts", pl.Utf8)], orient="row")
         df.write_parquet(out_path, compression="zstd")
         print(f"[ok] Wrote D_anchor brand: {out_path} rows={df.height}")
 
 
 if __name__ == "__main__":
     main()
-

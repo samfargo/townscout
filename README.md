@@ -23,7 +23,7 @@
 - T_hex compute is implemented in `src/03_compute_minutes_per_state.py` with a Rust native kernel.
 - The compute emits a long format per-hex table: `(h3_id, anchor_int_id, time_s, res)` and tiles store top‑K per hex as `a{i}_id` + `a{i}_s`.
 - The frontend exclusively uses anchor‑mode: it composes `a{i}_s` from tiles with API‑served D\_anchor per category and per brand, enabling thousands of POIs as filter options without tile changes.
-- Category D\_anchor: Hive‑partitioned parquet at `data/minutes/mode={0|2}/category_id=*/part-*.parquet` loaded by the API.
+- Category D\_anchor: Hive‑partitioned parquet at `data/d_anchor_category/mode={0|2}/category_id=*/part-*.parquet` loaded by the API.
 - Brand D\_anchor: Hive‑partitioned parquet at `data/d_anchor_brand/mode={0|2}/brand_id=*/part-*.parquet` produced by `src/03d_compute_d_anchor.py` and loaded by the API.
 - Brand overlays (`src/03c_compute_overlays.py`) are optional for analysis and validation; the UI no longer relies on per‑brand tile columns.
 
@@ -61,7 +61,7 @@ Overture ─┘                 └─>  D_anchor parquet (per category/brand)  
 
 * OSM broad POIs ≈ 76,688 (many are low‑value street furniture).
 * Overture Places (MA clip) ≈ 461,249 with strong brand normalization.
-* Conclusion: **Hybrid** ≫ either alone. Overture for brands; OSM for civic/natural/tag richness.
+* Conclusion: **Hybrid** ≫ either alone. Overture for brands; OSM for civic/natural/tag richness. Airports are sourced from a curated CSV (`Future/airports_coordinates.csv`) and OSM/Overture airports are ignored to keep a consistent set.
 
 ---
 
@@ -98,12 +98,12 @@ Example long row schema: `h3_id, anchor_int_id, time_s, res`
 
 ### 6.2 D\_anchor (required for categories; brand variant for brands)
 
-* **Inputs:** Anchor sites + POIs (category/brand aware).
+* **Inputs:** Anchor sites + POIs (category/brand aware). Airports are injected from CSV during normalization.
 * **Algorithm:** Multi‑source search composed per class:
   - Category: compute anchor→nearest POI in the category, store seconds per anchor.
   - Brand: compute anchor→nearest site containing the brand, store seconds per anchor.
 * **Layout:**
-  - Categories: `data/minutes/mode={0,2}/category_id={...}/part-*.parquet`
+  - Categories: `data/d_anchor_category/mode={0,2}/category_id={...}/part-*.parquet`
   - Brands: `data/d_anchor_brand/mode={0,2}/brand_id={...}/part-*.parquet`
 * **Status:** Loaded by the API. Category ids listed by `/api/categories`; full catalog at `/api/catalog`.
 
@@ -145,7 +145,7 @@ app.mount("/tiles/web", StaticFiles(directory="tiles/web"), name="tiles-web")
 
 The dropdow menun on the cleint side should be a list of every POI, and there should be just the name of the category at the start of each category's POI which the user can select to encompass the whole category. Or the user can select individual POI.
 
-**PMTiles protocol:** local import, no CDN. Demo UI lives at `tiles/web/index.html` and currently filters pre‑aggregated mins.
+**PMTiles protocol:** local import, no CDN. Demo UI lives at `tiles/web/index.html` and composes anchor arrays with API‑served D_anchor (categories, brands, and custom points).
 
 ```js
 let protocol = new pmtiles.Protocol();
@@ -154,7 +154,7 @@ const T_HEX_R7_URL = "pmtiles:///tiles/t_hex_r7_drive.pmtiles";
 const T_HEX_R8_URL = "pmtiles:///tiles/t_hex_r8_drive.pmtiles";
 ```
 
-**GPU Filter Expression (target design):**
+**GPU Filter Expression (anchor‑mode):**
 
 ```js
 function buildFilterExpression(criteria, dAnchorData) {
@@ -180,28 +180,15 @@ function buildFilterExpression(criteria, dAnchorData) {
 }
 ```
 
-**Demo min‑based filter (current):**
-
-```js
-// Example MapLibre filter combining pre-aggregated mins
-const filter = [
-  "all",
-  ["<=", ["coalesce", ["get", "chipotle_drive_min"], 9999], chipotleMax],
-  ["<=", ["coalesce", ["get", "costco_drive_min"], 9999], costcoMax]
-];
-map.setFilter('layer_r7', filter);
-map.setFilter('layer_r8', filter);
-```
-
-**Performance levers:** client‑side only after initial load; r7/r8 swap; 250ms debounce; cache D\_anchor per category.
+**Performance levers:** client‑side only after initial load; r7/r8 swap; 250ms debounce; cache D\_anchor per criterion; reuse one‑off custom D_anchor.
 
 ---
 
 ## 9) Data Contracts (hard requirements)
 
-**T\_hex tiles (current demo) provide:**
+**T\_hex tiles (contract):**
 
-* Pre‑aggregated per‑hex minimum minutes for selected brands.
+* Anchor arrays per hex: `a{i}_id` (int32, anchor_int_id) and `a{i}_s` (uint16 seconds).
 * Polygon geometry = H3 cell boundary.
 * Layer names = `t_hex_r7_*`, `t_hex_r8_*`.
 
@@ -231,7 +218,7 @@ map.setFilter('layer_r8', filter);
 * Make additions **config‑driven**, not code‑driven.
 * Each time a POI from OSM or Overture is added, the livable land for that user visually shrinks based on what the filter was.
 
-**Key insight.** Use **Overture** for the *brand/commercial spine* and **OSM** for civic/natural/local detail. Normalize both into a **TownScout Taxonomy** with a **brand registry**.
+**Key insight.** Use Overture for the brand/commercial spine and OSM for civic/natural/local detail. Normalize both into a TownScout taxonomy with a brand registry. Airports are handled via a curated CSV to avoid noisy/missing source tags.
 
 ---
 
@@ -430,6 +417,17 @@ UI rules:
 * Partitions: `mode ∈ {drive, walk}`.
 * Tile layers: `t_hex_r7_*`, `t_hex_r8_*` only.
 
+Allowlists & Sources (overhaul scope)
+- `data/taxonomy/category_allowlist.txt`: category labels to precompute. The category D_anchor step reads this by default; use `--prune` to remove stale categories.
+- `data/brands/allowlist.txt`: A‑list canonical brand_ids to precompute for brand queries and to include in anchors when their categories aren’t allowlisted.
+- Airports: `Future/airports_coordinates.csv` only (normalization injects these; OSM/Overture airports are discarded).
+
+Taxonomy & Config Files (minimal)
+- `src/taxonomy.py`: built‑in taxonomy + mappings (defaults).
+- `data/brands/registry.csv`: brand canon + aliases you edit regularly.
+- `data/taxonomy/category_labels.json`: generated by category D_anchor; served by the API.
+- Optional advanced override (disabled by default): `data/taxonomy/categories.yml`. Enable with `TS_TAXONOMY_YAML=1` if you need to extend mappings.
+
 ---
 
 ## 18) Airport Handling (Target)
@@ -502,17 +500,23 @@ UI rules:
 - Download data and normalize POIs: `make pois`
 - Build anchor sites: `make anchors`
 - Compute minutes (T_hex long format): `make minutes`
+- Compute D_anchor category tables: `make d_anchor_category`
 - Compute D_anchor brand tables: `make d_anchor_brand`
 - Merge + summarize, build tiles, and serve demo: `make merge tiles` then `make serve` and open `http://localhost:5173/tiles/web/index.html`
 
 ### Full Pipeline Command
 ```bash
-make pois anchors minutes d_anchor_brand merge tiles
+make pois anchors minutes d_anchor_category d_anchor_brand merge tiles
 ```
+
+### Category & Brand Scope (Stay Focused)
+- Categories: edit `data/taxonomy/category_allowlist.txt`. The category step uses it by default; pass `--prune` when running the script directly to remove old categories.
+- Brands (A‑list): edit `data/brands/allowlist.txt`. The brand step reads it by default if you don’t pass `--brand`.
+- Tip: Use `--threads` and consider a smaller `--overflow-cutoff` (e.g., 60) for faster runs on laptops.
 
 ### Coverage Optimization
 For maximum POI coverage (especially dense brands):
-1. Expand brand aliases in `src/taxonomy.py` for comprehensive name matching
+1. Expand brand aliases in `data/brands/registry.csv` for comprehensive name matching
 2. Compute `make d_anchor_brand` for all desired brands (or threshold)
 3. Increase K-best parameters (`--k-best 20+`) for dense urban areas if needed
 4. Optional: compute overlays for analysis/QA (`make overlays`)
@@ -522,3 +526,4 @@ API:
 - Categories: `GET /api/categories?mode=drive`
 - D_anchor slice: `GET /api/d_anchor?category=<id>&mode=drive`
 - D_anchor brand slice: `GET /api/d_anchor_brand?brand=<id or alias>&mode=drive`
+- Custom point (escape hatch): `GET /api/d_anchor_custom?lon=<lon>&lat=<lat>&mode=drive`

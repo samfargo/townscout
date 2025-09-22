@@ -56,6 +56,7 @@
       <label for="poi-select">Add POI</label>
       <select id="poi-select"></select>
       <button id="add-poi" class="remove-btn" title="Add selected POI">Add</button>
+      <button id="add-custom" class="remove-btn" title="Pick a custom location on the map">Custom</button>
     </div>
     <div id="filter-rows"></div>
   </div>
@@ -167,13 +168,14 @@
   // ---------- Filter Logic ----------
   // ---------- Dynamic POI Filters (Anchor Mode Only) ----------
   // Anchor-mode required: we compose a{i}_s with D_anchor maps from the API
-  let ANCHOR_MODE = true;
+  let ANCHOR_MODE = true; // anchor arrays present; compose with D_anchor
   let CURRENT_MODE = 'drive'; // 'drive' | 'walk'
   const MAX_K = 20; // align with tiles: support up to 20 anchors; missing ones coalesce to sentinel
   const dAnchorCache = {}; // { categoryId|brandId: { anchorId: seconds } }
 
   const selectedPOIs = [];
   const activePins = {}; // rowKey -> { brands: string[], sourceId: string, layerIds: string[] }
+  let PICKING_CUSTOM = false;
 
   // (min-cols fallback removed)
 
@@ -224,6 +226,12 @@
           const minExpr = buildMinExprForBrand(p.id);
           clauses.push(["<=", minExpr, maxMin]);
         }
+      } else if (p.type === 'custom') {
+        if (dAnchorCache[p.id] && Object.keys(dAnchorCache[p.id]).length > 0) {
+          const maxMin = parseInt(slider.value, 10) * 60; // seconds
+          const minExpr = buildMinExprForBrand(p.id);
+          clauses.push(["<=", minExpr, maxMin]);
+        }
       }
     });
     return clauses;
@@ -237,22 +245,15 @@
       if (slider && valSpan) valSpan.textContent = slider.value;
     });
     const filter = buildFilterExpressionCombined();
-    if (ANCHOR_MODE) {
-      // Apply to current mode layer(s)
-      if (CURRENT_MODE === 'drive') {
-        map.setFilter('layer_r8_drive', filter);
-        map.setFilter('layer_r7_drive', filter);
-        map.setFilter('layer_r8_walk', null);
-      } else {
-        map.setFilter('layer_r8_walk', filter);
-        map.setFilter('layer_r8_drive', null);
-        map.setFilter('layer_r7_drive', null);
-      }
-    } else {
-      // Fallback: apply to drive layers
-      map.setFilter('layer_r7_drive', filter);
+    // Apply to current mode layer(s)
+    if (CURRENT_MODE === 'drive') {
       map.setFilter('layer_r8_drive', filter);
+      map.setFilter('layer_r7_drive', filter);
       map.setFilter('layer_r8_walk', null);
+    } else {
+      map.setFilter('layer_r8_walk', filter);
+      map.setFilter('layer_r8_drive', null);
+      map.setFilter('layer_r7_drive', null);
     }
   }
 
@@ -297,7 +298,9 @@
       removePinsForPoi(poi);
       updateMapFilter();
     });
-    if (ANCHOR_MODE && poi.type === 'category') {
+    if (poi.type === 'custom') {
+      fetchDAnchorCustom(poi.lon, poi.lat).then(() => updateMapFilter());
+    } else if (ANCHOR_MODE && poi.type === 'category') {
       fetchDAnchor(poi.id).then(() => updateMapFilter());
     } else {
       updateMapFilter();
@@ -338,15 +341,34 @@
     const categories = Array.isArray(resp.categories) ? resp.categories : [];
     const brands = Array.isArray(resp.brands) ? resp.brands : [];
     const catToBrands = resp.cat_to_brands || {};
-    if (categories.length > 0) {
-      ANCHOR_MODE = true; // Switch to full anchor-based filtering when available
-    }
+    ANCHOR_MODE = true; // always anchor-mode; D_anchor fetched on demand
     // Stash for URL parsing and labels
     window._categoriesById = new Map(categories.map(c => [String(c.id), c.label]));
     window._brandLabelById = new Map(brands.map(b => [String(b.id), b.label]));
     window._catToBrands = catToBrands;
     populateCatalogSelector(categories, brands, catToBrands);
   }
+
+  // ---------- Custom D_anchor ----------
+  function customKeyForLonLat(lon, lat) {
+    const lonf = Number(lon).toFixed(5);
+    const latf = Number(lat).toFixed(5);
+    return `custom@${lonf},${latf}`;
+  }
+
+  async function fetchDAnchorCustom(lon, lat) {
+    const key = customKeyForLonLat(lon, lat);
+    if (dAnchorCache[key]) return dAnchorCache[key];
+    const params = new URLSearchParams();
+    params.set('lon', String(lon));
+    params.set('lat', String(lat));
+    params.set('mode', CURRENT_MODE);
+    const data = await fetchJSON(`/api/d_anchor_custom?${params.toString()}`);
+    dAnchorCache[key] = data;
+    return data;
+  }
+
+  // (min-column fallback removed; GPU composition only)
 
   function populateCatalogSelector(categories, brands, catToBrands) {
     const select = document.getElementById('poi-select');
@@ -498,6 +520,18 @@
       removePinsForPoi(poi);
       return;
     }
+    if (poi.type === 'custom') {
+      // Add a single-point source + simple circle layer
+      const sourceId = `pins_${key}`;
+      const layerId = `pins_${key}_point`;
+      try { if (map.getLayer(layerId)) map.removeLayer(layerId); } catch (e) {}
+      try { if (map.getSource(sourceId)) map.removeSource(sourceId); } catch (e) {}
+      const geo = { type: 'FeatureCollection', features: [ { type: 'Feature', geometry: { type: 'Point', coordinates: [poi.lon, poi.lat] }, properties: {} } ] };
+      map.addSource(sourceId, { type: 'geojson', data: geo });
+      map.addLayer({ id: layerId, type: 'circle', source: sourceId, paint: { 'circle-radius': 6, 'circle-color': '#ef4444', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1.2 } });
+      activePins[key] = { brands: [], sourceId, layerIds: [layerId] };
+      return;
+    }
     const brands = getBrandIdsForPoi(poi);
     if (!brands || brands.length === 0) {
       // No known brands under this selection
@@ -575,11 +609,31 @@
   // ---------- Share URL ----------
   document.getElementById('share').addEventListener('click', () => {
     const params = new URLSearchParams();
+    // Mode
     params.set('mode', CURRENT_MODE);
-    const cats = selectedPOIs.filter(p => p.type === 'category').map(p => `${encodeURIComponent(p.id)}:${document.getElementById('slider_' + p.id).value}`);
-    const brands = selectedPOIs.filter(p => p.type === 'brand').map(p => `${encodeURIComponent(p.id)}:${document.getElementById('slider_' + p.id).value}`);
+    // Categories
+    const cats = selectedPOIs.filter(p => p.type === 'category').map(p => {
+      const slider = document.getElementById('slider_' + p.id);
+      const v = slider ? slider.value : p.def;
+      return `${encodeURIComponent(p.id)}:${v}`;
+    });
     if (cats.length) params.set('cat', cats.join(','));
+    // Brands
+    const brands = selectedPOIs.filter(p => p.type === 'brand').map(p => {
+      const slider = document.getElementById('slider_' + p.id);
+      const v = slider ? slider.value : p.def;
+      return `${encodeURIComponent(p.id)}:${v}`;
+    });
     if (brands.length) params.set('brand', brands.join(','));
+    // Custom
+    const customs = selectedPOIs.filter(p => p.type === 'custom').map(p => {
+      const slider = document.getElementById('slider_' + p.id);
+      const v = slider ? slider.value : p.def;
+      const lon = Number(p.lon).toFixed(5);
+      const lat = Number(p.lat).toFixed(5);
+      return `${encodeURIComponent(lon + '|' + lat)}:${v}`;
+    });
+    if (customs.length) params.set('custom', customs.join(','));
     const url = new URL(window.location.href);
     url.search = params.toString();
     navigator.clipboard.writeText(url.toString()).then(() => {
@@ -631,6 +685,22 @@
         const slider = document.getElementById(`slider_${id}`);
         if (slider && val) slider.value = val;
         try { await fetchDAnchorBrand(id); } catch (e) {}
+      }
+    }
+    // Custom
+    if (params.has('custom')) {
+      const pairs = params.get('custom').split(',');
+      for (const item of pairs) {
+        const [coordEnc, val] = item.split(':');
+        const coord = decodeURIComponent(coordEnc);
+        const [lonS, latS] = coord.split('|');
+        const lon = parseFloat(lonS);
+        const lat = parseFloat(latS);
+        const id = customKeyForLonLat(lon, lat);
+        addPOIRow({ type: 'custom', id, label: 'Custom Location', lon, lat, def: 30, min: 5, max: 240, step: 5 });
+        const slider = document.getElementById(`slider_${id}`);
+        if (slider && val) slider.value = val;
+        try { await fetchDAnchorCustom(lon, lat); } catch (e) {}
       }
     }
     if (selectedPOIs.length === 0) {
@@ -726,6 +796,31 @@
       }
     });
     map.on('moveend', refreshActivePins);
+
+    // Enable map-pick for custom location
+    document.getElementById('add-custom').addEventListener('click', () => {
+      PICKING_CUSTOM = true;
+      const btn = document.getElementById('add-custom');
+      const original = btn.textContent;
+      btn.textContent = 'Click map…';
+      const once = async (e) => {
+        if (!PICKING_CUSTOM) return;
+        PICKING_CUSTOM = false;
+        btn.textContent = original;
+        try {
+          const lngLat = e.lngLat || (e.point && map.unproject(e.point));
+          const lon = lngLat.lng;
+          const lat = lngLat.lat;
+          const id = customKeyForLonLat(lon, lat);
+          addPOIRow({ type: 'custom', id, label: 'Custom Location', lon, lat, def: 30, min: 5, max: 240, step: 5 });
+          await fetchDAnchorCustom(lon, lat);
+          updateMapFilter();
+        } finally {
+          map.off('click', once);
+        }
+      };
+      map.once('click', once);
+    });
   });
 
 </script>

@@ -64,7 +64,42 @@ def main():
     # Join on anchor_int_id emitted by T_hex
     merged_data = pd.merge(all_times, sites_info, left_on='anchor_int_id', right_on='anchor_int_id', how='inner')
 
-    # 3. For each hex, calculate the minimum travel time to each brand observed
+    # 3.a. Anchor arrays for frontend (a{i}_id / a{i}_s) — top-K already enforced upstream
+    # Sort times per hex and assign rank 0..K-1, then pivot into columns
+    K_ANCHORS = 20
+    times_sorted = all_times.sort_values(["h3_id", "res", "time_s", "anchor_int_id"]).copy()
+    times_sorted["rank"] = times_sorted.groupby(["h3_id", "res"]).cumcount()
+    times_topk = times_sorted[times_sorted["rank"] < K_ANCHORS]
+
+    # Pivot IDs
+    pivot_ids = times_topk.pivot_table(
+        index=["h3_id", "res"],
+        columns="rank",
+        values="anchor_int_id",
+        aggfunc="first"
+    )
+    if isinstance(pivot_ids.columns, pd.RangeIndex):
+        pivot_ids.columns = [f"a{int(c)}_id" for c in pivot_ids.columns]
+    else:
+        pivot_ids.columns = [f"a{int(c)}_id" for c in pivot_ids.columns.tolist()]
+
+    # Pivot seconds
+    pivot_secs = times_topk.pivot_table(
+        index=["h3_id", "res"],
+        columns="rank",
+        values="time_s",
+        aggfunc="first"
+    )
+    if isinstance(pivot_secs.columns, pd.RangeIndex):
+        pivot_secs.columns = [f"a{int(c)}_s" for c in pivot_secs.columns]
+    else:
+        pivot_secs.columns = [f"a{int(c)}_s" for c in pivot_secs.columns.tolist()]
+
+    anchor_cols = pd.concat([pivot_ids, pivot_secs], axis=1).reset_index()
+    # Merge anchor arrays onto base hex universe
+    base_hexes = pd.merge(base_hexes, anchor_cols, on=["h3_id", "res"], how="left")
+
+    # 3.b. For each hex, calculate the minimum travel time to each brand observed
     # Keep only rows where we have a resolved brand_id
     merged_data = merged_data.dropna(subset=['brand_id']).copy()
     if merged_data.empty:
@@ -86,7 +121,7 @@ def main():
 
     # Convert seconds to integer minutes (rounding up), rename columns
     # Note: Some brands may be entirely absent at a given resolution; handled implicitly.
-    brand_cols = [c for c in final_wide.columns if c not in ('h3_id', 'res')]
+    brand_cols = [c for c in final_wide.columns if c not in ('h3_id', 'res') and not c.startswith('a')]
     for brand in brand_cols:
         minutes_col = f"{brand}_drive_min"
         final_wide[minutes_col] = (final_wide[brand] / 60).apply(np.ceil).astype('Int16')

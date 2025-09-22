@@ -41,6 +41,13 @@ _DANCHOR_BRAND_DIR = os.environ.get("TS_DANCHOR_BRAND_DIR", os.path.join("data",
 # Column & sentinel conventions
 UNREACH_U16 = np.uint16(65535)
 
+# Lazily loaded CSR graph + anchors cache for custom D_anchor
+_GRAPH_CACHE: dict[str, dict[str, object]] = {}
+_ANCHOR_CACHE: dict[str, dict[str, object]] = {}
+
+def _mode_to_partition(mode: str) -> int:
+    return {"drive": 0, "walk": 2}.get(mode, 0)
+
 # ---------- Data loading (cached) ----------
 def load_D_anchor(mode: str) -> pd.DataFrame:
     """
@@ -388,6 +395,137 @@ def catalog(mode: str = Query("drive", description="Travel mode, e.g. 'drive' or
         "cat_to_brands": cat_to_brands,
     }
 
+# ---------- Custom D_anchor (one-off for a user-picked point) ----------
+# Reuse graph + anchors and compute anchor->custom seconds via a single-source run on the CSR transpose.
+
+def _load_graph_and_anchors(mode: str):
+    key = mode
+    if key not in _GRAPH_CACHE:
+        # Locate PBF by STATE name
+        state = os.environ.get("TS_STATE", "massachusetts")
+        pbf = os.path.join("data", "osm", f"{state}.osm.pbf")
+        if not os.path.isfile(pbf):
+            raise RuntimeError(f"OSM PBF not found: {pbf}")
+        # Deferred import to avoid hard dependency at import time
+        from graph.pyrosm_csr import load_or_build_csr  # type: ignore
+        node_ids, indptr, indices, w_sec, node_lats, node_lons, node_h3_by_res, res_used = load_or_build_csr(pbf, mode, [8], False)
+        _GRAPH_CACHE[key] = {
+            "node_ids": node_ids,
+            "indptr": indptr,
+            "indices": indices,
+            "w_sec": w_sec,
+            "lats": node_lats,
+            "lons": node_lons,
+        }
+    if key not in _ANCHOR_CACHE:
+        sites_path = _find_sites_parquet(mode)
+        if not sites_path:
+            raise RuntimeError("No anchor sites parquet found")
+        anchors_df = pd.read_parquet(sites_path)
+        if "anchor_int_id" not in anchors_df.columns:
+            anchors_df = anchors_df.sort_values("site_id").reset_index(drop=True)
+            anchors_df["anchor_int_id"] = anchors_df.index.astype("int32")
+        # Build mapping from node id -> anchor_int_id aligned to CSR node order
+        node_ids = _GRAPH_CACHE[key]["node_ids"]  # type: ignore
+        nid_to_idx = {int(n): i for i, n in enumerate(node_ids.tolist())}
+        anchor_idx = np.full(len(node_ids), -1, dtype=np.int32)
+        for node_id, aint in anchors_df[["node_id", "anchor_int_id"]].itertuples(index=False):
+            j = nid_to_idx.get(int(node_id))
+            if j is not None:
+                anchor_idx[j] = int(aint)
+        _ANCHOR_CACHE[key] = {
+            "anchors_df": anchors_df,
+            "anchor_idx": anchor_idx,
+        }
+    return _GRAPH_CACHE[key], _ANCHOR_CACHE[key]
+
+
+def _build_rev_csr(indptr: np.ndarray, indices: np.ndarray, w_sec: np.ndarray):
+    N = int(indptr.shape[0] - 1)
+    M = int(indices.shape[0])
+    indptr_rev = np.zeros(N + 1, dtype=np.int64)
+    for u in range(N):
+        lo, hi = int(indptr[u]), int(indptr[u + 1])
+        for v in indices[lo:hi]:
+            indptr_rev[int(v) + 1] += 1
+    np.cumsum(indptr_rev, out=indptr_rev)
+    indices_rev = np.empty(M, dtype=np.int32)
+    w_rev = np.empty(M, dtype=np.uint16)
+    cursor = indptr_rev.copy()
+    for u in range(N):
+        lo, hi = int(indptr[u]), int(indptr[u + 1])
+        for i in range(lo, hi):
+            v = int(indices[i])
+            pos = cursor[v]
+            indices_rev[pos] = np.int32(u)
+            w_rev[pos] = w_sec[i]
+            cursor[v] = pos + 1
+    return indptr_rev, indices_rev, w_rev
+
+
+def _nearest_node_index(lons: np.ndarray, lats: np.ndarray, lon: float, lat: float) -> int:
+    # Equirectangular projection distance (fast, good enough for nearest neighbor)
+    lat0 = float(np.deg2rad(np.mean(lats))) if lats.size else 0.0
+    m_per_deg = 111000.0
+    xs = (lons.astype(np.float64) * np.cos(lat0)) * m_per_deg
+    ys = (lats.astype(np.float64)) * m_per_deg
+    x = (float(lon) * np.cos(lat0)) * m_per_deg
+    y = float(lat) * m_per_deg
+    j = int(np.argmin((xs - x) ** 2 + (ys - y) ** 2))
+    return j
+
+
+@app.get("/api/d_anchor_custom")
+def get_d_anchor_custom(
+    lon: float = Query(..., description="Longitude of custom location"),
+    lat: float = Query(..., description="Latitude of custom location"),
+    mode: str = Query("drive", description="Travel mode, e.g. 'drive' or 'walk'"),
+    cutoff: int = Query(30, description="Primary cutoff in minutes"),
+    overflow_cutoff: int = Query(90, description="Overflow cutoff in minutes"),
+):
+    """
+    One-off D_anchor for a custom point. Returns {anchor_int_id: seconds} suitable
+    for GPU composition with T_hex tiles.
+    """
+    try:
+        G, A = _load_graph_and_anchors(mode)
+        node_ids = G["node_ids"]  # type: ignore
+        indptr = G["indptr"]  # type: ignore
+        indices = G["indices"]  # type: ignore
+        w_sec = G["w_sec"]  # type: ignore
+        lats = G["lats"]  # type: ignore
+        lons = G["lons"]  # type: ignore
+        anchor_idx = A["anchor_idx"]  # type: ignore
+
+        # Find nearest node to the custom lon/lat
+        j_custom = _nearest_node_index(lons, lats, lon, lat)
+
+        # Build CSR transpose and run single-source K=1 from the custom node
+        from t_hex import kbest_multisource_bucket_csr  # type: ignore
+        indptr_rev, indices_rev, w_rev = _build_rev_csr(indptr, indices, w_sec)
+        cutoff_s = int(cutoff) * 60
+        overflow_s = int(overflow_cutoff) * 60
+        src = np.asarray([j_custom], dtype=np.int32)
+        best_src_idx, time_s = kbest_multisource_bucket_csr(
+            indptr_rev, indices_rev, w_rev, src, 1, cutoff_s, overflow_s, 1, False, None
+        )
+        # Map each anchor node index to its time
+        # time_s is shape [N,1]; time_s[j] is time from node j to the custom source
+        ts = np.asarray(time_s).reshape(-1)
+        out: Dict[str, int] = {}
+        for j, aint in enumerate(anchor_idx.tolist()):
+            if aint < 0:
+                continue
+            t = int(ts[j])
+            if t < 0:
+                t = int(UNREACH_U16)
+            out[str(int(aint))] = int(t)
+        return out
+    except Exception as e:
+        import traceback
+        print(f"ERROR in d_anchor_custom: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
 # ---------- POI Pins (GeoJSON) ----------
 _CANON_POI_CACHE: Optional[pd.DataFrame] = None
 
@@ -637,5 +775,5 @@ if __name__ == "__main__":
     # For local dev, allow overriding the port
     port = int(os.environ.get("PORT", 5174)) # Default to 5174 to avoid conflict with frontend
     print(f"Starting TownScout D_anchor server on http://0.0.0.0:{port}")
-    print(f"Using data from STATE={STATE} in DATA_DIR={DATA_DIR}")
+    print(f"Using STATE={STATE}")
     uvicorn.run("api.main:app", host="0.0.0.0", port=port, reload=True)

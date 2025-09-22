@@ -1,10 +1,15 @@
 PY=PYTHONPATH=src .venv/bin/python
 PYTHON_BIN?=$(shell command -v python3.11 2>/dev/null || command -v python3 2>/dev/null)
 STATES=massachusetts
-# Add more states as needed, e.g., STATES=massachusetts new-hampshire
+
+# Tuning knobs
+THREADS?=8
+CUTOFF?=30
+OVERFLOW?=60
+K_BEST?=20
 
 .PHONY: help init clean all \
-	download pois anchors minutes overlays geojson tiles export-csv native d_anchor_category d_anchor_brand
+	download pois anchors minutes geojson tiles native d_anchor_category d_anchor_brand merge
 
 help:  ## Show this help message
 	@echo "TownScout Data Pipeline - Available targets:"
@@ -43,7 +48,7 @@ data/overture/ma_places.parquet:
 	@test -f $@ || (echo "[error] expected $@ after download" && exit 1)
 
 # Allow make to build canonical POI parquet on demand
-data/poi/%_canonical.parquet: data/osm/%.osm.pbf data/overture/ma_places.parquet
+data/poi/%_canonical.parquet: data/osm/%.osm.pbf data/overture/ma_places.parquet src/02_normalize_pois.py src/taxonomy.py data/brands/registry.csv
 	$(PY) src/02_normalize_pois.py
 
 # Build anchor sites per state (deterministic, reusable)
@@ -51,7 +56,7 @@ ANCHOR_FILES := $(patsubst %,data/anchors/%_drive_sites.parquet,$(STATES))
 
 anchors: $(ANCHOR_FILES) ## 2.5 Build anchor sites per state
 
-data/anchors/%_drive_sites.parquet: data/poi/%_canonical.parquet data/osm/%.osm.pbf
+data/anchors/%_drive_sites.parquet: data/poi/%_canonical.parquet data/osm/%.osm.pbf src/03_build_anchor_sites.py src/graph/pyrosm_csr.py src/taxonomy.py src/config.py | build/native.stamp
 	@mkdir -p data/anchors
 	@echo "--- Building anchor sites for $* (drive) ---"
 	$(PY) src/03_build_anchor_sites.py \
@@ -69,17 +74,16 @@ MINUTE_FILES := $(patsubst %,data/minutes/%_drive_t_hex.parquet,$(STATES))
 
 minutes: $(MINUTE_FILES)  ## 3. Compute per-state travel time minutes from POIs to hexes
 
-data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_drive_sites.parquet | build/native.stamp
+data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_drive_sites.parquet src/03_compute_minutes_per_state.py src/graph/pyrosm_csr.py src/config.py | build/native.stamp
 	@echo "--- Computing minutes for $* (drive) ---"
 	$(PY) src/03_compute_minutes_per_state.py \
 		--pbf data/osm/$*.osm.pbf \
 		--pois data/poi/$*_canonical.parquet \
 		--mode drive \
-		--cutoff 90 \
-		--overflow-cutoff 240 \
-		--k-best 20 \
+		--cutoff $(CUTOFF) \
+		--overflow-cutoff $(OVERFLOW) \
+		--k-best $(K_BEST) \
 		--res 7 8 \
-		--progress \
 		--out-times $@ \
 		--anchors data/anchors/$*_drive_sites.parquet
 
@@ -88,22 +92,6 @@ ifeq ($(FORCE),1)
 else
   OVERLAYS_FORCE :=
 endif
-
-# Compute brand overlays (nearest time per hex) for brands with >=20 sites
-.PHONY: overlays
-overlays: | build/native.stamp ## 3.5 Compute popular brand overlays (K=1) for nearest-time guarantees
-	@for S in $(STATES); do \
-	  echo "--- Computing overlays for $$S (drive) ---"; \
-	  $(PY) src/03c_compute_overlays.py \
-	    --pbf data/osm/$$S.osm.pbf \
-	    --anchors data/anchors/$$S\_drive_sites.parquet \
-	    --mode drive \
-	    --res 7 8 \
-	    --brands-threshold 10 \
-	    --cutoff 30 \
-	    --overflow-cutoff 90 \
-	    --out-dir data/overlays $(OVERLAYS_FORCE) ; \
-	done
 
 # Compute D_anchor brand tables for brand-level anchor-mode filtering
 .PHONY: d_anchor_brand
@@ -114,9 +102,9 @@ d_anchor_brand: | build/native.stamp ## 3.6 Compute anchor->brand seconds for al
 	    --pbf data/osm/$$S.osm.pbf \
 	    --anchors data/anchors/$$S\_drive_sites.parquet \
 	    --mode drive \
-	    --brands-threshold 5 \
-	    --cutoff 30 \
-	    --overflow-cutoff 90 \
+	    --threads $(THREADS) \
+	    --cutoff $(CUTOFF) \
+	    --overflow-cutoff $(OVERFLOW) \
 	    --out-dir data/d_anchor_brand ; \
 	done
 
@@ -129,23 +117,19 @@ d_anchor_category: | build/native.stamp ## 3.6b Compute anchor->category seconds
 	    --pbf data/osm/$$S.osm.pbf \
 	    --anchors data/anchors/$$S\_drive_sites.parquet \
 	    --mode drive \
-	    --cutoff 30 \
-	    --overflow-cutoff 90 \
+	    --threads $(THREADS) \
+	    --cutoff $(CUTOFF) \
+	    --overflow-cutoff $(OVERFLOW) \
+	    --prune \
 	    --out-dir data/d_anchor_category ; \
 	done
 
 # --- Merge & Summaries ---
 # Produce both outputs in one run; use a stamp to avoid duplicate execution.
 MERGE_DEPS := $(MINUTE_FILES) $(ANCHOR_FILES)
-state_tiles/.merge.stamp: $(MERGE_DEPS)
-	$(PY) src/04_merge_states.py
-	@mkdir -p state_tiles
-	@touch $@
-
-state_tiles/us_r7.parquet state_tiles/us_r8.parquet: state_tiles/.merge.stamp
-
 .PHONY: merge
-merge: state_tiles/us_r7.parquet state_tiles/us_r8.parquet ## 4. Merge per-state data and create summaries
+merge: $(MERGE_DEPS) ## 4. Merge per-state data and create summaries
+	$(PY) src/04_merge_states.py
 
 # --- GeoJSON (build from merged summaries) ---
 tiles/us_r7.geojson: state_tiles/us_r7.parquet
@@ -188,16 +172,7 @@ tiles/t_hex_r8_drive.pmtiles: tiles/us_r8.geojson
 			--minzoom 8 --maxzoom 12 ; \
 	fi
 
-export-csv: state_tiles/us_r7.parquet state_tiles/us_r8.parquet ## 7. Export summary data to CSV
-	@mkdir -p state_tiles
-	$(PY) src/07_export_csv.py \
-		--input state_tiles/us_r7.parquet \
-		--output state_tiles/us_r7.csv
-	$(PY) src/07_export_csv.py \
-		--input state_tiles/us_r8.parquet \
-		--output state_tiles/us_r8.csv
-
-all: tiles export-csv  ## Run the full data pipeline
+all: tiles  ## Run the full data pipeline
 	@echo "✅ Full pipeline complete."
 
 # ========== Housekeeping ==========
@@ -211,7 +186,3 @@ clean:  ## Clean all generated data files
 serve: ## Serve the frontend + tiles via FastAPI (supports HTTP Range)
 	@echo "Serving frontend at http://localhost:5173/tiles/web/index.html"
 	.venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 5173 --reload
-
-.PHONY: clean-graph
-clean-graph:
-	rm -rf data/osm/cache/*.graphml

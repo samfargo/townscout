@@ -16,6 +16,8 @@ import geopandas as gpd
 from pyrosm import OSM
 from config import STATES
 from taxonomy import BRAND_REGISTRY, OVERTURE_CATEGORY_MAP, OSM_TAG_MAP
+import h3
+from shapely.geometry import Point
 
 # Invert brand registry for quick lookup of aliases
 _brand_alias_to_id = {}
@@ -129,6 +131,10 @@ def normalize_overture_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         primary_cat = row['categories']['primary'] if row['categories'] and 'primary' in row['categories'] else None
         ts_class, ts_cat, ts_subcat = OVERTURE_CATEGORY_MAP.get(primary_cat, (None, None, None))
 
+        # Exclude airports from Overture; we will inject airports from CSV only
+        if ts_cat == 'airport':
+            continue
+
         # Brand resolution
         brand_id, brand_name = None, None
         primary_brand = row['brand']['names']['primary'] if row['brand'] and row['brand']['names'] and 'primary' in row['brand']['names'] else None
@@ -183,11 +189,14 @@ def normalize_osm_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     for _, row in gdf.iterrows():
         # Category mapping
         ts_class, ts_cat, ts_subcat = None, None, None
-        for tag_key in ['amenity', 'shop', 'leisure', 'tourism']:
+        for tag_key in ['amenity', 'shop', 'leisure', 'tourism', 'aeroway']:
             tag_value = row.get(tag_key)
             if tag_value and (tag_key, tag_value) in OSM_TAG_MAP:
                 ts_class, ts_cat, ts_subcat = OSM_TAG_MAP[(tag_key, tag_value)]
                 break
+        # Exclude airports from OSM; we will inject airports from CSV only
+        if ts_cat == 'airport':
+            continue
         
         # Brand resolution
         brand_id, brand_name = None, None
@@ -232,18 +241,92 @@ def normalize_osm_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
 
 def conflate_pois(overture_gdf: gpd.GeoDataFrame, osm_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Conflates and deduplicates POIs from Overture and OSM."""
+    """Conflates and deduplicates POIs from Overture and OSM.
+
+    Simple heuristics:
+    - Compute H3 r9 cell for each point
+    - Group duplicates by (brand_id if present else lowercase name, category, h3_r9)
+    - Prefer Overture over OSM for chains; keep first otherwise
+    """
     print("--- Conflating POIs from all sources ---")
-    
-    # This will fail until normalization is implemented, as schemas won't match.
-    # For now, we will return an empty frame.
-    combined_gdf = pd.concat([overture_gdf, osm_gdf], ignore_index=True)
-    print(f"[ok] Combined POIs: {len(combined_gdf)} total")
-    
-    # TODO: Implement actual deduplication logic here.
-    # For now, just return the combined set.
-    
-    return combined_gdf
+    frames = []
+    for tag, gdf in (("overture", overture_gdf), ("osm", osm_gdf)):
+        if gdf is None or gdf.empty:
+            continue
+        df = gdf.copy()
+        # Ensure expected columns exist
+        for col in CANONICAL_POI_SCHEMA.keys():
+            if col not in df.columns:
+                df[col] = None
+        # Compute H3 r9 cell id
+        try:
+            df["h3_r9"] = df.geometry.apply(lambda p: h3.geo_to_h3(p.y, p.x, 9))
+        except Exception:
+            # Fallback: leave empty
+            df["h3_r9"] = None
+        frames.append(df)
+    if not frames:
+        return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry='geometry', crs="EPSG:4326")
+
+    combined = pd.concat(frames, ignore_index=True)
+    print(f"[ok] Combined POIs: {len(combined)} total")
+
+    # Build duplication key
+    def _key_row(r):
+        brand = (str(r.get("brand_id")) if pd.notna(r.get("brand_id")) and r.get("brand_id") else None)
+        name = (str(r.get("name") or "").strip().lower() or None)
+        cat = (str(r.get("category") or "").strip().lower() or None)
+        cell = r.get("h3_r9")
+        return (brand or name or ""), (cat or ""), (cell or "")
+
+    combined["_dupkey"] = combined.apply(_key_row, axis=1)
+    # Sort so that overture comes before osm
+    combined["_src_rank"] = combined["source"].map({"overture": 0, "osm": 1}).fillna(2)
+    combined = combined.sort_values(["_dupkey", "_src_rank"]).reset_index(drop=True)
+    dedup = combined.drop_duplicates(subset=["_dupkey"], keep="first").drop(columns=["_dupkey", "_src_rank"])
+    dedup = gpd.GeoDataFrame(dedup, geometry="geometry", crs="EPSG:4326")
+    print(f"[ok] Deduplicated POIs: {len(dedup)} remaining")
+    return dedup
+
+
+def load_airports_csv() -> gpd.GeoDataFrame:
+    """Load airport list from Future/airports_coordinates.csv and normalize to canonical schema (CSV-only source)."""
+    path = os.path.join('Future', 'airports_coordinates.csv')
+    if not os.path.exists(path):
+        print(f"[warn] Airports CSV not found at {path}; skipping airports injection.")
+        return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry='geometry', crs="EPSG:4326")
+    df = pd.read_csv(path)
+    # Expect columns: IATA, AIRPORT, CITY, STATE, COUNTRY, LATITUDE, LONGITUDE
+    rows = []
+    for _, r in df.iterrows():
+        try:
+            lat = float(r['LATITUDE'])
+            lon = float(r['LONGITUDE'])
+        except Exception:
+            continue
+        iata = str(r.get('IATA') or '').strip()
+        name = str(r.get('AIRPORT') or '').strip() or (iata if iata else None)
+        poi_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"csv:airports|{iata}|{lon:.6f}|{lat:.6f}"))
+        rows.append({
+            'poi_id': poi_id,
+            'name': name,
+            'brand_id': None,
+            'brand_name': None,
+            'class': 'transport',
+            'category': 'airport',
+            'subcat': 'airport',
+            'lon': lon,
+            'lat': lat,
+            'geometry': Point(lon, lat),
+            'source': 'csv:airports',
+            'ext_id': iata if iata else None,
+            'provenance': ['csv:airports'],
+        })
+    if not rows:
+        return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry='geometry', crs="EPSG:4326")
+    gdf = gpd.GeoDataFrame(rows, crs="EPSG:4326")
+    print(f"[ok] Loaded {len(gdf)} airports from CSV.")
+    return gdf
 
 
 def main():
@@ -259,8 +342,11 @@ def main():
         overture_normalized = normalize_overture_pois(overture_pois)
         osm_normalized = normalize_osm_pois(osm_pois)
         
-        # 3. Conflate the normalized datasets
+        # 3. Conflate the normalized datasets (+ injected airports)
         canonical_pois = conflate_pois(overture_normalized, osm_normalized)
+        airports_normalized = load_airports_csv()
+        if not airports_normalized.empty:
+            canonical_pois = pd.concat([canonical_pois, airports_normalized], ignore_index=True)
         
         # 4. Save the result
         output_path = f"data/poi/{state}_canonical.parquet"

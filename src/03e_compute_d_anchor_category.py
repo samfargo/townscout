@@ -94,7 +94,9 @@ def main():
     ap.add_argument("--overflow-cutoff", type=int, default=90)
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--out-dir", default="data/d_anchor_category")
+    ap.add_argument("--allowlist", default="data/taxonomy/category_allowlist.txt", help="Optional path to category allowlist (one category label per line)")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--prune", action="store_true", help="Remove existing category partitions not in current targets")
     args = ap.parse_args()
 
     anchors_df = pd.read_parquet(args.anchors)
@@ -119,13 +121,24 @@ def main():
 
     # Resolve targets
     targets: List[str] = list(dict.fromkeys(map(str, args.category)))
-    if args.min_sites > 0:
+    # Optional allowlist file
+    if (not targets) and args.allowlist and os.path.isfile(args.allowlist):
+        try:
+            with open(args.allowlist, "r") as f:
+                allowed = [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
+            targets = [c for c in allowed]
+            print(f"[info] Loaded {len(targets)} categories from allowlist {args.allowlist}")
+        except Exception as e:
+            print(f"[warn] Failed to read allowlist {args.allowlist}: {e}")
+    if args.min_sites > 0 and not targets:
         targets += [c for c, n in cat_counts.items() if n >= args.min_sites]
     if not targets:
-        # All categories seen in anchors
+        # Default: all categories seen in anchors
         targets = sorted(set(cat_values))
     else:
-        targets = sorted(set(targets))
+        # Keep only those present in anchors (avoid empty outputs)
+        present = set(cat_counts.keys())
+        targets = sorted([t for t in set(targets) if t in present])
     if not targets:
         print("[warn] No categories to compute; exiting.")
         return
@@ -178,6 +191,24 @@ def main():
     out_base = os.path.join(args.out_dir, f"mode={0 if args.mode=='drive' else 2}")
     _ensure_dir(out_base)
 
+    # Optionally prune any existing category partitions not targeted
+    if args.prune:
+        try:
+            wanted_cids = set(label_to_id.values())
+            for name in os.listdir(out_base):
+                if not name.startswith("category_id="):
+                    continue
+                try:
+                    cid = int(name.split("=", 1)[1])
+                except Exception:
+                    continue
+                if cid not in wanted_cids:
+                    import shutil
+                    shutil.rmtree(os.path.join(out_base, name), ignore_errors=True)
+                    print(f"[prune] removed {os.path.join(out_base, name)}")
+        except Exception as e:
+            print(f"[warn] prune step failed: {e}")
+
     for label in targets:
         cid = label_to_id[label]
         src = cat_to_source_idxs.get(label, np.array([], dtype=np.int32))
@@ -206,20 +237,24 @@ def main():
         best_src_idx, time_s = kbest_multisource_bucket_csr(
             indptr_rev, indices_rev, w_rev, src, 1, cutoff_primary_s, cutoff_overflow_s, int(max(1, args.threads)), False, None
         )
-        # For each anchor (node index j where anchor_idx[j] >= 0), pick time_s[j]
+        # For each anchor (node index j where anchor_idx[j] >= 0), pick time_s[j,0]
         records = []
+        # Ensure time_s is a 2D array [N, K]
+        ts = np.asarray(time_s)
+        if ts.ndim == 1:
+            ts = ts.reshape(-1, 1)
         for j, aint in enumerate(anchor_idx.tolist()):
             if aint < 0:
                 continue
-            t = int(time_s[j])
+            # K=1, safe to take column 0
+            t = int(ts[j, 0])
             if t < 0:
                 t = int(config.UNREACH_U16)
             records.append((int(aint), np.uint16(t), SNAPSHOT_TS))
-        df = pl.DataFrame(records, schema=[("anchor_int_id", pl.Int32), ("seconds", pl.UInt16), ("snapshot_ts", pl.Utf8)])
+        df = pl.DataFrame(records, schema=[("anchor_int_id", pl.Int32), ("seconds", pl.UInt16), ("snapshot_ts", pl.Utf8)], orient="row")
         df.write_parquet(out_path, compression="zstd")
         print(f"[ok] Wrote D_anchor category id={cid}: {out_path} rows={df.height}")
 
 
 if __name__ == "__main__":
     main()
-

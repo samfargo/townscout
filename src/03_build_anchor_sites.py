@@ -44,10 +44,35 @@ def build_anchor_sites_from_nodes(
         return pd.DataFrame()
 
     before = len(canonical_pois)
-    poi_mask = canonical_pois["category"].notna() | canonical_pois["brand_id"].notna()
-    canonical_pois = canonical_pois.loc[poi_mask].copy()
+    # Tighten to overhaul scope: allowlisted categories OR allowlisted brands (A-list)
+    allowlist_path = os.path.join("data", "taxonomy", "category_allowlist.txt")
+    allowed: set[str] = set()
+    if os.path.isfile(allowlist_path):
+        try:
+            with open(allowlist_path, "r") as f:
+                allowed = {ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")}
+        except Exception:
+            allowed = set()
+    # Optional brand allowlist (canonical brand_id per line)
+    brand_allow_path = os.path.join("data", "brands", "allowlist.txt")
+    brand_allowed: set[str] = set()
+    if os.path.isfile(brand_allow_path):
+        try:
+            with open(brand_allow_path, "r") as f:
+                brand_allowed = {ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")}
+        except Exception:
+            brand_allowed = set()
+
+    if allowed or brand_allowed:
+        cond_cat = canonical_pois["category"].isin(sorted(allowed)) if allowed else False
+        cond_brand = canonical_pois["brand_id"].isin(sorted(brand_allowed)) if brand_allowed else False
+        mask = cond_cat | cond_brand
+    else:
+        # Fallback: previous broader behavior
+        mask = canonical_pois["category"].notna() | canonical_pois["brand_id"].notna()
+    canonical_pois = canonical_pois.loc[mask].copy()
     after = len(canonical_pois)
-    print(f"[info] Anchorable POIs: {after} / {before} (filtered by category/brand)")
+    print(f"[info] Anchorable POIs (overhaul scope): {after} / {before}")
 
     print(f"[info] Building KD-tree from {len(node_ids)} graph nodes...")
     lat0 = float(np.deg2rad(float(np.mean(node_lats))))

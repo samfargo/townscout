@@ -1,15 +1,17 @@
 Townscout POI Overhaul
 
-Townscout’s livability analysis is only as good as its POI (Point of Interest) backbone. Until now, we’ve relied on a handful of categories (Chipotle, Costco, Airports). That’s too narrow: users want to ask nuanced questions like “Am I within 10 minutes of a Whole Foods?” or “Can I find a pizza place near here?”
+Townscout is not Yelp. Its purpose is livability: the handful of things that truly shape where people want to live. Everything else is just noise. If you try to cover every pizza shop and nail salon, you burn compute/storage and confuse users. The right backbone is a tight core set of precomputed POIs + an escape hatch for edge cases.
+
+Townscout’s livability analysis is only as good as its POI (Point of Interest) backbone. Until now, we’ve relied on a handful of categories (Chipotle, Costco, Airports). That’s too narrow: users want to ask nuanced questions like “Am I within 10 minutes of a Whole Foods?” or “Can I find a grocery store near here?”
 
 This overhaul needs to maintain the cost-free architecture of Townscout. Whether that’s database, on-device storage, compute etc.
 
 ⸻
 
 Goals
-	•	Expand coverage beyond a few hand-picked POIs to essentially all livability-relevant categories: food, retail, education, health, recreation, civic, transport, natural amenities.
+	•	Expand coverage beyond a few hand-picked POIs to the following:
 	•	Filter flexibility: support queries by category (“Any supermarket within 10 minutes”) and brand (“Whole Foods within 10 minutes”).
-	•	Anchor Sites: co-located POIs share one precompute, cutting routing load 2–5× in dense clusters.
+	•	Anchor Sites: co-located POIs share one precompute, cutting routing load 2–5× in dense clusters. TBD if these will be necessary.
 	•	Extensible: new categories, brands, or user-supplied data can be added by config, not code.
 
 ⸻
@@ -124,108 +126,45 @@ Travel Precompute
 	•	Store top-K per hex with category and brand quotas.
 You’ll need to quantify the upper bound of precompute size. Otherwise, you risk over-committing compute/storage. A “top-K per hex” sounds fine, but what’s K? 10? 100? Too small = user misses results, too big = storage blowup.
 
-⸻
 
-Data Schema
+We don’t want to dilute “livability” into “every possible POI.” People don’t choose where to live based on Joe’s Pizza.
 
-POI Schema
-	•	poi_id: str (uuid5 over source|ext_id|rounded lon/lat)
-	•	name: str
-	•	brand_id: str|null (canonical registry ID)
-	•	brand_name: str|null
-	•	class: str (venue, civic, transport, natural, etc.)
-	•	category: str (supermarket, hospital, etc.)
-	•	subcat: str (ER, preschool, mexican fast food, etc.)
-	•	lon, lat: float32
-	•	geom_type: uint8 (0=point, 1=centroid, 2=entrance)
-	•	area_m2: float32
-	•	source: str (overture, osm, fdic, snap, cms, csv:chipotle, user)
-	•	ext_id: str|null
-	•	h3_r9: str
-	•	node_drive_id, node_walk_id: int64|null
-	•	dist_drive_m, dist_walk_m: float32
-	•	anchorable: bool
-	•	exportable: bool
-	•	license, source_updated_at, ingested_at: str
-	•	provenance: list[str]
+1. Tighten the Core Set (always precomputed)
 
-Anchor Site Schema
-	•	site_id: str (uuid5 of mode|node_id)
-	•	mode: str (drive, walk)
-	•	node_id: int64
-	•	lon, lat: float32 (node coords)
-	•	poi_ids: list[str]
-	•	brands: list[str]
-	•	categories: list[str]
-	•	brand_tiers: list[int]
-	•	weight_hint: int (major chain vs local)
+These are universal drivers that people consistently weigh:
+	•	Major retail & grocery
+Costco, Walmart, Target, Whole Foods, Trader Joe’s, Kroger, H-E-B, Stop & Shop, Albertsons (swap in regionals per market).
+Category layer: “Any supermarket” (catch-all for local chains).
+	•	Coffee & fast casual anchors
+Starbucks, Dunkin’, McDonald’s, Chipotle.
+Category layer: “Any café / coffee shop.”
+	•	Critical services
+Airports, hospitals, urgent care, transit stations (rail/subway/ferry/bus terminals).
+	•	Recreation / nature
+Beaches, ski resorts, mountains/trailheads, regional parks.
 
-t_hex (Travel Precompute)
-	•	hex_r9: str
-	•	site_id: str
-	•	time_s: uint16 (seconds, sentinel 65535 = ≥cutoff)
+That set of POI is small enough to precompute fully, big enough to feel comprehensive.
 
-Summaries
-	•	min_cat: (hex_r9, category, min_time_drive_s, min_time_walk_s)
-	•	min_brand: (hex_r9, brand_id, min_time_drive_s, min_time_walk_s)
+2. Deprioritize the Long Tail
+	•	By tightening the core set, we are excluding random local restaurants, nail salons, mom and pop shops.
+	•	The long tail isn’t about livability — it’s about convenience once you’re already there.
+	•	Nobody moves house to shave 5 minutes off a drive to their local dry cleaner.
 
-⸻
+3. Escape Hatch for Edge Cases
 
-Pipeline
-	1.	Ingest
-	•	Overture Places → data/overture/ma_places.parquet (DuckDB to clip + filter).
-	•	OSM extract → data/osm/massachusetts.osm.pbf (Pyrosm/OGR).
-	•	Optional CSVs.
-	2.	Normalize
-	•	Lowercase, strip names.
-	•	Brand resolution (brand.names.primary > names.primary > alias registry).
-	•	Map categories.primary + alternates (Overture) and amenity/shop/cuisine (OSM) to taxonomy.
-	3.	Conflate & Deduplicate
-	•	H3 r9 proximity (Walking 0.25 mile, driving 1 mile.)
-	•	Same brand + category → merge.
-	•	Tie-breaks: Overture wins for chains; OSM wins for civic/natural + polygons.
-	•	Merge provenance (["overture","osm"]).
-	4.	Build Anchor Sites
-	•	Snap POIs to nearest road network node.
-	•	Group by node_id + mode → one site.
-	•	Aggregate POIs, brands, categories.
-	5.	Travel Precompute
-	•	Multi-source Dijkstra from anchor sites.
-	•	Store top-K per hex (global, per-category, per-brand quotas).
-	6.	Summaries
-	•	Precompute min_cat and min_brand for exposed categories + A-list brands.
-	•	Long-tail brands handled via joins.
+Instead of precomputing the tail:
+	•	Provide a custom input field:
+	•	“Add custom location”
+	•	Type in an address, business name, or drop a pin on the map.
+	•	The system does a one-off drive-time calculation for that one location and factors it into the livable area.
+	•	This scratches the “but what about my yoga studio?” itch without bloating your model.
 
-⸻
+Think of it as the Google Maps fallback: core livability is fast and pre-baked; custom locations are just ad hoc routing.
 
-Query UX
-	•	Category filter: check min_cat → instant.
-	•	Brand filter (A-list): check min_brand → instant.
-	•	Brand filter (long-tail): join t_hex→sites→brands, filter, take min.
-	•	Fallback: optional local Dijkstra.
+4. Why This Is Better
+	•	Signal vs. noise: keeps TownScout about major life drivers, not local trivia.
+	•	Performance: tiny, predictable precompute set (dozens, not thousands).
+	•	UX clarity: the app looks purposeful (“these are the things that matter for deciding where to live”).
+	•	Scalability: easier to add regions and POI without drowning in pointless brand data.
 
-UI behavior:
-	•	Brand selection auto-locks to underlying category.
-	•	If no brand coverage, suggest category fallback.
-	•	Clicking a hex shows nearest POI from the site.
-
-⸻
-
-Snapshots & Deltas
-	•	Monthly snapshots (snapshot_date=YYYY-MM-DD).
-	•	Track deltas (added/moved/removed POIs).
-	•	Incremental precompute for changed anchors only.
-
-⸻
-
-In practice: Overture provides the brand/commercial spine (Dunkin, Starbucks, Stop & Shop, CVS). OSM provides civic, natural, and tag-rich POIs (schools, hospitals, playgrounds, parks). The two are normalized and conflated into a single canonical POI layer before building Anchor Sites and running travel precompute.
-
-Anchor Sites & Graph Optimization
-	•	Dynamic anchor radius: Instead of a fixed proximity (0.25 mi walk / 1 mi drive), adapt radius by density. In Manhattan, thousands of POIs may snap to a single node; in rural areas, a 1-mile radius might miss the nearest store entirely. Dynamic clustering balances load and coverage.
-	•	Hierarchical anchors: Treat mega-sites (malls, hospital campuses, airports) as multi-level anchors → reduces over-merging while still keeping compute savings.
-	•	Pre-bucket road network nodes: Instead of snapping POIs individually, maintain a node index (H3 partitioned) for faster assignment.
-
-Data Quality & Conflation
-	•	Confidence scoring: Not just Overture wins chains, OSM wins civic—add confidence weights. E.g., if both sources disagree on location, favor the one with fresher timestamp or polygon geometry.
-	
-•	Polygon awareness: Supermarkets, parks, schools often mapped as polygons in OSM. Don’t reduce to centroids only—retain area for better UX (bounds checks, proximity logic).
+That’s your livability spine. Everything else is a custom input (one-off calculation).

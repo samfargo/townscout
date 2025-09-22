@@ -1,0 +1,14 @@
+# Core categories to compute D_anchor for (one per line)
+# Keep this list tight to align with POI overhaul goals
+supermarket
+cafe
+fast_food
+hospital
+clinic
+pharmacy
+railway_station
+bus_station
+subway_station
+airport
+ferry_terminal
+park

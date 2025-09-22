@@ -3,7 +3,19 @@ Defines the Townscout canonical taxonomy for POIs and a brand registry.
 
 This module provides the data structures and mappings required to normalize
 POIs from various sources (Overture, OSM) into a consistent, canonical schema.
+
+Config-driven: if present, the following files override/extend built-ins:
+- data/brands/registry.csv (brand_id,canonical,aliases,wikidata?)
+- data/taxonomy/categories.yml (keys: overture_map, osm_map with mapping entries)
 """
+from __future__ import annotations
+import csv
+import os
+from typing import Dict, Tuple, List
+try:
+    import yaml  # optional; for categories.yml
+except Exception:
+    yaml = None
 
 # --- Townscout POI Taxonomy ---
 # A hierarchical classification system: class -> category -> subcat
@@ -110,6 +122,27 @@ BRAND_REGISTRY = {
     "ikea": ("IKEA", []),
     "best_buy": ("Best Buy", []),
 }
+
+
+def _load_brand_registry_csv(path: str) -> Dict[str, Tuple[str, List[str]]]:
+    out: Dict[str, Tuple[str, List[str]]] = {}
+    try:
+        with open(path, newline="") as f:
+            rdr = csv.DictReader(f)
+            for row in rdr:
+                bid = str(row.get("brand_id",""))
+                if not bid:
+                    continue
+                canonical = str(row.get("canonical",""))
+                aliases_raw = row.get("aliases", "") or row.get("alias", "") or ""
+                sep = ";" if ";" in aliases_raw else "|" if "|" in aliases_raw else ","
+                aliases = [a.strip() for a in aliases_raw.split(sep) if a.strip()]
+                out[bid] = (canonical or bid.replace("_"," ").title(), aliases)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+    return out
 
 # --- Overture Category Mapping ---
 # Maps Overture's primary and alternate categories to the Townscout Taxonomy.
@@ -234,3 +267,36 @@ OSM_TAG_MAP = {
     ("amenity", "fuel"): ("transport", "fuel", "fuel"),
     ("amenity", "charging_station"): ("transport", "fuel", "charging_station"),
 }
+
+# --- Optional external config overrides ---
+_BRANDS_CSV = os.path.join("data", "brands", "registry.csv")
+_CATS_YML = os.path.join("data", "taxonomy", "categories.yml")
+
+# Override/extend brand registry if CSV present
+_from_csv = _load_brand_registry_csv(_BRANDS_CSV)
+if _from_csv:
+    BRAND_REGISTRY.update(_from_csv)
+
+# Merge category mappings if YAML present AND explicitly enabled
+_USE_CATS_YAML = os.environ.get("TS_TAXONOMY_YAML", "0").strip() in ("1", "true", "yes")
+if _USE_CATS_YAML and yaml is not None and os.path.isfile(_CATS_YML):
+    try:
+        with open(_CATS_YML, "r") as f:
+            data = yaml.safe_load(f) or {}
+            over = data.get("overture_map") or {}
+            osm_map = data.get("osm_map") or {}
+            # Expect same structures as dicts above
+            if isinstance(over, dict):
+                for k, v in over.items():
+                    if isinstance(v, (list, tuple)) and len(v) >= 3:
+                        OVERTURE_CATEGORY_MAP[str(k).lower()] = (str(v[0]), str(v[1]), str(v[2]))
+            if isinstance(osm_map, dict):
+                for k, v in osm_map.items():
+                    try:
+                        tag_key, tag_val = k.split(":", 1)
+                    except Exception:
+                        continue
+                    if isinstance(v, (list, tuple)) and len(v) >= 3:
+                        OSM_TAG_MAP[(str(tag_key), str(tag_val))] = (str(v[0]), str(v[1]), str(v[2]))
+    except Exception:
+        pass
