@@ -36,6 +36,7 @@ from tqdm import tqdm
 import polars as pl
 
 from graph.pyrosm_csr import load_or_build_csr
+from graph.csr_utils import build_rev_csr
 from t_hex import kbest_multisource_bucket_csr, aggregate_h3_topk_precached
 import config
 
@@ -61,51 +62,7 @@ SNAPSHOT_TS = time.strftime("%Y-%m-%d")
 UNREACH_U16 = config.UNREACH_U16
 NODATA_U16 = config.NODATA_U16
 
-# provenance byte (uint8): bit k set => the a{k} entry was borrowed from neighbor hexes
-def set_bit(u8: int, k: int) -> int:
-    return int(u8 | (1 << k))
-
-
-def _dedupe_sort_topk_with_provenance(
-    pairs: List[Tuple[np.uint16, int, bool]], K: int
-) -> List[Tuple[np.uint16, int, bool]]:
-    """Per-anchor min, then sort by secs asc and return top-K with provenance."""
-    if not pairs:
-        return []
-    
-    # Store: anchor_id -> (seconds, is_borrowed)
-    best_by_anchor: Dict[int, Tuple[np.uint16, bool]] = {}
-    
-    for s, aid, is_borrowed in pairs:
-        prev_s, prev_borrowed = best_by_anchor.get(aid, (None, None))
-        
-        # Always prefer a better time
-        if prev_s is None or int(s) < int(prev_s):
-            best_by_anchor[aid] = (s, is_borrowed)
-        # Tie-breaking rule: if times are identical, prefer non-borrowed over borrowed
-        elif int(s) == int(prev_s) and prev_borrowed and not is_borrowed:
-            best_by_anchor[aid] = (s, is_borrowed)
-
-    # Convert dict to list for sorting by (time, anchor_id)
-    # item is (anchor_id, (seconds, is_borrowed))
-    ordered = sorted(best_by_anchor.items(), key=lambda item: (int(item[1][0]), int(item[0])))
-    
-    # Format for output
-    top = [(s, aid, is_borrowed) for aid, (s, is_borrowed) in ordered[:K]]
-    return top
-
-def _dedupe_sort_topk(pairs: List[Tuple[np.uint16, int]], K: int) -> List[Tuple[np.uint16, int]]:
-    """Per-anchor min, then sort by secs asc and return top-K."""
-    if not pairs:
-        return []
-    best_by_anchor: Dict[int, np.uint16] = {}
-    for s, aid in pairs:
-        prev = best_by_anchor.get(aid)
-        if (prev is None) or (int(s) < int(prev)):
-            best_by_anchor[aid] = s
-    ordered = sorted(best_by_anchor.items(), key=lambda t: (int(t[1]), int(t[0])))
-    top = [(np.uint16(s), int(aid)) for (aid, s) in ordered[:K]]
-    return top
+# (Removed unused top-K helpers and provenance utilities.)
 
 
 
@@ -189,30 +146,8 @@ def main():
 
     # 3. Call the native kernel
     print(f"[info] Preparing adjacency (transpose for node→anchor times)...")
-    # Build CSR transpose so that multi-source search from anchors yields
-    # node→anchor travel times in a directed graph with oneways.
-    N = int(indptr.shape[0] - 1)
-    M = int(indices.shape[0])
-    indptr_rev = np.zeros(N + 1, dtype=np.int64)
-    # Count incoming edges per node (becomes out-degree in transpose)
-    for u in range(N):
-        start, end = int(indptr[u]), int(indptr[u+1])
-        vs = indices[start:end]
-        for v in vs:
-            indptr_rev[int(v) + 1] += 1
-    # Prefix sum
-    np.cumsum(indptr_rev, out=indptr_rev)
-    indices_rev = np.empty(M, dtype=np.int32)
-    w_rev = np.empty(M, dtype=np.uint16)
-    cursor = indptr_rev.copy()
-    for u in range(N):
-        start, end = int(indptr[u]), int(indptr[u+1])
-        for i in range(start, end):
-            v = int(indices[i])
-            pos = cursor[v]
-            indices_rev[pos] = np.int32(u)
-            w_rev[pos] = w_sec[i]
-            cursor[v] = pos + 1
+    # Use shared CSR transpose utility
+    indptr_rev, indices_rev, w_rev = build_rev_csr(indptr, indices, w_sec)
 
     print(f"[info] Calling native kernel (bucket K-pass) for k-best search (k={args.k_best}, cutoff={args.cutoff} min, overflow={args.overflow_cutoff} min, threads={args.threads})...")
     cutoff_primary_s = int(args.cutoff) * 60

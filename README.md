@@ -24,8 +24,8 @@
 - The compute emits a long format per-hex table: `(h3_id, anchor_int_id, time_s, res)` and tiles store top‑K per hex as `a{i}_id` + `a{i}_s`.
 - The frontend exclusively uses anchor‑mode: it composes `a{i}_s` from tiles with API‑served D\_anchor per category and per brand, enabling thousands of POIs as filter options without tile changes.
 - Category D\_anchor: Hive‑partitioned parquet at `data/d_anchor_category/mode={0|2}/category_id=*/part-*.parquet` loaded by the API.
-- Brand D\_anchor: Hive‑partitioned parquet at `data/d_anchor_brand/mode={0|2}/brand_id=*/part-*.parquet` produced by `src/03d_compute_d_anchor.py` and loaded by the API.
-- Brand overlays (`src/03c_compute_overlays.py`) are optional for analysis and validation; the UI no longer relies on per‑brand tile columns.
+ - Brand D\_anchor: Hive‑partitioned parquet at `data/d_anchor_brand/mode={0|2}/brand_id=*/part-*.parquet` produced by `src/03d_compute_d_anchor.py` and loaded by the API.
+ 
 
 ---
 
@@ -107,21 +107,7 @@ Example long row schema: `h3_id, anchor_int_id, time_s, res`
   - Brands: `data/d_anchor_brand/mode={0,2}/brand_id={...}/part-*.parquet`
 * **Status:** Loaded by the API. Category ids listed by `/api/categories`; full catalog at `/api/catalog`.
 
-### 6.3 Overlays System (optional)
 
-Overlays remain useful for QA and analysis, but the UI no longer depends on per‑brand columns in tiles.
-
-**API shape:**
-
-```json
-{
-  "4585": 101,
-  "2066": 65535,
-  "1509": 326
-}
-```
-
----
 
 ## 7) Tiles & Serving
 
@@ -301,24 +287,12 @@ function buildFilterExpression(criteria, dAnchorData) {
 * Store global top‑K per hex (recommended K=20+ for dense urban areas).
 * Parameters: `--cutoff 90 --k-best 20` for comprehensive coverage.
 
-6. **Overlays Computation**
-
-* **Dense brand detection**: Brands with ≥50 anchor sites qualify for overlay computation.
-* **K=1 nearest-neighbor**: Compute shortest path from every hex to nearest brand anchor.
-* **Output**: Per-brand overlay parquet files under `data/overlays/mode=0/brand_id=<id>/part-*.parquet`.
-
-7. **Merge & Integration**
-
-* Combine K-best travel times with overlay data.
-* **Overlay priority**: Take minimum between K-best result and overlay result for each brand.
-* Ensures 100% coverage for dense brands while maintaining efficiency.
-
-8. **Summaries**
+6. **Summaries**
 
 * Precompute `min_cat` & `min_brand` for exposed categories & A‑list brands.
 * Long‑tail brands resolved via joins at query time.
 
-9. **Tiles**
+7. **Tiles**
 
 * Convert merged data → NDJSON → PMTiles (r7/r8 layers, exact layer names).
 
@@ -326,8 +300,8 @@ function buildFilterExpression(criteria, dAnchorData) {
 
 ## 13) Query UX (Deterministic Rules)
 
-* **Category filter:** Read `min_cat` (instant) or compute on GPU from D\_anchor chunks.
-* **Brand (A‑list):** Read `min_brand` (instant); otherwise join `t_hex→sites→brands` and take min.
+* **Category filter:** Compute on GPU from D\_anchor category chunks.
+* **Brand (A‑list):** Compute on GPU from D\_anchor brand chunks (no per‑brand tile columns).
 * **Fallback:** Optional local Dijkstra for rare gaps.
 
 UI rules:
@@ -489,7 +463,7 @@ Taxonomy & Config Files (minimal)
 * Density‑adaptive snap radius heuristics.
 ---
 
-**Status:** POI overhaul complete with overlays system. T_hex compute + overlays + demo min‑based tiles are fully implemented and achieve 100% coverage for dense brands. D_anchor + full GPU composition remain the target design; this doc reflects the current reality and the end‑state architecture.
+**Status:** POI overhaul complete. T_hex compute + D_anchor + demo anchor‑mode tiles are implemented. GPU composition is the core design; overlays have been removed to simplify the system.
 
 ---
 
@@ -519,7 +493,6 @@ For maximum POI coverage (especially dense brands):
 1. Expand brand aliases in `data/brands/registry.csv` for comprehensive name matching
 2. Compute `make d_anchor_brand` for all desired brands (or threshold)
 3. Increase K-best parameters (`--k-best 20+`) for dense urban areas if needed
-4. Optional: compute overlays for analysis/QA (use `src/03c_compute_overlays.py`)
 
 API:
 - Run: `uvicorn api.main:app --reload`
@@ -527,3 +500,5 @@ API:
 - D_anchor slice: `GET /api/d_anchor?category=<id>&mode=drive`
 - D_anchor brand slice: `GET /api/d_anchor_brand?brand=<id or alias>&mode=drive`
 - Custom point (escape hatch): `GET /api/d_anchor_custom?lon=<lon>&lat=<lat>&mode=drive`
+ 
+Prerequisites for Overture clipping: install the DuckDB CLI (`duckdb`) and ensure it is on your PATH. The downloader (`src/01_download_extracts.py`) invokes the DuckDB command.

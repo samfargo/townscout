@@ -87,11 +87,7 @@ data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_
 		--out-times $@ \
 		--anchors data/anchors/$*_drive_sites.parquet
 
-ifeq ($(FORCE),1)
-  OVERLAYS_FORCE := --force
-else
-  OVERLAYS_FORCE :=
-endif
+
 
 # Compute D_anchor brand tables for brand-level anchor-mode filtering
 .PHONY: d_anchor_brand
