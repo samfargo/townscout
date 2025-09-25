@@ -1,5 +1,5 @@
 """
-Compute D_anchor for categories: anchor_int_id -> seconds to nearest anchor that contains a POI in that category.
+Compute D_anchor for categories: anchor_id -> seconds to nearest anchor that contains a POI in that category.
 
 This mirrors the brand variant (03d_compute_d_anchor.py), but partitions by
 numeric category_id under a unified directory:
@@ -7,9 +7,11 @@ numeric category_id under a unified directory:
   data/d_anchor_category/mode=<0|2>/category_id=<id>/part-000.parquet
 
 Columns:
-  - anchor_int_id: int32
-  - seconds: uint16 (65535 sentinel for unreachable)
-  - snapshot_ts: str (YYYY-MM-DD)
+  - anchor_id: uint32
+  - category_id: uint32
+  - mode: uint8 (0=drive, 2=walk)
+  - seconds_u16: uint16 (nullable; NULL = unreachable or overflow)
+  - snapshot_ts: date
 
 Also writes a convenience label map at data/taxonomy/category_labels.json
 mapping string ids to human-friendly labels, if possible.
@@ -25,30 +27,86 @@ import argparse
 import json
 import os
 import time
+from collections import defaultdict
 from typing import Dict, List, Tuple
+
+SNAPSHOT_TS = time.strftime("%Y-%m-%d")
 
 import numpy as np
 import pandas as pd
 import polars as pl
 
-from graph.pyrosm_csr import load_or_build_csr
-from graph.csr_utils import build_rev_csr
-from graph.anchors import build_anchor_mappings
-from t_hex import kbest_multisource_bucket_csr
-import config
-
-SNAPSHOT_TS = time.strftime("%Y-%m-%d")
-
-
-def _ensure_dir(path: str):
-    os.makedirs(path, exist_ok=True)
-
-
-
-
+from d_anchor_common import (
+    compute_target_nodes,
+    compute_times,
+    ensure_dir,
+    build_graph_context,
+    execute_tasks,
+    write_empty_shard,
+    write_shard,
+)
 def _normalize_label(s: str) -> str:
     # Minimal prettifier for labels
     return (str(s) if s is not None else "").strip().replace("_", " ").title()
+
+
+_CATEGORY_SCHEMA: Dict[str, pl.DataType] = {
+    "anchor_id": pl.UInt32,
+    "category_id": pl.UInt32,
+    "mode": pl.UInt8,
+    "seconds_u16": pl.UInt16,
+    "snapshot_ts": pl.Date,
+}
+
+
+def _vectorized_write(
+    out_path: str,
+    category_id: int,
+    mode_code: int,
+    time_s: np.ndarray,
+    snapshot_ts: str,
+) -> int:
+    return write_shard(
+        out_path=out_path,
+        time_s=time_s,
+        snapshot_ts=snapshot_ts,
+        schema=_CATEGORY_SCHEMA,
+        dedupe_keys=["anchor_id", "category_id", "mode", "snapshot_ts"],
+        extra_builder=lambda size: {
+            "category_id": np.full(size, category_id, dtype=np.uint32),
+            "mode": np.full(size, mode_code, dtype=np.uint8),
+        },
+    )
+
+
+def _write_empty_category_shard(out_path: str) -> None:
+    write_empty_shard(out_path, _CATEGORY_SCHEMA)
+
+
+def _compute_one_category(
+    task: Tuple[int, str, int, np.ndarray, np.ndarray, int, int, str]
+) -> Tuple[int, str]:
+    """Worker entrypoint for one category.
+    Args tuple = (cid, label, mode_code, src, targets_idx, cutoff_primary_s, cutoff_overflow_s, out_path)
+    Returns (cid, out_path)
+    """
+    cid, label, mode_code, src, targets_idx, cutoff_primary_s, cutoff_overflow_s, out_path = task
+
+    task_start = time.perf_counter()
+    # Compute SSSP for this category's sources
+    sssp_start = time.perf_counter()
+    time_s = compute_times(src, targets_idx, cutoff_primary_s, cutoff_overflow_s)
+    sssp_elapsed = time.perf_counter() - sssp_start
+    # Write parquet using vectorized path
+    write_start = time.perf_counter()
+    rows = _vectorized_write(out_path, cid, mode_code, time_s, SNAPSHOT_TS)
+    write_elapsed = time.perf_counter() - write_start
+    total_elapsed = time.perf_counter() - task_start
+    print(
+        f"[ok] Wrote D_anchor category id={cid}: {out_path} rows={rows} "
+        f"sssp={sssp_elapsed:.2f}s write={write_elapsed:.2f}s total={total_elapsed:.2f}s"
+    )
+    return cid, out_path
 
 
 def main():
@@ -61,16 +119,30 @@ def main():
     ap.add_argument("--cutoff", type=int, default=30)
     ap.add_argument("--overflow-cutoff", type=int, default=90)
     ap.add_argument("--threads", type=int, default=1)
+    ap.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1), help="Parallel category workers (processes)")
     ap.add_argument("--out-dir", default="data/d_anchor_category")
     ap.add_argument("--allowlist", default="data/taxonomy/category_allowlist.txt", help="Optional path to category allowlist (one category label per line)")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--prune", action="store_true", help="Remove existing category partitions not in current targets")
     args = ap.parse_args()
 
+    max_workers = max(1, int(args.workers))
+    kernel_threads = max(1, int(args.threads))
+    if max_workers > 1 and kernel_threads > 1:
+        print(
+            f"[debug] Reducing kernel threads from {kernel_threads} to 1 to avoid oversubscription with {max_workers} workers"
+        )
+        kernel_threads = 1
+    args.threads = kernel_threads
+    for env_var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ.setdefault(env_var, str(kernel_threads))
+
+    load_start = time.perf_counter()
     anchors_df = pd.read_parquet(args.anchors)
     if "anchor_int_id" not in anchors_df.columns:
         anchors_df = anchors_df.sort_values("site_id").reset_index(drop=True)
         anchors_df["anchor_int_id"] = anchors_df.index.astype(np.int32)
+    print(f"[debug] Loaded anchors: rows={len(anchors_df)} took={time.perf_counter() - load_start:.2f}s")
 
     # Build category frequencies from anchors
     cat_counts: Dict[str, int] = {}
@@ -111,29 +183,59 @@ def main():
         print("[warn] No categories to compute; exiting.")
         return
 
-    # Deterministic category_id mapping
-    sorted_labels = sorted(set(targets))
-    label_to_id: Dict[str, int] = {lab: i + 1 for i, lab in enumerate(sorted_labels)}
-
-    # Persist a label map for the API (optional); keys must be strings
+    # Stable category_id mapping persisted across runs
     labels_dir = os.path.join("data", "taxonomy")
-    _ensure_dir(labels_dir)
+    ensure_dir(labels_dir)
+    label_to_id_path = os.path.join(labels_dir, "category_label_to_id.json")
+    persisted_map: Dict[str, int] = {}
+    if os.path.isfile(label_to_id_path):
+        try:
+            with open(label_to_id_path, "r") as f:
+                obj = json.load(f)
+                if isinstance(obj, dict):
+                    persisted_map = {str(k): int(v) for k, v in obj.items()}
+        except Exception as e:
+            print(f"[warn] Failed to read existing label→id map {label_to_id_path}: {e}")
+
+    next_id = (max(persisted_map.values()) + 1) if persisted_map else 1
+    new_labels = [lab for lab in sorted(set(targets)) if lab not in persisted_map]
+    for lab in new_labels:
+        persisted_map[lab] = next_id
+        next_id += 1
+    # Restrict active mapping to current targets, but persist the full map to disk
+    label_to_id: Dict[str, int] = {lab: persisted_map[lab] for lab in targets}
+
+    # Persist full label→id mapping for stability
+    try:
+        with open(label_to_id_path, "w") as f:
+            json.dump(persisted_map, f, indent=2, sort_keys=True)
+        print(f"[ok] Wrote stable label→id map to {label_to_id_path}")
+    except Exception as e:
+        print(f"[warn] Failed to write label→id map: {e}")
+
+    # Also persist a convenience id→pretty label map for the API; keys must be strings
     labels_path = os.path.join(labels_dir, "category_labels.json")
     try:
+        id_to_label = {str(pid): _normalize_label(lab) for lab, pid in persisted_map.items()}
         with open(labels_path, "w") as f:
-            json.dump({str(label_to_id[k]): _normalize_label(k) for k in sorted_labels}, f)
+            json.dump(id_to_label, f, indent=2, sort_keys=True)
         print(f"[ok] Wrote labels to {labels_path}")
     except Exception as e:
         print(f"[warn] Failed to write labels: {e}")
 
     # CSR + mappings
-    node_ids, indptr, indices, w_sec, node_lats, node_lons, node_h3_by_res, res_used = load_or_build_csr(
-        args.pbf, args.mode, [8], False
+    csr_start = time.perf_counter()
+    graph_ctx = build_graph_context(args.pbf, args.mode, anchors_df)
+    anchor_idx = graph_ctx.anchor_idx
+    anchor_nodes = graph_ctx.anchor_nodes
+    anchor_int_ids = graph_ctx.anchor_int_ids
+    print(
+        f"[debug] Loaded CSR + anchor mappings: nodes={graph_ctx.node_count} anchors={anchor_nodes.size} "
+        f"components={len(graph_ctx.comp_to_anchor_nodes)} took={time.perf_counter() - csr_start:.2f}s"
     )
-    anchor_idx, _ = build_anchor_mappings(anchors_df, node_ids)
 
     # Build category -> list of node indices serving as sources
-    from collections import defaultdict
+    build_sources_start = time.perf_counter()
     cat_to_source_idxs: Dict[str, np.ndarray] = {}
     # Build anchor -> categories list for quick lookup
     anchor_to_cats: Dict[int, List[str]] = {}
@@ -142,22 +244,28 @@ def main():
         if isinstance(cats, (list, np.ndarray)):
             lst = [str(c) for c in (cats.tolist() if isinstance(cats, np.ndarray) else cats) if c is not None]
         anchor_to_cats[int(aint)] = lst
-
     tmp = defaultdict(list)
-    for j, aint in enumerate(anchor_idx.tolist()):
-        if aint < 0:
+    for node_idx, aint in zip(anchor_nodes, anchor_int_ids):
+        cats = anchor_to_cats.get(int(aint), [])
+        if not cats:
             continue
-        for c in anchor_to_cats.get(int(aint), []):
-            tmp[str(c)].append(j)
+        for c in cats:
+            tmp[str(c)].append(int(node_idx))
     for c, lst in tmp.items():
         cat_to_source_idxs[c] = np.asarray(lst, dtype=np.int32)
+    print(
+        f"[debug] Built category→source map for {len(cat_to_source_idxs)} categories "
+        f"in {time.perf_counter() - build_sources_start:.2f}s"
+    )
 
-    indptr_rev, indices_rev, w_rev = build_rev_csr(indptr, indices, w_sec)
+    comp_id = graph_ctx.comp_id
+    comp_to_anchor_nodes = graph_ctx.comp_to_anchor_nodes
     cutoff_primary_s = int(args.cutoff) * 60
     cutoff_overflow_s = int(args.overflow_cutoff) * 60
 
-    out_base = os.path.join(args.out_dir, f"mode={0 if args.mode=='drive' else 2}")
-    _ensure_dir(out_base)
+    mode_code = 0 if args.mode == "drive" else 2
+    out_base = os.path.join(args.out_dir, f"mode={mode_code}")
+    ensure_dir(out_base)
 
     # Optionally prune any existing category partitions not targeted
     if args.prune:
@@ -177,6 +285,8 @@ def main():
         except Exception as e:
             print(f"[warn] prune step failed: {e}")
 
+    # Queue work items, but handle up-to-date and empty-src in parent
+    work: List[Tuple[int, str, int, np.ndarray, np.ndarray, int, int, str]] = []
     for label in targets:
         cid = label_to_id[label]
         src = cat_to_source_idxs.get(label, np.array([], dtype=np.int32))
@@ -184,8 +294,9 @@ def main():
         print(f"[info] Category '{label}': id={cid}, anchors={anchors_cnt}, source_nodes={src.size}")
 
         out_dir = os.path.join(out_base, f"category_id={cid}")
-        _ensure_dir(out_dir)
+        ensure_dir(out_dir)
         out_path = os.path.join(out_dir, "part-000.parquet")
+
         # Skip if up-to-date unless forced
         try:
             if (not args.force) and os.path.exists(out_path):
@@ -199,29 +310,34 @@ def main():
 
         if src.size == 0:
             print(f"[warn] No source nodes for category id={cid}; writing empty.")
-            pl.DataFrame({"anchor_int_id": [], "seconds": [], "snapshot_ts": []}).write_parquet(out_path, compression="zstd")
+            _write_empty_category_shard(out_path)
             continue
 
-        best_src_idx, time_s = kbest_multisource_bucket_csr(
-            indptr_rev, indices_rev, w_rev, src, 1, cutoff_primary_s, cutoff_overflow_s, int(max(1, args.threads)), False, None
+        # Build target set as anchors in components that contain at least one source
+        build_targets_start = time.perf_counter()
+        src_comp, targets_idx, fallback_used = compute_target_nodes(
+            src, comp_id, comp_to_anchor_nodes, anchor_idx, anchor_nodes
         )
-        # For each anchor (node index j where anchor_idx[j] >= 0), pick time_s[j,0]
-        records = []
-        # Ensure time_s is a 2D array [N, K]
-        ts = np.asarray(time_s)
-        if ts.ndim == 1:
-            ts = ts.reshape(-1, 1)
-        for j, aint in enumerate(anchor_idx.tolist()):
-            if aint < 0:
-                continue
-            # K=1, safe to take column 0
-            t = int(ts[j, 0])
-            if t < 0:
-                t = int(config.UNREACH_U16)
-            records.append((int(aint), np.uint16(t), SNAPSHOT_TS))
-        df = pl.DataFrame(records, schema=[("anchor_int_id", pl.Int32), ("seconds", pl.UInt16), ("snapshot_ts", pl.Utf8)], orient="row")
-        df.write_parquet(out_path, compression="zstd")
-        print(f"[ok] Wrote D_anchor category id={cid}: {out_path} rows={df.height}")
+        build_targets_elapsed = time.perf_counter() - build_targets_start
+        print(
+            f"[debug] Category '{label}' comps={src_comp.size} target_nodes={targets_idx.size} "
+            f"build={build_targets_elapsed:.2f}s fallback={fallback_used}"
+        )
+        if targets_idx.size == 0:
+            print(f"[warn] No target nodes for category id={cid}; writing empty.")
+            _write_empty_category_shard(out_path)
+            continue
+
+        work.append((cid, label, mode_code, src, targets_idx, cutoff_primary_s, cutoff_overflow_s, out_path))
+
+    execute_tasks(
+        work,
+        graph_ctx,
+        kernel_threads,
+        max_workers,
+        _compute_one_category,
+        describe=lambda task: f"Category id={task[0]} label='{task[1]}'",
+    )
 
 
 if __name__ == "__main__":

@@ -52,45 +52,126 @@ _ANCHOR_CACHE: dict[str, dict[str, object]] = {}
 def _mode_to_partition(mode: str) -> int:
     return {"drive": 0, "walk": 2}.get(mode, 0)
 
+_DANCHOR_BRAND_DTYPES = {
+    "anchor_id": pd.UInt32Dtype(),
+    "brand_id": pd.StringDtype(),
+    "mode": pd.UInt8Dtype(),
+    "seconds_u16": pd.UInt16Dtype(),
+    "snapshot_ts": "datetime64[ns]",
+    "is_reachable": pd.BooleanDtype(),
+    "seconds_clamped": pd.UInt16Dtype(),
+}
+
+_DANCHOR_CATEGORY_DTYPES = {
+    "anchor_id": pd.UInt32Dtype(),
+    "category_id": pd.UInt32Dtype(),
+    "mode": pd.UInt8Dtype(),
+    "seconds_u16": pd.UInt16Dtype(),
+    "snapshot_ts": "datetime64[ns]",
+    "is_reachable": pd.BooleanDtype(),
+    "seconds_clamped": pd.UInt16Dtype(),
+}
+
+
+def _empty_df(dtypes: Dict[str, object]) -> pd.DataFrame:
+    return pd.DataFrame({name: pd.Series(dtype=dtype) for name, dtype in dtypes.items()})
+
+
+def _ensure_uint(values: Any, dtype: object) -> pd.Series:
+    return pd.Series(pd.to_numeric(values, errors="coerce"), dtype=dtype)
+
+
+def _ensure_seconds(values: Any) -> pd.Series:
+    sec = pd.to_numeric(values, errors="coerce")
+    sec = sec.mask(sec == int(UNREACH_U16))
+    return pd.Series(sec, dtype=pd.UInt16Dtype())
+
+
+def _ensure_mode(df: pd.DataFrame, mode_code: int) -> pd.Series:
+    if "mode" in df.columns:
+        series = pd.Series(pd.to_numeric(df["mode"], errors="coerce"), dtype=pd.UInt8Dtype())
+        return series.fillna(mode_code)
+    if df.empty:
+        return pd.Series(dtype=pd.UInt8Dtype())
+    return pd.Series([mode_code] * len(df), dtype=pd.UInt8Dtype())
+
+
+def _read_hive_dataset(base: str, requested: List[str]) -> Optional[pd.DataFrame]:
+    if not os.path.isdir(base):
+        return None
+    dataset = ds.dataset(base, format="parquet", partitioning="hive")
+    try:
+        schema_names = set(dataset.schema.names)
+    except Exception:
+        schema_names = set()
+    columns = [c for c in requested if c in schema_names]
+    table = dataset.to_table(columns=columns or None)
+    return table.to_pandas()
+
 # ---------- Data loading (cached) ----------
 def load_D_anchor(mode: str) -> pd.DataFrame:
     """
     Load seconds-based anchor→category table produced by precompute_d_anchor.py.
-    Expected columns: anchor_int_id(int32), category_id(int32), seconds_u16(uint16)
+    Expected columns: anchor_id(uint32), category_id(uint32), mode(uint8), seconds_u16(uint16, nullable), snapshot_ts(date)
     """
-    # Prefer partitioned dataset if present (mode={0,2}/category_id=*) under unified dir
-    mode_map = {"drive": 0, "walk": 2}
-    mode_id = mode_map.get(mode, 0)
+    mode_code = _mode_to_partition(mode)
+    requested_cols = [
+        "anchor_id",
+        "anchor_int_id",
+        "category_id",
+        "mode",
+        "seconds_u16",
+        "seconds",
+        "snapshot_ts",
+    ]
 
-    # New unified location
-    part_dir = os.path.join(_DANCHOR_CATEGORY_DIR, f"mode={mode_id}")
-    # Legacy fallback: previous path under data/minutes
-    legacy_dir = os.path.join("data", "minutes", f"mode={mode_id}")
+    part_dir = os.path.join(_DANCHOR_CATEGORY_DIR, f"mode={mode_code}")
+    legacy_dir = os.path.join("data", "minutes", f"mode={mode_code}")
+
     for base in (part_dir, legacy_dir):
-        if os.path.isdir(base):
-            dataset = ds.dataset(base, format="parquet", partitioning="hive")
-            # accept either seconds or seconds_u16
-            schema_names = set(dataset.schema.names)
-            pick = [c for c in ["anchor_int_id", "category_id", "seconds_u16", "seconds"] if c in schema_names]
-            table = dataset.to_table(columns=pick) if pick else dataset.to_table()
-            df = table.to_pandas()
-            if "seconds" in df.columns and "seconds_u16" not in df.columns:
-                df = df.rename(columns={"seconds": "seconds_u16"})
-            if not {"anchor_int_id", "category_id", "seconds_u16"}.issubset(df.columns):
-                raise RuntimeError("Category D_anchor missing required columns")
-            df["seconds_u16"] = df["seconds_u16"].astype("uint16", errors="ignore")
-            return df[["anchor_int_id", "category_id", "seconds_u16"]]
+        df = _read_hive_dataset(base, requested_cols)
+        if df is not None:
+            return _finalize_category_df(df, mode_code)
 
-    # Fallback: legacy unified file (non-partitioned)
     path = os.path.join("data", "minutes", f"{STATE}_anchor_to_category_{mode}.parquet")
     if os.path.exists(path):
         df = pd.read_parquet(path)
-        need = {"anchor_int_id", "category_id", "seconds_u16"}
-        missing = need - set(df.columns)
-        if missing:
-            raise RuntimeError(f"D_anchor missing required columns: {missing}")
-        return df[["anchor_int_id", "category_id", "seconds_u16"]].copy()
+        return _finalize_category_df(df, mode_code)
+
     raise RuntimeError(f"Category D_anchor parquet not found under {_DANCHOR_CATEGORY_DIR} or legacy paths for mode={mode}")
+
+
+def _finalize_category_df(df: pd.DataFrame, mode_code: int) -> pd.DataFrame:
+    df = df.copy()
+    if "anchor_int_id" in df.columns and "anchor_id" not in df.columns:
+        df = df.rename(columns={"anchor_int_id": "anchor_id"})
+    if "seconds" in df.columns and "seconds_u16" not in df.columns:
+        df = df.rename(columns={"seconds": "seconds_u16"})
+    if "snapshot_ts" not in df.columns:
+        df["snapshot_ts"] = pd.NaT
+    if "mode" not in df.columns:
+        df["mode"] = mode_code
+
+    required = {"anchor_id", "category_id", "seconds_u16"}
+    missing = required - set(df.columns)
+    if missing:
+        raise RuntimeError(f"Category D_anchor missing required columns: {missing}")
+
+    if df.empty:
+        return _empty_df(_DANCHOR_CATEGORY_DTYPES)
+
+    out = pd.DataFrame(
+        {
+            "anchor_id": _ensure_uint(df["anchor_id"], pd.UInt32Dtype()),
+            "category_id": _ensure_uint(df["category_id"], pd.UInt32Dtype()),
+        }
+    )
+    out["mode"] = _ensure_mode(df, mode_code)
+    out["seconds_u16"] = _ensure_seconds(df["seconds_u16"])
+    out["snapshot_ts"] = pd.to_datetime(df["snapshot_ts"], errors="coerce")
+    out["is_reachable"] = out["seconds_u16"].notna()
+    out["seconds_clamped"] = out["seconds_u16"].to_numpy(dtype=np.uint16, na_value=UNREACH_U16)
+    return out[list(_DANCHOR_CATEGORY_DTYPES.keys())]
 
 # ---------- Brand D_anchor loading ----------
 
@@ -98,35 +179,58 @@ def load_D_anchor_brand(mode: str, brand_id: str) -> pd.DataFrame:
     """
     Load seconds-based anchor→brand table produced by 03d_compute_d_anchor.py.
     Layout: data/d_anchor_brand/mode={0|2}/brand_id=<brand_id>/part-*.parquet
-    Columns: anchor_int_id:int32, seconds:uint16 (or seconds_u16), optional snapshot_ts
+    Columns: anchor_id:uint32, brand_id:str, mode:uint8, seconds_u16:uint16(nullable), snapshot_ts:date
     """
-    base = os.path.join(_DANCHOR_BRAND_DIR, f"mode={_mode_to_partition(mode)}", f"brand_id={brand_id}")
-    if os.path.isdir(base):
-        dataset = ds.dataset(base, format="parquet", partitioning="hive")
-        # accept either seconds or seconds_u16
-        cols = set()
-        try:
-            cols = set(dataset.schema.names)
-        except Exception:
-            pass
-        pick = [c for c in ["anchor_int_id", "seconds_u16", "seconds"] if c in cols]
-        if not pick:
-            table = dataset.to_table()
-        else:
-            table = dataset.to_table(columns=pick)
-        df = table.to_pandas()
-        if "seconds" in df.columns and "seconds_u16" not in df.columns:
-            df = df.rename(columns={"seconds": "seconds_u16"})
-        if "seconds_u16" not in df.columns:
-            raise RuntimeError("Brand D_anchor missing 'seconds' column")
-        df["seconds_u16"] = df["seconds_u16"].astype("uint16", errors="ignore")
-        need = {"anchor_int_id", "seconds_u16"}
-        missing = need - set(df.columns)
-        if missing:
-            raise RuntimeError(f"Brand D_anchor missing required columns: {missing}")
-        return df[["anchor_int_id", "seconds_u16"]]
-    # No consolidated fallback; require per-brand Hive partitions
-    raise RuntimeError(f"Brand D_anchor parquet missing at {base}")
+    mode_code = _mode_to_partition(mode)
+    base = os.path.join(_DANCHOR_BRAND_DIR, f"mode={mode_code}", f"brand_id={brand_id}")
+    df = _read_hive_dataset(
+        base,
+        [
+            "anchor_id",
+            "anchor_int_id",
+            "brand_id",
+            "mode",
+            "seconds_u16",
+            "seconds",
+            "snapshot_ts",
+        ],
+    )
+    if df is None:
+        raise RuntimeError(f"Brand D_anchor parquet missing at {base}")
+    return _finalize_brand_df(df, brand_id, mode_code)
+
+
+def _finalize_brand_df(df: pd.DataFrame, brand_id: str, mode_code: int) -> pd.DataFrame:
+    df = df.copy()
+    if "anchor_int_id" in df.columns and "anchor_id" not in df.columns:
+        df = df.rename(columns={"anchor_int_id": "anchor_id"})
+    if "seconds" in df.columns and "seconds_u16" not in df.columns:
+        df = df.rename(columns={"seconds": "seconds_u16"})
+    if "snapshot_ts" not in df.columns:
+        df["snapshot_ts"] = pd.NaT
+    if "brand_id" not in df.columns:
+        df["brand_id"] = brand_id
+
+    if "seconds_u16" not in df.columns:
+        raise RuntimeError("Brand D_anchor missing 'seconds_u16' column")
+    if "anchor_id" not in df.columns:
+        raise RuntimeError("Brand D_anchor missing 'anchor_id' column")
+
+    if df.empty:
+        return _empty_df(_DANCHOR_BRAND_DTYPES)
+
+    out = pd.DataFrame(
+        {
+            "anchor_id": _ensure_uint(df["anchor_id"], pd.UInt32Dtype()),
+            "brand_id": df["brand_id"].astype(pd.StringDtype()).fillna(brand_id),
+        }
+    )
+    out["mode"] = _ensure_mode(df, mode_code)
+    out["seconds_u16"] = _ensure_seconds(df["seconds_u16"])
+    out["snapshot_ts"] = pd.to_datetime(df["snapshot_ts"], errors="coerce")
+    out["is_reachable"] = out["seconds_u16"].notna()
+    out["seconds_clamped"] = out["seconds_u16"].to_numpy(dtype=np.uint16, na_value=UNREACH_U16)
+    return out[list(_DANCHOR_BRAND_DTYPES.keys())]
 
 # ---------- Category resolution ----------
 
@@ -227,7 +331,7 @@ def _prettify(label: str) -> str:
 
 def _infer_category_labels_from_data(mode: str) -> Dict[str, str]:
     """Best-effort inference of {category_id:str -> label:str}.
-    Strategy: join D_anchor (anchor_int_id, category_id) to anchor sites' categories list,
+    Strategy: join D_anchor (anchor_id, category_id) to anchor sites' categories list,
     tally the most frequent category string per numeric id, and prettify the label.
     Results are cached per mode.
     """
@@ -252,6 +356,8 @@ def _infer_category_labels_from_data(mode: str) -> Dict[str, str]:
     if "anchor_int_id" not in sites.columns or "categories" not in sites.columns:
         return {}
 
+    sites = sites.rename(columns={"anchor_int_id": "anchor_id"})
+
     # Explode categories for each anchor
     try:
         exploded = sites.dropna(subset=["categories"]).explode("categories")
@@ -264,7 +370,7 @@ def _infer_category_labels_from_data(mode: str) -> Dict[str, str]:
     exploded = exploded.dropna(subset=["categories"]).rename(columns={"categories": "category_label"})
 
     # Join with D_anchor to associate each (anchor, numeric category_id) pair to textual labels observed at the site
-    merged = D.merge(exploded, how="left", on="anchor_int_id")
+    merged = D.merge(exploded, how="left", on="anchor_id")
     # Count labels per category_id
     vc = merged.dropna(subset=["category_label"]).groupby(["category_id", "category_label"]).size().reset_index(name="n")
     if vc.empty:
@@ -597,7 +703,7 @@ def get_d_anchor_slice(
     mode: str = Query("drive", description="Travel mode, e.g. 'drive' or 'walk'")
 ):
     """
-    Returns a JSON object mapping anchor_int_id to travel time in seconds
+    Returns a JSON object mapping anchor_id to travel time in seconds
     for a given category and travel mode.
     """
     # Resolve category id (raises HTTPException 404 if invalid)
@@ -613,13 +719,8 @@ def get_d_anchor_slice(
         # Convert to a dictionary: { anchor_id: seconds }
         # The client will use this to map anchor IDs from the T_hex tiles
         # to the travel times for the selected category.
-        result = pd.Series(
-            sub.seconds_u16.values,
-            index=sub.anchor_int_id
-        ).to_dict()
-
-        # Ensure keys are strings for JSON compatibility, as JS objects have string keys.
-        return {str(k): int(v) for k, v in result.items()}
+        series = pd.Series(sub["seconds_clamped"], index=sub["anchor_id"])
+        return {str(int(k)): int(v) for k, v in series.items()}
 
     except RuntimeError as e:
         # This occurs if the D_anchor file for the mode is missing.
@@ -637,7 +738,7 @@ def get_d_anchor_brand(
     mode: str = Query("drive", description="Travel mode, e.g. 'drive' or 'walk'")
 ):
     """
-    Returns a JSON object mapping anchor_int_id to travel time in seconds
+    Returns a JSON object mapping anchor_id to travel time in seconds
     for a given brand and travel mode.
     """
     bid = _resolve_brand_id(brand)
@@ -645,8 +746,8 @@ def get_d_anchor_brand(
         D = load_D_anchor_brand(mode, bid)
         if D.empty:
             return {}
-        result = pd.Series(D.seconds_u16.values, index=D.anchor_int_id).to_dict()
-        return {str(k): int(v) for k, v in result.items()}
+        series = pd.Series(D["seconds_clamped"], index=D["anchor_id"])
+        return {str(int(k)): int(v) for k, v in series.items()}
     except RuntimeError as e:
         print(f"ERROR in get_d_anchor_brand for brand={brand} mode={mode}: {e}")
         raise HTTPException(status_code=404, detail=str(e))

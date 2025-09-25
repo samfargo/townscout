@@ -1,14 +1,14 @@
 # Add directories or file patterns to ignore during indexing (e.g. foo/ or *.csv)
-*.parquet
+#*.parquet
 *.pkl
 .venv
-#*.prj
-#*.xml
-#*.shx
-#*.cpg
-#*.dbf
-#*.shx
-#*.shp
+*.prj
+*.xml
+*.shx
+*.cpg
+*.dbf
+*.shx
+*.shp
 /old_townscout
 /cache
 Future

@@ -223,7 +223,7 @@ fn kbest_multisource_csr(
 ///   `insert_label_for_node` semantics, iterating candidates in (time, src_idx) order.
 /// This avoids shared mutable state during relaxations and preserves correctness.
 #[pyfunction(signature = (
-    indptr, indices, w_sec, source_idxs, k, cutoff_primary_s, cutoff_overflow_s, threads, progress, progress_cb=None
+    indptr, indices, w_sec, source_idxs, k, cutoff_primary_s, cutoff_overflow_s, threads, progress, progress_cb=None, targets_idx=None
 ))]
 fn kbest_multisource_bucket_csr(
     py: Python,
@@ -237,6 +237,7 @@ fn kbest_multisource_bucket_csr(
     threads: usize,
     progress: bool,
     progress_cb: Option<PyObject>,
+    targets_idx: Option<PyReadonlyArray1<i32>>,
 ) -> PyResult<(Py<PyArray2<i32>>, Py<PyArray2<u16>>)> {
     let indptr = indptr.as_slice()?;
     let indices = indices.as_slice()?;
@@ -256,6 +257,8 @@ fn kbest_multisource_bucket_csr(
         cutoff_primary_s: u16,
         cutoff_overflow_s: u16,
         log_progress: bool,
+        is_target: Option<&[u8]>,
+        targets_total: usize,
     ) -> (Vec<i32>, Vec<u16>) {
         use std::time::{Instant, Duration};
 
@@ -284,6 +287,7 @@ fn kbest_multisource_bucket_csr(
         let mut pops: usize = 0;
         let mut prim_assigned: usize = 0;
         let mut nodes_full_primary: usize = 0;
+        let mut remaining_targets: isize = targets_total as isize;
         while active_count > 0 {
             if !active[cur_idx] || buckets[cur_idx].is_empty() {
                 if active[cur_idx] && buckets[cur_idx].is_empty() {
@@ -315,6 +319,7 @@ fn kbest_multisource_bucket_csr(
 
             // record label under primary/overflow rules
             let before_primary = primary_count[ui] as usize;
+            let before_used = labels_used[ui] as usize;
             insert_label_for_node(
                 ui,
                 k,
@@ -329,6 +334,16 @@ fn kbest_multisource_bucket_csr(
             if du <= cutoff_primary_s {
                 prim_assigned += 1;
                 if before_primary < k && (primary_count[ui] as usize) == k { nodes_full_primary += 1; }
+            }
+
+            // Target-aware early stop: when a target receives its first label, decrement
+            if before_used == 0 {
+                if let Some(mask) = is_target {
+                    if mask[ui] != 0 {
+                        remaining_targets -= 1;
+                        if remaining_targets == 0 { break; }
+                    }
+                }
             }
 
             // relax neighbors
@@ -388,10 +403,22 @@ fn kbest_multisource_bucket_csr(
         min_out[ui] = m;
     }
 
+    // Build optional target mask
+    let (target_mask_opt, targets_total): (Option<Vec<u8>>, usize) = if let Some(tidx) = &targets_idx {
+        let arr = tidx.as_slice()?;
+        let mut mask: Vec<u8> = vec![0u8; n_nodes];
+        for &u in arr.iter() {
+            let ui = u as usize;
+            if ui < n_nodes { mask[ui] = 1; }
+        }
+        (Some(mask), arr.len())
+    } else { (None, 0usize) };
+
     if !should_parallel {
         // Single-chunk path (backwards compatible)
         let (best_src_idx_vec, time_s_vec) = py.allow_threads(|| compute_chunk(
             indptr, indices, w_sec, &min_out, source_idxs, n_nodes, k, cutoff_primary_s, cutoff_overflow_s, progress,
+            target_mask_opt.as_deref(), targets_total,
         ));
         if progress {
             if let Some(cb) = &progress_cb {
@@ -440,7 +467,9 @@ fn kbest_multisource_bucket_csr(
             .par_iter()
             .map(|&(lo, hi)| {
                 let slice = &source_idxs[lo..hi];
-                let res = compute_chunk(indptr, indices, w_sec, &min_out, slice, n_nodes, k, cutoff_primary_s, cutoff_overflow_s, progress);
+                // For chunked path, we cannot early stop globally across chunks; pass mask but it won't hit zero typically
+                let res = compute_chunk(indptr, indices, w_sec, &min_out, slice, n_nodes, k, cutoff_primary_s, cutoff_overflow_s, progress,
+                    target_mask_opt.as_deref(), targets_total);
                 if progress {
                     let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
                     if let Some(cb) = &progress_cb {
@@ -508,6 +537,52 @@ fn kbest_multisource_bucket_csr(
     }
 
     Ok((best_src_idx_out.into(), time_s_out.into()))
+}
+
+/// Compute weakly connected components using both forward and reverse adjacency.
+/// Returns an array `comp_id` of length N (int32) with component indices [0..n_components).
+#[pyfunction]
+fn weakly_connected_components(
+    _py: Python,
+    indptr: PyReadonlyArray1<i64>,
+    indices: PyReadonlyArray1<i32>,
+    indptr_rev: PyReadonlyArray1<i64>,
+    indices_rev: PyReadonlyArray1<i32>,
+) -> PyResult<Py<PyArray1<i32>>> {
+    use std::collections::VecDeque;
+    let indptr = indptr.as_slice()?;
+    let indices = indices.as_slice()?;
+    let indptr_rev = indptr_rev.as_slice()?;
+    let indices_rev = indices_rev.as_slice()?;
+    let n_nodes: usize = indptr.len() - 1;
+    let mut comp_id: Vec<i32> = vec![-1; n_nodes];
+    let mut cid: i32 = 0;
+    for start in 0..n_nodes {
+        if comp_id[start] >= 0 { continue; }
+        let mut q: VecDeque<usize> = VecDeque::new();
+        comp_id[start] = cid;
+        q.push_back(start);
+        while let Some(u) = q.pop_front() {
+            // forward neighbors
+            let s = indptr[u] as usize;
+            let e = indptr[u + 1] as usize;
+            for idx in s..e {
+                let v = indices[idx] as usize;
+                if comp_id[v] < 0 { comp_id[v] = cid; q.push_back(v); }
+            }
+            // reverse neighbors
+            let s2 = indptr_rev[u] as usize;
+            let e2 = indptr_rev[u + 1] as usize;
+            for idx in s2..e2 {
+                let v = indices_rev[idx] as usize;
+                if comp_id[v] < 0 { comp_id[v] = cid; q.push_back(v); }
+            }
+        }
+        cid += 1;
+    }
+
+    let arr = PyArray1::from_vec_bound(_py, comp_id);
+    Ok(arr.into())
 }
 
 /// Aggregate node-level labels (best anchors and times) into H3 hex buckets with per-hex top-K reduction.
@@ -994,6 +1069,7 @@ fn t_hex(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(aggregate_h3_topk, m)?)?;
     m.add_function(wrap_pyfunction!(aggregate_h3_topk_precached, m)?)?;
     m.add_function(wrap_pyfunction!(compute_h3_for_nodes, m)?)?;
+    m.add_function(wrap_pyfunction!(weakly_connected_components, m)?)?;
     m.add_function(wrap_pyfunction!(build_csr_from_arrays, m)?)?;
     Ok(())
 }
