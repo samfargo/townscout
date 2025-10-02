@@ -183,6 +183,7 @@ def load_D_anchor_brand(mode: str, brand_id: str) -> pd.DataFrame:
     """
     mode_code = _mode_to_partition(mode)
     base = os.path.join(_DANCHOR_BRAND_DIR, f"mode={mode_code}", f"brand_id={brand_id}")
+    print(f"[DEBUG] Loading from: {base}")
     df = _read_hive_dataset(
         base,
         [
@@ -197,7 +198,10 @@ def load_D_anchor_brand(mode: str, brand_id: str) -> pd.DataFrame:
     )
     if df is None:
         raise RuntimeError(f"Brand D_anchor parquet missing at {base}")
-    return _finalize_brand_df(df, brand_id, mode_code)
+    print(f"[DEBUG] Loaded {len(df)} rows, sample anchor 13279: {df[df['anchor_id'] == 13279]['seconds_u16'].values if 'anchor_id' in df.columns and 13279 in df['anchor_id'].values else 'NOT FOUND'}")
+    result = _finalize_brand_df(df, brand_id, mode_code)
+    print(f"[DEBUG] After finalize, anchor 13279: {result[result['anchor_id'] == 13279]['seconds_clamped'].values if 13279 in result['anchor_id'].values else 'NOT FOUND'}")
+    return result
 
 
 def _finalize_brand_df(df: pd.DataFrame, brand_id: str, mode_code: int) -> pd.DataFrame:
@@ -719,8 +723,9 @@ def get_d_anchor_slice(
         # Convert to a dictionary: { anchor_id: seconds }
         # The client will use this to map anchor IDs from the T_hex tiles
         # to the travel times for the selected category.
-        series = pd.Series(sub["seconds_clamped"], index=sub["anchor_id"])
-        return {str(int(k)): int(v) for k, v in series.items()}
+        anchor_ids = sub["anchor_id"].to_numpy(dtype=np.uint32, na_value=0)
+        seconds = sub["seconds_clamped"].to_numpy(dtype=np.uint16, na_value=UNREACH_U16)
+        return {str(int(a)): int(s) for a, s in zip(anchor_ids, seconds)}
 
     except RuntimeError as e:
         # This occurs if the D_anchor file for the mode is missing.
@@ -746,8 +751,9 @@ def get_d_anchor_brand(
         D = load_D_anchor_brand(mode, bid)
         if D.empty:
             return {}
-        series = pd.Series(D["seconds_clamped"], index=D["anchor_id"])
-        return {str(int(k)): int(v) for k, v in series.items()}
+        anchor_ids = D["anchor_id"].to_numpy(dtype=np.uint32, na_value=0)
+        seconds = D["seconds_clamped"].to_numpy(dtype=np.uint16, na_value=UNREACH_U16)
+        return {str(int(a)): int(s) for a, s in zip(anchor_ids, seconds)}
     except RuntimeError as e:
         print(f"ERROR in get_d_anchor_brand for brand={brand} mode={mode}: {e}")
         raise HTTPException(status_code=404, detail=str(e))
