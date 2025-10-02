@@ -222,17 +222,6 @@ def main():
         out_dir = os.path.join(out_base, f"brand_id={canon}")
         ensure_dir(out_dir)
         out_path = os.path.join(out_dir, "part-000.parquet")
-        # Skip if up-to-date unless forced
-        try:
-            if (not args.force) and os.path.exists(out_path):
-                out_m = os.path.getmtime(out_path)
-                dep_m = max(os.path.getmtime(args.anchors), os.path.getmtime(args.pbf))
-                if out_m >= dep_m:
-                    print(f"[skip] Up-to-date D_anchor brand for {canon}: {out_path}")
-                    continue
-        except Exception:
-            pass
-
         if src.size == 0:
             print(f"[warn] No source nodes for brand={canon}; writing empty.")
             _write_empty_brand_shard(out_path)
@@ -251,6 +240,17 @@ def main():
             print(f"[warn] No target nodes for brand={canon}; writing empty.")
             _write_empty_brand_shard(out_path)
             continue
+
+        # Skip if up-to-date unless forced (only once we know there is actual work)
+        try:
+            if (not args.force) and os.path.exists(out_path):
+                out_m = os.path.getmtime(out_path)
+                dep_m = max(os.path.getmtime(args.anchors), os.path.getmtime(args.pbf))
+                if out_m >= dep_m:
+                    print(f"[skip] Up-to-date D_anchor brand for {canon}: {out_path}")
+                    continue
+        except Exception:
+            pass
 
         work.append((canon, mode_code, src, targets_idx, cutoff_primary_s, cutoff_overflow_s, out_path))
 

@@ -4,20 +4,19 @@ Merges per-state travel time data and creates nationwide summaries.
 Pipeline (anchor-mode only):
 1. Load the per-state `t_hex` (long format) parquet files.
 2. Concatenate them into a single nationwide file.
-3. Build anchor arrays per hex (a{i}_id / a{i}_s) for K best anchors.
-4. Save r7 and r8 parquet files for downstream tiling.
+3. Generate complete H3 grid covering all states.
+4. Build anchor arrays per hex (a{i}_id / a{i}_s) for K best anchors.
+5. Merge travel time data onto complete grid (hexes without data get NaN).
+6. Save r7 and r8 parquet files for downstream tiling.
 """
 import glob
 import os
 import pandas as pd
 from tqdm import tqdm
 import numpy as np
+import h3
 
 from config import STATES, H3_RES_LOW, H3_RES_HIGH
-import glob
-import os
-import pandas as pd
-import numpy as np
 
 def main():
     """Main function to merge state data and create summaries."""
@@ -39,11 +38,11 @@ def main():
     all_times = pd.concat([pd.read_parquet(f) for f in drive_time_files], ignore_index=True)
     all_sites = pd.concat([pd.read_parquet(f) for f in sites_files], ignore_index=True)
 
-    # IMPORTANT: Preserve the full set of hexes observed in travel-time compute
-    # Some hexes may have no matching brand rows after joins/pivots; we still
-    # want them present in the final tiles so the frontend can render them with
-    # NaNs for missing brands. Use this as the base universe of (h3_id, res).
+    # Use the existing computed hexes as the base - don't expand beyond what was computed
+    # The travel time computation already covers all reachable areas
+    print("[info] Using computed hexes as base coverage...")
     base_hexes = all_times[["h3_id", "res"]].drop_duplicates()
+    print(f"[info] Base coverage: {len(base_hexes)} hexes across all resolutions")
 
     # 2. Anchor arrays for frontend (a{i}_id / a{i}_s) — top-K already enforced upstream
     # Sort times per hex and assign rank 0..K-1, then pivot into columns

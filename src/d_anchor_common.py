@@ -152,15 +152,14 @@ def write_shard(
     ts = np.asarray(time_s)
     if ts.ndim == 1:
         ts = ts.reshape(-1, 1)
-    t = ts[target_node_idx, 0].astype(np.int64, copy=False)
+    seconds_raw = ts[target_node_idx, 0].astype(np.int32, copy=False)
 
-    seconds = pl.Series("seconds_u16", np.where(t < 0, None, t)).cast(pl.UInt16)
     anchor_series = pl.Series("anchor_id", anchor_ids.astype(np.uint32, copy=False), dtype=pl.UInt32)
     size = anchor_series.len()
 
     columns: Dict[str, Any] = {
         "anchor_id": anchor_series,
-        "seconds_u16": seconds,
+        "_seconds_raw": pl.Series("_seconds_raw", seconds_raw, dtype=pl.Int32),
         "snapshot_ts": pl.Series([snapshot_ts] * size, dtype=pl.Utf8).str.to_date(),
     }
     extra_cols = extra_builder(size)
@@ -168,6 +167,12 @@ def write_shard(
         columns.update(extra_cols)
 
     df = pl.DataFrame(columns)
+    df = df.with_columns(
+        pl.when(pl.col("_seconds_raw") >= 0)
+        .then(pl.col("_seconds_raw").cast(pl.UInt16))
+        .otherwise(pl.lit(None, dtype=pl.UInt16))
+        .alias("seconds_u16")
+    ).drop("_seconds_raw")
     df = df.with_columns([pl.col(name).cast(dtype) for name, dtype in schema.items() if name in df.columns])
     dedupe_keys = list(dedupe_keys)
     if dedupe_keys:

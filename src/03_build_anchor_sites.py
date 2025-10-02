@@ -124,6 +124,11 @@ def build_anchor_sites_from_nodes(
 
     final_cols = ['site_id', 'node_id', 'lon', 'lat', 'poi_ids', 'brands', 'categories']
     sites = sites[final_cols]
+    
+    # Track Costco count in anchor sites
+    costco_sites = sum(1 for brands in sites['brands'] if any('costco' in str(b).lower() for b in brands))
+    print(f"[COSTCO] Anchor sites: {costco_sites} sites with Costco")
+    
     print(f"[ok] Built {len(sites)} anchor sites from {len(pois_with_nodes)} POIs.")
     return sites
 
@@ -141,6 +146,10 @@ def main():
     # Load canonical POIs
     df = pd.read_parquet(args.pois)
     gdf = gpd.GeoDataFrame(df.drop(columns=["geometry"]), geometry=gpd.GeoSeries.from_wkb(df["geometry"]))
+    
+    # Track Costco count in canonical POIs
+    costco_canonical = len(gdf[gdf['brand_id'] == 'costco']) if 'brand_id' in gdf.columns else 0
+    print(f"[COSTCO] Canonical POIs: {costco_canonical} POIs")
 
     # Load CSR (and H3 cache if needed)
     node_ids, indptr, indices, w_sec, node_lats, node_lons, node_h3_by_res, res_used = load_or_build_csr(

@@ -29,10 +29,12 @@ def main():
             "-z", str(args.maxzoom),
             "--force",
             "--read-parallel",
-            "--drop-densest-as-needed",
             "--detect-shared-borders",
             "--no-tiny-polygon-reduction",
             "--simplification=2",
+            "--no-feature-limit",
+            "--no-tile-size-limit",
+            "--drop-fraction-as-needed",
             args.input
         ]
         run(tip)

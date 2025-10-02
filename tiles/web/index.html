@@ -119,10 +119,10 @@
           type: 'fill',
           source: 'us_r7_drive',
           'source-layer': 't_hex_r7_drive',
-          maxzoom: 8,
+          maxzoom: 9.5,
           paint: {
             'fill-color': '#1976d2',
-            'fill-opacity': 0.5,
+            'fill-opacity': ['interpolate', ['linear'], ['zoom'], 7, 0.5, 9, 0.3],
             'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
           }
         },
@@ -131,10 +131,10 @@
           type: 'fill',
           source: 'us_r8_drive',
           'source-layer': 't_hex_r8_drive',
-          minzoom: 8,
+          minzoom: 7.5,
           paint: {
             'fill-color': '#1976d2',
-            'fill-opacity': 0.5,
+            'fill-opacity': ['interpolate', ['linear'], ['zoom'], 7.5, 0, 9, 0.5],
             'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
           }
         },
@@ -244,7 +244,8 @@
       const valSpan = document.getElementById(`val_${poi.id}`);
       if (slider && valSpan) valSpan.textContent = slider.value;
     });
-    const filter = buildFilterExpressionCombined();
+    // If no POIs selected, show all hexes (no filter)
+    const filter = selectedPOIs.length > 0 ? buildFilterExpressionCombined() : null;
     // Apply to current mode layer(s)
     if (CURRENT_MODE === 'drive') {
       map.setFilter('layer_r8_drive', filter);

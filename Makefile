@@ -197,7 +197,9 @@ all:  ## Run the full data pipeline (tiles + D_anchor)
 # ========== Housekeeping ==========
 
 clean:  ## Clean all generated data files
-	rm -rf data/osm/*.pbf data/overture/*.parquet data/poi/*.parquet data/minutes/*.parquet data/anchors/*.parquet
+	rm -rf data/osm/*.pbf data/overture/*.parquet data/poi/*.parquet data/minutes/*.parquet data/anchors/*.parquet data/d_anchor_category/*.parquet data/d_anchor_brand/*.parquet
+	find data/d_anchor_category -type f -name '*.parquet' -delete 2>/dev/null || true
+	find data/d_anchor_brand -type f -name '*.parquet' -delete 2>/dev/null || true
 	rm -rf state_tiles/*.parquet state_tiles/*.csv state_tiles/.merge.stamp
 	rm -rf tiles/*.geojson tiles/*.mbtiles tiles/*.pmtiles
 	rm -rf data/osm/cache

@@ -125,6 +125,13 @@ def normalize_overture_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     if gdf.empty:
         return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry='geometry', crs="EPSG:4326")
     
+    # Track Costco count at input
+    costco_input = sum(1 for _, row in gdf.iterrows() 
+                      if (row.get('brand', {}) and 
+                          row['brand'].get('names', {}) and 
+                          'costco' in str(row['brand']['names'].get('primary', '')).lower()))
+    print(f"[COSTCO] Overture input: {costco_input} POIs")
+    
     normalized_rows = []
     for _, row in gdf.iterrows():
         # Category mapping
@@ -175,6 +182,11 @@ def normalize_overture_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry='geometry', crs="EPSG:4326")
 
     out_gdf = gpd.GeoDataFrame(normalized_rows, crs="EPSG:4326")
+    
+    # Track Costco count at output
+    costco_output = len(out_gdf[out_gdf['brand_id'] == 'costco']) if len(out_gdf) > 0 and 'brand_id' in out_gdf.columns else 0
+    print(f"[COSTCO] Overture output: {costco_output} POIs")
+
     print(f"[ok] Normalized {len(out_gdf)} POIs from Overture.")
     return out_gdf
 
@@ -184,6 +196,12 @@ def normalize_osm_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     print("--- Normalizing OSM POIs ---")
     if gdf.empty:
         return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry='geometry', crs="EPSG:4326")
+    
+    # Track Costco count at input
+    costco_input = sum(1 for _, row in gdf.iterrows() 
+                      if any('costco' in str(row.get(tag, '')).lower() 
+                            for tag in ['brand', 'operator', 'name']))
+    print(f"[COSTCO] OSM input: {costco_input} POIs")
 
     normalized_rows = []
     for _, row in gdf.iterrows():
@@ -236,6 +254,11 @@ def normalize_osm_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry='geometry', crs="EPSG:4326")
 
     out_gdf = gpd.GeoDataFrame(normalized_rows, crs="EPSG:4326")
+    
+    # Track Costco count at output
+    costco_output = len(out_gdf[out_gdf['brand_id'] == 'costco']) if len(out_gdf) > 0 and 'brand_id' in out_gdf.columns else 0
+    print(f"[COSTCO] OSM output: {costco_output} POIs")
+    
     print(f"[ok] Normalized {len(out_gdf)} POIs from OSM.")
     return out_gdf
 
@@ -270,21 +293,49 @@ def conflate_pois(overture_gdf: gpd.GeoDataFrame, osm_gdf: gpd.GeoDataFrame) -> 
 
     combined = pd.concat(frames, ignore_index=True)
     print(f"[ok] Combined POIs: {len(combined)} total")
+    
+    # Track Costco count before deduplication
+    costco_before_dedup = len(combined[combined['brand_id'] == 'costco']) if 'brand_id' in combined.columns else 0
+    print(f"[COSTCO] Before deduplication: {costco_before_dedup} POIs")
 
-    # Build duplication key
+    # Build more precise duplication key - use higher resolution H3 and be more conservative
     def _key_row(r):
-        brand = (str(r.get("brand_id")) if pd.notna(r.get("brand_id")) and r.get("brand_id") else None)
-        name = (str(r.get("name") or "").strip().lower() or None)
-        cat = (str(r.get("category") or "").strip().lower() or None)
-        cell = r.get("h3_r9")
-        return (brand or name or ""), (cat or ""), (cell or "")
+        # Use H3 r11 (~20m) for branded POIs, r10 (~60m) for others
+        brand = str(r.get("brand_id") or "").strip()
+        h3_res = 11 if brand else 10
+        
+        h3_cell = None
+        try:
+            if r.get('geometry') and hasattr(r['geometry'], 'y') and hasattr(r['geometry'], 'x'):
+                h3_cell = h3.geo_to_h3(r['geometry'].y, r['geometry'].x, h3_res)
+        except:
+            h3_cell = r.get("h3_r9")  # fallback to coarser resolution
+        
+        name = str(r.get("name") or "").strip().lower()
+        cat = str(r.get("category") or "").strip().lower()
+        ext_id = str(r.get("ext_id", "")).strip()
+        
+        # For branded POIs: be VERY conservative - only deduplicate exact duplicates
+        if brand:
+            # Include more specificity for branded POIs to avoid false matches
+            return (brand, name, cat, h3_cell, ext_id[:8])  # use partial ext_id for additional uniqueness
+        else:
+            # For non-branded POIs, be conservative but less strict
+            return (name, cat, h3_cell, ext_id)
 
     combined["_dupkey"] = combined.apply(_key_row, axis=1)
-    # Sort so that overture comes before osm
+    # Sort so that overture comes before osm, but prefer POIs with brand_id
+    combined["_brand_priority"] = combined["brand_id"].notna().astype(int)
     combined["_src_rank"] = combined["source"].map({"overture": 0, "osm": 1}).fillna(2)
-    combined = combined.sort_values(["_dupkey", "_src_rank"]).reset_index(drop=True)
-    dedup = combined.drop_duplicates(subset=["_dupkey"], keep="first").drop(columns=["_dupkey", "_src_rank"])
+    combined = combined.sort_values(["_dupkey", "_brand_priority", "_src_rank"], ascending=[True, False, True]).reset_index(drop=True)
+    
+    dedup = combined.drop_duplicates(subset=["_dupkey"], keep="first").drop(columns=["_dupkey", "_src_rank", "_brand_priority"])
     dedup = gpd.GeoDataFrame(dedup, geometry="geometry", crs="EPSG:4326")
+    
+    # Track Costco count after deduplication
+    costco_after_dedup = len(dedup[dedup['brand_id'] == 'costco']) if 'brand_id' in dedup.columns else 0
+    print(f"[COSTCO] After deduplication: {costco_after_dedup} POIs")
+    
     print(f"[ok] Deduplicated POIs: {len(dedup)} remaining")
     return dedup
 
