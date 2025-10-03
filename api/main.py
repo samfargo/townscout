@@ -12,6 +12,7 @@ import json
 import numpy as np
 import pandas as pd
 import h3
+import requests
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from typing import Any
+from urllib.parse import quote
 # Ensure we can import modules from the repo's src/ when running via uvicorn
 _SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, 'src'))
 if _SRC_DIR not in sys.path:
@@ -45,6 +47,184 @@ APP_NAME = "TownScout D_anchor API"
 STATE = os.environ.get("TS_STATE", "massachusetts")
 _DANCHOR_CATEGORY_DIR = os.environ.get("TS_DANCHOR_CATEGORY_DIR", os.path.join("data", "d_anchor_category"))
 _DANCHOR_BRAND_DIR = os.environ.get("TS_DANCHOR_BRAND_DIR", os.path.join("data", "d_anchor_brand"))
+
+GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY")
+GOOGLE_PLACES_AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
+GOOGLE_PLACES_DETAILS_URL = "https://places.googleapis.com/v1/places"
+GOOGLE_PLACES_TIMEOUT = float(os.environ.get("GOOGLE_PLACES_TIMEOUT", "7"))
+
+_ADDRESS_TYPE_HINTS = {
+    "street_address",
+    "street_number",
+    "premise",
+    "subpremise",
+    "route",
+    "intersection",
+    "plus_code",
+    "postal_code",
+    "postal_code_prefix",
+    "postal_town",
+    "locality",
+    "sublocality",
+    "neighborhood",
+}
+
+
+def _coalesce_text(*values: Optional[str]) -> Optional[str]:
+    for value in values:
+        if value:
+            stripped = str(value).strip()
+            if stripped:
+                return stripped
+    return None
+
+
+def _extract_bbox(viewport: Optional[dict]) -> Optional[dict]:
+    if not isinstance(viewport, dict):
+        return None
+    low = viewport.get("low") or {}
+    high = viewport.get("high") or {}
+    try:
+        west = float(low["longitude"])
+        south = float(low["latitude"])
+        east = float(high["longitude"])
+        north = float(high["latitude"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {
+        "west": west,
+        "south": south,
+        "east": east,
+        "north": north,
+    }
+
+
+def _classify_place(types: Optional[List[str]]) -> str:
+    iterable = types or []
+    for t in iterable:
+        if not isinstance(t, str):
+            continue
+        t_lower = t.lower()
+        if t_lower.startswith("administrative_area_level_"):
+            return "address"
+        if t_lower.startswith("sublocality_level_"):
+            return "address"
+        if t_lower in _ADDRESS_TYPE_HINTS:
+            return "address"
+    return "place"
+
+
+def _parse_location_bias(location_bias: Optional[str]) -> Optional[dict]:
+    if not location_bias:
+        return None
+    parts = [p.strip() for p in location_bias.split(",") if p.strip()]
+    if len(parts) == 2:
+        try:
+            lon, lat = (float(parts[0]), float(parts[1]))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid locationBias; expected lon,lat") from exc
+        if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
+            raise HTTPException(status_code=400, detail="locationBias lon/lat out of range")
+        # Use a modest radius to bias around current map center (~30km)
+        return {
+            "circle": {
+                "center": {"latitude": lat, "longitude": lon},
+                "radius": 30000,
+            }
+        }
+    if len(parts) == 4:
+        try:
+            west, south, east, north = map(float, parts)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid locationBias bbox; expected west,south,east,north") from exc
+        if not (-180.0 <= west <= 180.0 and -180.0 <= east <= 180.0 and -90.0 <= south <= 90.0 and -90.0 <= north <= 90.0):
+            raise HTTPException(status_code=400, detail="locationBias bbox out of range")
+        return {
+            "rectangle": {
+                "low": {"latitude": min(south, north), "longitude": min(west, east)},
+                "high": {"latitude": max(south, north), "longitude": max(west, east)},
+            }
+        }
+    raise HTTPException(status_code=400, detail="Unsupported locationBias format; use lon,lat or west,south,east,north")
+
+
+def _normalize_autocomplete_prediction(pred: dict) -> dict:
+    place_id = pred.get("placeId") or pred.get("predictionId")
+    place_types = pred.get("types") or pred.get("placeTypes") or []
+    primary = None
+    secondary = None
+    text = pred.get("text") or {}
+    if isinstance(text, dict):
+        primary = text.get("text")
+        secondary = text.get("secondaryText")
+    structured = pred.get("structuredFormat") or {}
+    if isinstance(structured, dict):
+        primary = _coalesce_text(structured.get("mainText"), primary)
+        secondary = _coalesce_text(structured.get("secondaryText"), secondary)
+    place_blob = pred.get("place") or {}
+    location = place_blob.get("location") or {}
+    lat = location.get("latitude")
+    lon = location.get("longitude")
+    bbox = _extract_bbox(place_blob.get("viewport"))
+    label = _coalesce_text(primary, place_blob.get("displayName", {}).get("text"), place_blob.get("formattedAddress"))
+    sublabel = _coalesce_text(secondary, place_blob.get("formattedAddress"))
+    try:
+        lat_f = float(lat) if lat is not None else None
+        lon_f = float(lon) if lon is not None else None
+    except (TypeError, ValueError):
+        lat_f = None
+        lon_f = None
+    return {
+        "id": place_id,
+        "type": _classify_place(place_types),
+        "label": label,
+        "sublabel": sublabel,
+        "lat": lat_f,
+        "lon": lon_f,
+        "bbox": bbox,
+    }
+
+
+def _normalize_place_detail(place: dict) -> dict:
+    types = place.get("types") if isinstance(place, dict) else []
+    display_name = None
+    dn_blob = place.get("displayName") if isinstance(place, dict) else None
+    if isinstance(dn_blob, dict):
+        display_name = dn_blob.get("text")
+    formatted = place.get("formattedAddress")
+    short_formatted = place.get("shortFormattedAddress")
+    location = place.get("location") or {}
+    lat = location.get("latitude")
+    lon = location.get("longitude")
+    bbox = _extract_bbox(place.get("viewport"))
+    try:
+        lat_f = float(lat) if lat is not None else None
+        lon_f = float(lon) if lon is not None else None
+    except (TypeError, ValueError):
+        lat_f = None
+        lon_f = None
+    label = _coalesce_text(display_name, formatted, short_formatted)
+    sublabel = _coalesce_text(formatted, short_formatted)
+    return {
+        "id": place.get("id") or place.get("name"),
+        "type": _classify_place(types),
+        "label": label,
+        "sublabel": sublabel,
+        "lat": lat_f,
+        "lon": lon_f,
+        "bbox": bbox,
+    }
+
+
+def _place_path_segment(place_id: str) -> str:
+    if place_id is None:
+        raise HTTPException(status_code=400, detail="Place id is required")
+    pid = str(place_id).strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="Place id is required")
+    if pid.startswith("places/"):
+        pid = pid.split("places/", 1)[1]
+    return pid
 
 # Column & sentinel conventions
 UNREACH_U16 = np.uint16(65535)
@@ -508,6 +688,167 @@ def catalog(mode: str = Query("drive", description="Travel mode, e.g. 'drive' or
         "brands": brands,
         "cat_to_brands": cat_to_brands,
     }
+
+
+def _ensure_places_key():
+    if not GOOGLE_PLACES_API_KEY:
+        raise HTTPException(status_code=500, detail="Places API key not configured")
+
+
+def _places_error_detail(payload: Optional[dict]) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if message:
+            return str(message)
+    return None
+
+
+@app.get("/api/places/autocomplete")
+def places_autocomplete(
+    q: str = Query(..., min_length=1, alias="q", description="Search text"),
+    session: str = Query(..., min_length=1, description="Google Places session token"),
+    location_bias: Optional[str] = Query(None, alias="locationBias", description="Bias as lon,lat or west,south,east,north"),
+    limit: int = Query(8, ge=1, le=10, description="Maximum number of suggestions to return"),
+):
+    _ensure_places_key()
+    query = q.strip()
+    if len(query) < 2:
+        return {"results": []}
+    payload: dict[str, Any] = {
+        "input": query,
+        "sessionToken": session,
+    }
+    try:
+        bias = _parse_location_bias(location_bias) if location_bias else None
+    except HTTPException:
+        # Re-raise with same detail for clarity
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid locationBias") from exc
+    if bias:
+        payload["locationBias"] = bias
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": ",".join(
+            [
+                "placePrediction.placeId",
+                "placePrediction.text",
+                "placePrediction.structuredFormat",
+                "placePrediction.types",
+                "placePrediction.place.displayName",
+                "placePrediction.place.location",
+                "placePrediction.place.viewport",
+                "placePrediction.place.formattedAddress",
+            ]
+        ),
+    }
+
+    try:
+        resp = requests.post(
+            GOOGLE_PLACES_AUTOCOMPLETE_URL,
+            headers=headers,
+            json=payload,
+            timeout=GOOGLE_PLACES_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail="Places Autocomplete unavailable") from exc
+
+    raw_body: Optional[dict] = None
+    try:
+        raw_body = resp.json()
+    except ValueError:
+        raw_body = None
+
+    if resp.status_code == 429:
+        detail = _places_error_detail(raw_body) or "Places Autocomplete quota exceeded"
+        raise HTTPException(status_code=429, detail=detail)
+    if resp.status_code >= 400:
+        detail = _places_error_detail(raw_body) or "Places Autocomplete error"
+        raise HTTPException(status_code=resp.status_code, detail=detail)
+    if raw_body is None or not isinstance(raw_body, dict):
+        raise HTTPException(status_code=502, detail="Invalid response from Places Autocomplete")
+
+    predictions = raw_body.get("placePredictions") or []
+    normalized: list[dict[str, Any]] = []
+    for pred in predictions:
+        if not isinstance(pred, dict):
+            continue
+        norm = _normalize_autocomplete_prediction(pred)
+        if norm.get("id"):
+            normalized.append(norm)
+
+    # Truncate client-side expectations while signaling availability of more predictions
+    limited = normalized[:limit]
+    return {
+        "results": limited,
+        "has_more": len(normalized) > len(limited),
+    }
+
+
+@app.get("/api/places/details")
+def places_details(
+    place_id: str = Query(..., alias="id", description="Place identifier"),
+    session: str = Query(..., min_length=1, description="Google Places session token"),
+):
+    _ensure_places_key()
+    try:
+        path_segment = _place_path_segment(place_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid place id") from exc
+
+    headers = {
+        "Accept": "application/json",
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": ",".join(
+            [
+                "id",
+                "displayName",
+                "formattedAddress",
+                "shortFormattedAddress",
+                "types",
+                "location",
+                "viewport",
+            ]
+        ),
+    }
+    params = {
+        "sessionToken": session,
+    }
+    url = f"{GOOGLE_PLACES_DETAILS_URL}/{quote(path_segment, safe='')}"
+
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=GOOGLE_PLACES_TIMEOUT)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail="Places Details unavailable") from exc
+
+    raw_body: Optional[dict] = None
+    try:
+        raw_body = resp.json()
+    except ValueError:
+        raw_body = None
+
+    if resp.status_code == 429:
+        detail = _places_error_detail(raw_body) or "Places Details quota exceeded"
+        raise HTTPException(status_code=429, detail=detail)
+    if resp.status_code >= 400:
+        detail = _places_error_detail(raw_body) or "Places Details error"
+        raise HTTPException(status_code=resp.status_code, detail=detail)
+    if raw_body is None or not isinstance(raw_body, dict):
+        raise HTTPException(status_code=502, detail="Invalid response from Places Details")
+
+    normalized = _normalize_place_detail(raw_body)
+    if normalized.get("lat") is None or normalized.get("lon") is None:
+        raise HTTPException(status_code=502, detail="Place Details response missing coordinates")
+
+    return {"result": normalized}
 
 # ---------- Custom D_anchor (one-off for a user-picked point) ----------
 # Reuse graph + anchors and compute anchor->custom seconds via a single-source run on the CSR transpose.

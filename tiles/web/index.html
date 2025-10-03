@@ -14,6 +14,20 @@
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
     .panel { position: absolute; top: 16px; left: 16px; background: #fff; padding: 14px 16px; border-radius: 10px; z-index: 1; box-shadow: 0 6px 20px rgba(0,0,0,0.12); width: 320px; }
     .panel h3 { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: #1f2937; }
+    .search-container { margin-bottom: 16px; }
+    .search-container label { display: block; font-size: 13px; color: #374151; margin-bottom: 6px; }
+    .search-box { position: relative; }
+    .search-input { width: 100%; padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 14px; transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+    .search-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.2); }
+    .search-results { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.15); max-height: 260px; overflow-y: auto; z-index: 20; padding: 4px 0; display: none; }
+    .search-results.open { display: block; }
+    .search-item { padding: 8px 12px; cursor: pointer; }
+    .search-item:hover, .search-item.active { background: #eff6ff; }
+    .search-primary { font-size: 14px; font-weight: 600; color: #111827; }
+    .search-secondary { font-size: 12px; color: #6b7280; margin-top: 2px; }
+    .search-status { margin-top: 6px; font-size: 12px; color: #6b7280; min-height: 16px; }
+    .search-status.error { color: #dc2626; }
+    .search-status.info { color: #2563eb; }
     .row { display: flex; align-items: center; margin-bottom: 10px; gap: 10px; }
     .row label { flex: 1; font-size: 13px; color: #374151; }
     .row input[type="range"] { flex: 1.6; }
@@ -47,6 +61,14 @@
 <body>
 <div class="panel">
   <h3>TownScout Criteria</h3>
+  <div class="search-container">
+    <label for="place-search-input">Search for a custom location</label>
+    <div class="search-box">
+      <input id="place-search-input" class="search-input" type="text" placeholder="Search for an address or place" autocomplete="off" aria-autocomplete="list" aria-controls="place-search-results" aria-expanded="false" />
+      <div id="place-search-results" class="search-results" role="listbox"></div>
+    </div>
+    <div id="place-search-status" class="search-status"></div>
+  </div>
   <div id="filters">
     <div class="row filter-row">
       <label>Mode</label>
@@ -188,6 +210,18 @@
   const CUSTOM_MIN_MINUTES = 5;
   const CUSTOM_MAX_MINUTES = 240;
   const CUSTOM_FETCH_GRANULARITY = 5; // Fetch custom D_anchor in 5-minute increments
+
+  const PLACE_AUTOCOMPLETE_MIN_CHARS = 2;
+  const PLACE_AUTOCOMPLETE_DEBOUNCE_MS = 200;
+  const PLACE_SUGGESTION_LIMIT = 8;
+  let placeSearchSessionToken = null;
+  let placeSearchAbortController = null;
+  let placeSearchSuggestions = [];
+  let placeSearchActiveIndex = -1;
+  let placeSearchInputEl = null;
+  let placeSearchResultsEl = null;
+  let placeSearchStatusEl = null;
+  let placeSearchMarker = null;
 
   const selectedPOIs = [];
   const activePins = {}; // rowKey -> { brands: string[], sourceId: string, layerIds: string[] }
@@ -338,8 +372,17 @@
   const debouncedUpdate = debounce(updateMapFilter, 50);
 
   function addPOIRow(poi) {
-    // Avoid duplicates
-    if (selectedPOIs.find(p => p.id === poi.id && p.type === poi.type)) return;
+    const existingIdx = selectedPOIs.findIndex(p => p.id === poi.id && p.type === poi.type);
+    if (existingIdx >= 0) {
+      const existing = selectedPOIs[existingIdx];
+      const merged = Object.assign({}, existing, poi);
+      selectedPOIs[existingIdx] = merged;
+      if (poi.label && poi.label !== existing.label) {
+        const labelEl = document.querySelector(`#row_${poi.type}_${poi.id} label[for="slider_${poi.id}"]`);
+        if (labelEl) labelEl.textContent = `${poi.label} (minutes)`;
+      }
+      return;
+    }
     selectedPOIs.push(poi);
     const container = document.getElementById('filter-rows');
     const row = document.createElement('div');
@@ -483,6 +526,315 @@
     dAnchorCache[key] = data;
     customCoverageMinutes[key] = requested;
     return data;
+  }
+
+  // ---------- Places Autocomplete (Custom Location) ----------
+  function generatePlacesSessionToken() {
+    if (window.crypto && window.crypto.randomUUID) {
+      return window.crypto.randomUUID();
+    }
+    return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function locationBiasForPlacesAutocomplete() {
+    const bbox = currentBboxParam();
+    if (bbox) return bbox;
+    try {
+      const center = map.getCenter();
+      if (center) return `${center.lng},${center.lat}`;
+    } catch (e) {}
+    return null;
+  }
+
+  function setPlaceSearchStatus(message, tone = '') {
+    if (!placeSearchStatusEl) return;
+    placeSearchStatusEl.textContent = message || '';
+    placeSearchStatusEl.className = 'search-status';
+    if (tone) placeSearchStatusEl.classList.add(tone);
+  }
+
+  function resetPlacesSuggestions(options = {}) {
+    placeSearchSuggestions = [];
+    placeSearchActiveIndex = -1;
+    if (placeSearchResultsEl) {
+      placeSearchResultsEl.innerHTML = '';
+      placeSearchResultsEl.classList.remove('open');
+    }
+    if (placeSearchInputEl) {
+      placeSearchInputEl.setAttribute('aria-expanded', 'false');
+      placeSearchInputEl.removeAttribute('aria-activedescendant');
+      placeSearchInputEl.removeAttribute('aria-busy');
+    }
+    if (options.clearStatus) {
+      setPlaceSearchStatus('', '');
+    }
+  }
+
+  function updatePlaceSearchHighlight(newIndex) {
+    const items = placeSearchResultsEl ? placeSearchResultsEl.querySelectorAll('.search-item') : [];
+    if (!items.length) {
+      placeSearchActiveIndex = -1;
+      if (placeSearchInputEl) placeSearchInputEl.removeAttribute('aria-activedescendant');
+      return;
+    }
+    let idx = typeof newIndex === 'number' ? newIndex : placeSearchActiveIndex;
+    if (idx < 0 || idx >= items.length) {
+      idx = -1;
+    }
+    placeSearchActiveIndex = idx;
+    items.forEach((el, i) => {
+      if (i === placeSearchActiveIndex) {
+        el.classList.add('active');
+        el.setAttribute('aria-selected', 'true');
+        if (placeSearchInputEl) {
+          placeSearchInputEl.setAttribute('aria-activedescendant', el.id || '');
+        }
+        el.scrollIntoView({ block: 'nearest' });
+      } else {
+        el.classList.remove('active');
+        el.setAttribute('aria-selected', 'false');
+      }
+    });
+    if (placeSearchActiveIndex === -1 && placeSearchInputEl) {
+      placeSearchInputEl.removeAttribute('aria-activedescendant');
+    }
+  }
+
+  function renderPlaceSearchSuggestions() {
+    if (!placeSearchResultsEl) return;
+    placeSearchResultsEl.innerHTML = '';
+    if (!placeSearchSuggestions.length) {
+      placeSearchResultsEl.classList.remove('open');
+      if (placeSearchInputEl) placeSearchInputEl.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    placeSearchSuggestions.forEach((suggestion, index) => {
+      const item = document.createElement('div');
+      item.className = 'search-item';
+      item.id = `place-search-item-${index}`;
+      item.setAttribute('role', 'option');
+      const primary = document.createElement('div');
+      primary.className = 'search-primary';
+      primary.textContent = suggestion.label || suggestion.sublabel || 'Unnamed place';
+      item.appendChild(primary);
+      if (suggestion.sublabel && suggestion.sublabel !== suggestion.label) {
+        const secondary = document.createElement('div');
+        secondary.className = 'search-secondary';
+        secondary.textContent = suggestion.sublabel;
+        item.appendChild(secondary);
+      }
+      item.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        selectPlaceSuggestion(index);
+      });
+      placeSearchResultsEl.appendChild(item);
+    });
+    placeSearchResultsEl.classList.add('open');
+    if (placeSearchInputEl) placeSearchInputEl.setAttribute('aria-expanded', 'true');
+    updatePlaceSearchHighlight(-1);
+  }
+
+  async function requestPlacesAutocomplete(value) {
+    const query = String(value || '').trim();
+    if (query.length < PLACE_AUTOCOMPLETE_MIN_CHARS) {
+      resetPlacesSuggestions();
+      return;
+    }
+    if (!placeSearchSessionToken) {
+      placeSearchSessionToken = generatePlacesSessionToken();
+    }
+    if (placeSearchAbortController) {
+      placeSearchAbortController.abort();
+    }
+    placeSearchAbortController = new AbortController();
+    if (placeSearchInputEl) placeSearchInputEl.setAttribute('aria-busy', 'true');
+    setPlaceSearchStatus('Searching…', 'info');
+    const params = new URLSearchParams();
+    params.set('q', query);
+    params.set('session', placeSearchSessionToken);
+    params.set('limit', String(PLACE_SUGGESTION_LIMIT));
+    const bias = locationBiasForPlacesAutocomplete();
+    if (bias) params.set('locationBias', bias);
+    try {
+      const resp = await fetch(`/api/places/autocomplete?${params.toString()}`, { signal: placeSearchAbortController.signal });
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try {
+          const errJson = await resp.json();
+          if (errJson && errJson.detail) detail = errJson.detail;
+        } catch (e) {}
+        throw new Error(detail);
+      }
+      const data = await resp.json();
+      const results = Array.isArray(data.results) ? data.results : [];
+      placeSearchSuggestions = results.slice(0, PLACE_SUGGESTION_LIMIT);
+      renderPlaceSearchSuggestions();
+      if (placeSearchSuggestions.length === 0) {
+        setPlaceSearchStatus('No matches found.', 'info');
+      } else {
+        setPlaceSearchStatus('', '');
+      }
+    } catch (error) {
+      if (error && error.name === 'AbortError') return;
+      console.error('Places autocomplete failed', error);
+      setPlaceSearchStatus('Unable to fetch suggestions. Please try again.', 'error');
+      resetPlacesSuggestions();
+    } finally {
+      if (placeSearchInputEl) placeSearchInputEl.removeAttribute('aria-busy');
+      placeSearchAbortController = null;
+    }
+  }
+
+  function selectPlaceSuggestion(index) {
+    if (index == null) index = placeSearchActiveIndex;
+    if (index == null || index < 0) index = placeSearchSuggestions.length === 1 ? 0 : index;
+    const suggestion = placeSearchSuggestions[index];
+    if (!suggestion) return;
+    if (placeSearchAbortController) {
+      placeSearchAbortController.abort();
+      placeSearchAbortController = null;
+    }
+    if (placeSearchInputEl) {
+      const value = suggestion.label || suggestion.sublabel || '';
+      placeSearchInputEl.value = value;
+      placeSearchInputEl.setAttribute('aria-busy', 'true');
+    }
+    resetPlacesSuggestions();
+    setPlaceSearchStatus('Fetching location…', 'info');
+    fetchPlaceDetails(suggestion);
+  }
+
+  async function fetchPlaceDetails(suggestion) {
+    if (!suggestion || !suggestion.id) {
+      setPlaceSearchStatus('Missing place identifier.', 'error');
+      if (placeSearchInputEl) placeSearchInputEl.removeAttribute('aria-busy');
+      return;
+    }
+    if (!placeSearchSessionToken) {
+      placeSearchSessionToken = generatePlacesSessionToken();
+    }
+    const params = new URLSearchParams();
+    params.set('id', suggestion.id);
+    params.set('session', placeSearchSessionToken);
+    try {
+      const resp = await fetch(`/api/places/details?${params.toString()}`);
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try {
+          const errJson = await resp.json();
+          if (errJson && errJson.detail) detail = errJson.detail;
+        } catch (e) {}
+        throw new Error(detail);
+      }
+      const data = await resp.json();
+      const result = data && data.result ? data.result : null;
+      if (!result || typeof result.lon !== 'number' || typeof result.lat !== 'number') {
+        throw new Error('Missing coordinates');
+      }
+      const lon = result.lon;
+      const lat = result.lat;
+      const label = result.label || suggestion.label || 'Custom Location';
+      const sublabel = result.sublabel || suggestion.sublabel || '';
+      try {
+        const targetZoom = Math.max(map.getZoom(), 13);
+        map.easeTo({ center: [lon, lat], zoom: targetZoom, duration: 800 });
+      } catch (e) {}
+      if (!placeSearchMarker) {
+        placeSearchMarker = new maplibregl.Marker({ color: '#ef4444' });
+      }
+      placeSearchMarker.setLngLat([lon, lat]).addTo(map);
+      const poi = { type: 'custom', id: customKeyForLonLat(lon, lat), label, lon, lat, def: 30, min: 5, max: 240, step: 5 };
+      addPOIRow(poi);
+      if (placeSearchInputEl) {
+        placeSearchInputEl.value = label;
+        placeSearchInputEl.blur();
+        placeSearchInputEl.removeAttribute('aria-busy');
+      }
+      placeSearchSessionToken = null;
+      if (sublabel) {
+        setPlaceSearchStatus(sublabel, '');
+      } else {
+        setPlaceSearchStatus('', '');
+      }
+    } catch (error) {
+      console.error('Place details failed', error);
+      setPlaceSearchStatus(error && error.message ? error.message : 'Unable to fetch place details.', 'error');
+      if (placeSearchInputEl) placeSearchInputEl.removeAttribute('aria-busy');
+    }
+  }
+
+  function initializePlaceSearch() {
+    placeSearchInputEl = document.getElementById('place-search-input');
+    placeSearchResultsEl = document.getElementById('place-search-results');
+    placeSearchStatusEl = document.getElementById('place-search-status');
+    if (!placeSearchInputEl) return;
+    const scheduleAutocomplete = debounce((value) => {
+      requestPlacesAutocomplete(value);
+    }, PLACE_AUTOCOMPLETE_DEBOUNCE_MS);
+    placeSearchInputEl.addEventListener('focus', () => {
+      placeSearchSessionToken = generatePlacesSessionToken();
+      setPlaceSearchStatus('Type at least two characters to search.', 'info');
+    });
+    placeSearchInputEl.addEventListener('input', (event) => {
+      const value = event.target.value || '';
+      if (value.trim().length < PLACE_AUTOCOMPLETE_MIN_CHARS) {
+        if (placeSearchAbortController) {
+          placeSearchAbortController.abort();
+          placeSearchAbortController = null;
+        }
+        resetPlacesSuggestions();
+        if (value.trim().length === 0) {
+          setPlaceSearchStatus('', '');
+        } else {
+          setPlaceSearchStatus('Keep typing…', 'info');
+        }
+        return;
+      }
+      scheduleAutocomplete(value);
+    });
+    placeSearchInputEl.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown') {
+        if (!placeSearchSuggestions.length) return;
+        event.preventDefault();
+        const next = placeSearchActiveIndex + 1;
+        const wrapped = next >= placeSearchSuggestions.length ? 0 : next;
+        placeSearchActiveIndex = wrapped;
+        updatePlaceSearchHighlight(placeSearchActiveIndex);
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        if (!placeSearchSuggestions.length) return;
+        event.preventDefault();
+        const prev = placeSearchActiveIndex <= 0 ? placeSearchSuggestions.length - 1 : placeSearchActiveIndex - 1;
+        placeSearchActiveIndex = prev;
+        updatePlaceSearchHighlight(placeSearchActiveIndex);
+        return;
+      }
+      if (event.key === 'Enter') {
+        if (placeSearchSuggestions.length > 0) {
+          event.preventDefault();
+          const index = placeSearchActiveIndex >= 0 ? placeSearchActiveIndex : 0;
+          selectPlaceSuggestion(index);
+        }
+      }
+      if (event.key === 'Escape') {
+        resetPlacesSuggestions({ clearStatus: true });
+      }
+    });
+    placeSearchInputEl.addEventListener('blur', () => {
+      setTimeout(() => {
+        if (document.activeElement !== placeSearchInputEl) {
+          resetPlacesSuggestions();
+          placeSearchSessionToken = null;
+        }
+      }, 120);
+    });
+    document.addEventListener('click', (event) => {
+      if (!placeSearchInputEl) return;
+      if (event.target === placeSearchInputEl) return;
+      if (placeSearchResultsEl && placeSearchResultsEl.contains(event.target)) return;
+      resetPlacesSuggestions();
+    });
   }
 
   // (min-column fallback removed; GPU composition only)
@@ -870,6 +1222,7 @@
   // ---------- Map Events ----------
   map.on('load', async () => {
     initPoiSelector();
+    initializePlaceSearch();
     // Wait a tick for metadata to resolve and selector to populate (anchor vs min mode)
     setTimeout(async () => {
       await applyUrlParams();
