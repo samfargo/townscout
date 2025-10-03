@@ -1,3 +1,5 @@
+mod ch;
+
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 use std::collections::BinaryHeap;
@@ -1064,6 +1066,7 @@ fn build_csr_from_arrays(
 
 #[pymodule]
 fn t_hex(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<ch::CHGraph>()?;
     m.add_function(wrap_pyfunction!(kbest_multisource_csr, m)?)?;
     m.add_function(wrap_pyfunction!(kbest_multisource_bucket_csr, m)?)?;
     m.add_function(wrap_pyfunction!(aggregate_h3_topk, m)?)?;
@@ -1071,5 +1074,7 @@ fn t_hex(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_h3_for_nodes, m)?)?;
     m.add_function(wrap_pyfunction!(weakly_connected_components, m)?)?;
     m.add_function(wrap_pyfunction!(build_csr_from_arrays, m)?)?;
+    m.add_function(wrap_pyfunction!(ch::ch_build_from_csr, m)?)?;
+    m.add_function(wrap_pyfunction!(ch::ch_from_bytes, m)?)?;
     Ok(())
 }

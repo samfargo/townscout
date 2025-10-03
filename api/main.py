@@ -32,6 +32,10 @@ try:
     from graph.csr_utils import build_rev_csr
 except Exception:
     build_rev_csr = None  # type: ignore
+try:
+    from graph.ch_cache import load_or_build_ch
+except Exception:
+    load_or_build_ch = None  # type: ignore
 
 APP_NAME = "TownScout D_anchor API"
 
@@ -48,7 +52,6 @@ UNREACH_U16 = np.uint16(65535)
 # Lazily loaded CSR graph + anchors cache for custom D_anchor
 _GRAPH_CACHE: dict[str, dict[str, object]] = {}
 _ANCHOR_CACHE: dict[str, dict[str, object]] = {}
-
 def _mode_to_partition(mode: str) -> int:
     return {"drive": 0, "walk": 2}.get(mode, 0)
 
@@ -512,23 +515,49 @@ def catalog(mode: str = Query("drive", description="Travel mode, e.g. 'drive' or
 def _load_graph_and_anchors(mode: str):
     key = mode
     if key not in _GRAPH_CACHE:
+        print(f"[_load_graph_and_anchors] Loading graph for mode={mode} (first-time load, may take 30-60 seconds)...")
         # Locate PBF by STATE name
         state = os.environ.get("TS_STATE", "massachusetts")
         pbf = os.path.join("data", "osm", f"{state}.osm.pbf")
-        if not os.path.isfile(pbf):
-            raise RuntimeError(f"OSM PBF not found: {pbf}")
+        cache_dir = os.path.join("data", "osm", "cache_csr", f"{state}_{mode}.npycache")
+        if not os.path.isfile(pbf) and not os.path.isdir(cache_dir):
+            raise RuntimeError(f"OSM PBF not found and no CSR cache available: {pbf}")
         # Deferred import to avoid hard dependency at import time
         from graph.pyrosm_csr import load_or_build_csr  # type: ignore
+        import time
+        start = time.time()
         node_ids, indptr, indices, w_sec, node_lats, node_lons, node_h3_by_res, res_used = load_or_build_csr(pbf, mode, [8], False)
+        elapsed = time.time() - start
+        print(f"[_load_graph_and_anchors] Graph loaded in {elapsed:.1f}s: {len(node_ids)} nodes, {len(indices)} edges")
+        if load_or_build_ch is None or build_rev_csr is None:
+            raise RuntimeError("CH helpers unavailable; native module not built")
+        print(f"[_load_graph_and_anchors] Building CSR transpose for CH (one-time)...")
+        rev_start = time.time()
+        indptr_rev, indices_rev, w_rev = build_rev_csr(indptr, indices, w_sec)
+        rev_elapsed = time.time() - rev_start
+        print(f"[_load_graph_and_anchors] CSR transpose built in {rev_elapsed:.1f}s")
+        print(f"[_load_graph_and_anchors] Preparing CH graph (cached, reverse edges) for mode={mode}...")
+        ch_graph = load_or_build_ch(cache_dir, indptr_rev, indices_rev, w_rev, suffix="_rev")
+        try:
+            ch_nodes = getattr(ch_graph, "num_nodes", None)
+        except Exception:
+            ch_nodes = None
+        if isinstance(ch_nodes, int):
+            print(f"[_load_graph_and_anchors] CH ready with {ch_nodes:,} nodes")
         _GRAPH_CACHE[key] = {
             "node_ids": node_ids,
             "indptr": indptr,
             "indices": indices,
             "w_sec": w_sec,
+            "indptr_rev": indptr_rev,
+            "indices_rev": indices_rev,
+            "w_rev": w_rev,
             "lats": node_lats,
             "lons": node_lons,
+            "ch_rev": ch_graph,
         }
     if key not in _ANCHOR_CACHE:
+        print(f"[_load_graph_and_anchors] Loading anchor sites for mode={mode}...")
         sites_path = _find_sites_parquet(mode)
         if not sites_path:
             raise RuntimeError("No anchor sites parquet found")
@@ -544,9 +573,20 @@ def _load_graph_and_anchors(mode: str):
             j = nid_to_idx.get(int(node_id))
             if j is not None:
                 anchor_idx[j] = int(aint)
+        anchor_nodes = np.flatnonzero(anchor_idx >= 0).astype(np.int32, copy=False)
+        anchor_ids = anchor_idx[anchor_nodes].astype(np.int32, copy=False)
+        lats = _GRAPH_CACHE[key]["lats"]  # type: ignore
+        lons = _GRAPH_CACHE[key]["lons"]  # type: ignore
+        anchor_lats = lats[anchor_nodes].astype(np.float32, copy=False)
+        anchor_lons = lons[anchor_nodes].astype(np.float32, copy=False)
+        print(f"[_load_graph_and_anchors] Loaded {len(anchors_df)} anchor sites")
         _ANCHOR_CACHE[key] = {
             "anchors_df": anchors_df,
             "anchor_idx": anchor_idx,
+            "anchor_nodes": anchor_nodes,
+            "anchor_ids": anchor_ids,
+            "anchor_lats": anchor_lats,
+            "anchor_lons": anchor_lons,
         }
     return _GRAPH_CACHE[key], _ANCHOR_CACHE[key]
 
@@ -566,6 +606,37 @@ def _nearest_node_index(lons: np.ndarray, lats: np.ndarray, lon: float, lat: flo
     return j
 
 
+def _approx_anchor_mask(
+    anchor_lats: np.ndarray,
+    anchor_lons: np.ndarray,
+    lat: float,
+    lon: float,
+    minutes: float,
+    speed_m_per_min: float = 1500.0,
+    pad_factor: float = 1.4,
+) -> np.ndarray:
+    """Return boolean mask of anchors within a generous straight-line radius for the requested minutes.
+
+    Uses a fast equirectangular projection to approximate great-circle distance. The radius is
+    minutes * speed_m_per_min with an additional pad_factor safety margin to avoid false negatives.
+    """
+    if anchor_lats.size == 0:
+        return np.zeros(0, dtype=bool)
+    minutes = max(float(minutes), 0.0)
+    if minutes <= 0:
+        return np.zeros(anchor_lats.shape, dtype=bool)
+    radius_m = minutes * float(speed_m_per_min) * float(pad_factor)
+    if radius_m <= 0:
+        return np.zeros(anchor_lats.shape, dtype=bool)
+    m_per_deg = 111000.0
+    lat_rad = float(np.deg2rad(lat))
+    cos_lat = max(np.cos(lat_rad), 1e-4)
+    dx = (anchor_lons.astype(np.float64) - float(lon)) * cos_lat * m_per_deg
+    dy = (anchor_lats.astype(np.float64) - float(lat)) * m_per_deg
+    dist2 = dx * dx + dy * dy
+    return dist2 <= (radius_m * radius_m)
+
+
 @app.get("/api/d_anchor_custom")
 def get_d_anchor_custom(
     lon: float = Query(..., description="Longitude of custom location"),
@@ -578,39 +649,67 @@ def get_d_anchor_custom(
     One-off D_anchor for a custom point. Returns {anchor_int_id: seconds} suitable
     for GPU composition with T_hex tiles.
     """
+    print(f"[d_anchor_custom] Request: lon={lon}, lat={lat}, mode={mode}, cutoff={cutoff}min")
     try:
         G, A = _load_graph_and_anchors(mode)
         node_ids = G["node_ids"]  # type: ignore
-        indptr = G["indptr"]  # type: ignore
-        indices = G["indices"]  # type: ignore
-        w_sec = G["w_sec"]  # type: ignore
         lats = G["lats"]  # type: ignore
         lons = G["lons"]  # type: ignore
         anchor_idx = A["anchor_idx"]  # type: ignore
+        anchor_nodes = A.get("anchor_nodes")  # type: ignore
+        anchor_ids = A.get("anchor_ids")  # type: ignore
+        anchor_lats = A.get("anchor_lats")  # type: ignore
+        anchor_lons = A.get("anchor_lons")  # type: ignore
+        if anchor_nodes is None or anchor_ids is None or anchor_lats is None or anchor_lons is None:
+            anchor_nodes = np.flatnonzero(anchor_idx >= 0).astype(np.int32, copy=False)
+            anchor_ids = anchor_idx[anchor_nodes].astype(np.int32, copy=False)
+            anchor_lats = lats[anchor_nodes].astype(np.float32, copy=False)
+            anchor_lons = lons[anchor_nodes].astype(np.float32, copy=False)
+            A["anchor_nodes"] = anchor_nodes
+            A["anchor_ids"] = anchor_ids
+            A["anchor_lats"] = anchor_lats
+            A["anchor_lons"] = anchor_lons
+        anchor_nodes = np.asarray(anchor_nodes, dtype=np.int32)
+        anchor_ids = np.asarray(anchor_ids, dtype=np.int32)
+        anchor_lats = np.asarray(anchor_lats, dtype=np.float32)
+        anchor_lons = np.asarray(anchor_lons, dtype=np.float32)
+        if anchor_nodes.size == 0:
+            return {}
 
         # Find nearest node to the custom lon/lat
         j_custom = _nearest_node_index(lons, lats, lon, lat)
+        print(f"[d_anchor_custom] Nearest node: {node_ids[j_custom]} at index {j_custom}")
 
-        # Build CSR transpose and run single-source K=1 from the custom node
-        from t_hex import kbest_multisource_bucket_csr  # type: ignore
-        indptr_rev, indices_rev, w_rev = build_rev_csr(indptr, indices, w_sec)
+        ch_graph = G.get("ch_rev")
+        if ch_graph is None:
+            raise RuntimeError("CH graph missing from graph cache")
+            
         cutoff_s = int(cutoff) * 60
         overflow_s = int(overflow_cutoff) * 60
-        src = np.asarray([j_custom], dtype=np.int32)
-        best_src_idx, time_s = kbest_multisource_bucket_csr(
-            indptr_rev, indices_rev, w_rev, src, 1, cutoff_s, overflow_s, 1, False, None
+        limit_s = max(cutoff_s, overflow_s)
+        print(
+            f"[d_anchor_custom] Running CH+PHAST query to {len(anchor_nodes)} anchors (cutoff={cutoff}min, overflow={overflow_cutoff}min)..."
         )
-        # Map each anchor node index to its time
-        # time_s is shape [N,1]; time_s[j] is time from node j to the custom source
-        ts = np.asarray(time_s).reshape(-1)
+        import time
+        start = time.time()
+        # Use query_subset to target only anchor nodes - much faster than query_all
+        ts_anchor = np.asarray(ch_graph.query_subset(int(j_custom), anchor_nodes, limit_s), dtype=np.uint32)
+        elapsed = time.time() - start
+        print(f"[d_anchor_custom] CH query completed in {elapsed:.3f}s")
+
         out: Dict[str, int] = {}
-        for j, aint in enumerate(anchor_idx.tolist()):
-            if aint < 0:
-                continue
-            t = int(ts[j])
-            if t < 0:
-                t = int(UNREACH_U16)
-            out[str(int(aint))] = int(t)
+        reachable_count = 0
+        inf_val = np.uint32(0xFFFFFFFF)
+        sentinel_u32 = np.uint32(int(UNREACH_U16))
+        ts_anchor = np.where(ts_anchor == inf_val, sentinel_u32, ts_anchor)
+        ts_anchor = np.minimum(ts_anchor, sentinel_u32)
+        ts_anchor_u16 = ts_anchor.astype(np.uint16, copy=False)
+        for aid, t_raw in zip(anchor_ids, ts_anchor_u16):
+            t = int(t_raw)
+            if t < int(UNREACH_U16):
+                reachable_count += 1
+            out[str(int(aid))] = t
+        print(f"[d_anchor_custom] Computed {len(out)} anchor times, {reachable_count} reachable within cutoff")
         return out
     except Exception as e:
         import traceback
@@ -660,7 +759,7 @@ def poi_points(
     """
     brand_list = [b.strip() for b in str(brands).split(",") if b.strip()]
     if not brand_list:
-        raise HTTPException(status_code=400, detail="No brand ids provided")
+        return {"type": "FeatureCollection", "features": []}
 
     df = _load_canonical_pois()
     if df.empty:
