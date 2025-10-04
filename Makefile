@@ -206,4 +206,4 @@ clean:  ## Clean all generated data files
 
 serve: ## Serve the frontend + tiles via FastAPI (supports HTTP Range)
 	@echo "Serving frontend at http://localhost:5173/tiles/web/index.html"
-	.venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 5173 --reload
+	.venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 5173 --reload --env-file .env

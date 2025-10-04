@@ -379,7 +379,7 @@
       selectedPOIs[existingIdx] = merged;
       if (poi.label && poi.label !== existing.label) {
         const labelEl = document.querySelector(`#row_${poi.type}_${poi.id} label[for="slider_${poi.id}"]`);
-        if (labelEl) labelEl.textContent = `${poi.label} (minutes)`;
+        if (labelEl) labelEl.textContent = `${poi.label}`;
       }
       return;
     }
@@ -389,7 +389,7 @@
     row.className = 'row';
     row.id = `row_${poi.type}_${poi.id}`;
     row.innerHTML = `
-      <label for="slider_${poi.id}">${poi.label} (minutes)</label>
+      <label for="slider_${poi.id}">${poi.label}</label>
       <input id="slider_${poi.id}" type="range" min="${poi.min}" max="${poi.max}" step="${poi.step}" value="${poi.def}">
       <span id="val_${poi.id}">${poi.def}</span>
       <label class="pins-toggle" title="Show pins for ${poi.label}"><input id="pins_${poi.type}_${poi.id}" type="checkbox"> Pins</label>

@@ -149,61 +149,66 @@ def _parse_location_bias(location_bias: Optional[str]) -> Optional[dict]:
 
 
 def _normalize_autocomplete_prediction(pred: dict) -> dict:
-    place_id = pred.get("placeId") or pred.get("predictionId")
-    place_types = pred.get("types") or pred.get("placeTypes") or []
-    primary = None
-    secondary = None
-    text = pred.get("text") or {}
-    if isinstance(text, dict):
-        primary = text.get("text")
-        secondary = text.get("secondaryText")
+    place_types = pred.get("types") or []
+    text_blob = pred.get("text")
     structured = pred.get("structuredFormat") or {}
-    if isinstance(structured, dict):
-        primary = _coalesce_text(structured.get("mainText"), primary)
-        secondary = _coalesce_text(structured.get("secondaryText"), secondary)
     place_blob = pred.get("place") or {}
     location = place_blob.get("location") or {}
-    lat = location.get("latitude")
-    lon = location.get("longitude")
-    bbox = _extract_bbox(place_blob.get("viewport"))
-    label = _coalesce_text(primary, place_blob.get("displayName", {}).get("text"), place_blob.get("formattedAddress"))
-    sublabel = _coalesce_text(secondary, place_blob.get("formattedAddress"))
+
+    label = _coalesce_text(
+        text_blob.get("text") if isinstance(text_blob, dict) else text_blob if isinstance(text_blob, str) else None,
+        structured.get("mainText", {}).get("text") if isinstance(structured.get("mainText"), dict) else structured.get("mainText"),
+        place_blob.get("displayName", {}).get("text") if isinstance(place_blob.get("displayName"), dict) else None,
+    )
+
+    secondary = structured.get("secondaryText") if isinstance(structured, dict) else None
+    if isinstance(secondary, dict):
+        secondary_text = secondary.get("text")
+    else:
+        secondary_text = secondary
+    sublabel = _coalesce_text(place_blob.get("formattedAddress"), secondary_text)
+
     try:
-        lat_f = float(lat) if lat is not None else None
-        lon_f = float(lon) if lon is not None else None
+        lat_raw = location.get("latitude")
+        lon_raw = location.get("longitude")
+        lat_f = float(lat_raw) if lat_raw is not None else None
+        lon_f = float(lon_raw) if lon_raw is not None else None
     except (TypeError, ValueError):
         lat_f = None
         lon_f = None
+
     return {
-        "id": place_id,
+        "id": pred.get("placeId"),
         "type": _classify_place(place_types),
-        "label": label,
+        "label": label or sublabel or pred.get("placeId"),
         "sublabel": sublabel,
         "lat": lat_f,
         "lon": lon_f,
-        "bbox": bbox,
+        "bbox": _extract_bbox(place_blob.get("viewport")),
     }
 
 
 def _normalize_place_detail(place: dict) -> dict:
     types = place.get("types") if isinstance(place, dict) else []
-    display_name = None
-    dn_blob = place.get("displayName") if isinstance(place, dict) else None
-    if isinstance(dn_blob, dict):
-        display_name = dn_blob.get("text")
+    display_name = place.get("displayName")
     formatted = place.get("formattedAddress")
     short_formatted = place.get("shortFormattedAddress")
     location = place.get("location") or {}
-    lat = location.get("latitude")
-    lon = location.get("longitude")
-    bbox = _extract_bbox(place.get("viewport"))
+
     try:
-        lat_f = float(lat) if lat is not None else None
-        lon_f = float(lon) if lon is not None else None
+        lat_f = float(location.get("latitude")) if location.get("latitude") is not None else None
+        lon_f = float(location.get("longitude")) if location.get("longitude") is not None else None
     except (TypeError, ValueError):
         lat_f = None
         lon_f = None
-    label = _coalesce_text(display_name, formatted, short_formatted)
+
+    display_text = None
+    if isinstance(display_name, dict):
+        display_text = display_name.get("text")
+    elif isinstance(display_name, str):
+        display_text = display_name
+
+    label = _coalesce_text(display_text, formatted, short_formatted)
     sublabel = _coalesce_text(formatted, short_formatted)
     return {
         "id": place.get("id") or place.get("name"),
@@ -212,7 +217,7 @@ def _normalize_place_detail(place: dict) -> dict:
         "sublabel": sublabel,
         "lat": lat_f,
         "lon": lon_f,
-        "bbox": bbox,
+        "bbox": _extract_bbox(place.get("viewport")),
     }
 
 
@@ -735,17 +740,11 @@ def places_autocomplete(
         "Content-Type": "application/json",
         "Accept": "application/json",
         "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-        "X-Goog-FieldMask": ",".join(
-            [
-                "placePrediction.placeId",
-                "placePrediction.text",
-                "placePrediction.structuredFormat",
-                "placePrediction.types",
-                "placePrediction.place.displayName",
-                "placePrediction.place.location",
-                "placePrediction.place.viewport",
-                "placePrediction.place.formattedAddress",
-            ]
+        "X-Goog-FieldMask": (
+            "suggestions.placePrediction.placeId,"
+            "suggestions.placePrediction.text,"
+            "suggestions.placePrediction.structuredFormat,"
+            "suggestions.placePrediction.types"
         ),
     }
 
@@ -759,11 +758,13 @@ def places_autocomplete(
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail="Places Autocomplete unavailable") from exc
 
-    raw_body: Optional[dict] = None
+    print("[places/autocomplete] status", resp.status_code)
+    print("[places/autocomplete] headers", dict(resp.headers))
     try:
         raw_body = resp.json()
     except ValueError:
-        raw_body = None
+        raw_body = resp.text
+    print("[places/autocomplete] body", raw_body)
 
     if resp.status_code == 429:
         detail = _places_error_detail(raw_body) or "Places Autocomplete quota exceeded"
@@ -774,7 +775,13 @@ def places_autocomplete(
     if raw_body is None or not isinstance(raw_body, dict):
         raise HTTPException(status_code=502, detail="Invalid response from Places Autocomplete")
 
-    predictions = raw_body.get("placePredictions") or []
+    predictions = []
+    for suggestion in raw_body.get("suggestions", []):
+        if not isinstance(suggestion, dict):
+            continue
+        pred = suggestion.get("placePrediction")
+        if isinstance(pred, dict):
+            predictions.append(pred)
     normalized: list[dict[str, Any]] = []
     for pred in predictions:
         if not isinstance(pred, dict):
@@ -829,11 +836,13 @@ def places_details(
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail="Places Details unavailable") from exc
 
-    raw_body: Optional[dict] = None
+    print("[places/details] status", resp.status_code)
+    print("[places/details] headers", dict(resp.headers))
     try:
         raw_body = resp.json()
     except ValueError:
-        raw_body = None
+        raw_body = resp.text
+    print("[places/details] body", raw_body)
 
     if resp.status_code == 429:
         detail = _places_error_detail(raw_body) or "Places Details quota exceeded"
@@ -845,9 +854,6 @@ def places_details(
         raise HTTPException(status_code=502, detail="Invalid response from Places Details")
 
     normalized = _normalize_place_detail(raw_body)
-    if normalized.get("lat") is None or normalized.get("lon") is None:
-        raise HTTPException(status_code=502, detail="Place Details response missing coordinates")
-
     return {"result": normalized}
 
 # ---------- Custom D_anchor (one-off for a user-picked point) ----------
