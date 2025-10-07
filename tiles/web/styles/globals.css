@@ -1,0 +1,34 @@
+:root {
+  --sidebar-width: 360px;
+  --color-bg: #f5f7fb;
+  --color-border: #e2e8f0;
+  --color-accent: #2563eb;
+  --color-muted: #64748b;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--color-bg);
+  color: #0f172a;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.maplibregl-ctrl-group button {
+  border-radius: 0.75rem;
+}

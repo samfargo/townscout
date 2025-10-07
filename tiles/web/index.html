@@ -10,92 +10,677 @@
   <!-- Use pmtiles.js for protocol -->
   <script src="/tiles/web/pmtiles.js"></script>
   <style>
-    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
-    #map { position: absolute; top: 0; bottom: 0; width: 100%; }
-    .panel { position: absolute; top: 16px; left: 16px; background: #fff; padding: 14px 16px; border-radius: 10px; z-index: 1; box-shadow: 0 6px 20px rgba(0,0,0,0.12); width: 320px; }
-    .panel h3 { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: #1f2937; }
-    .search-container { margin-bottom: 16px; }
-    .search-container label { display: block; font-size: 13px; color: #374151; margin-bottom: 6px; }
-    .search-box { position: relative; }
-    .search-input { width: 100%; padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 14px; transition: border-color 0.15s ease, box-shadow 0.15s ease; }
-    .search-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.2); }
-    .search-results { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.15); max-height: 260px; overflow-y: auto; z-index: 20; padding: 4px 0; display: none; }
+    :root {
+      --sidebar-width: 360px;
+      --color-bg: #f5f7fb;
+      --color-border: #e2e8f0;
+      --color-accent: #2563eb;
+      --color-muted: #64748b;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--color-bg);
+      color: #0f172a;
+    }
+    .app-shell {
+      position: relative;
+      display: flex;
+      min-height: 100vh;
+      width: 100%;
+    }
+    .sidebar {
+      flex: 0 0 var(--sidebar-width);
+      max-width: var(--sidebar-width);
+      background: #ffffff;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 12px 0 40px rgba(15, 23, 42, 0.08);
+      border-right: 1px solid var(--color-border);
+      z-index: 4;
+      transition: transform 0.3s ease;
+    }
+    .sidebar-inner {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+      padding: 28px 28px 32px;
+      height: 100%;
+      overflow-y: auto;
+    }
+    .sidebar-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .brand-icon {
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #2563eb, #38bdf8);
+      color: #ffffff;
+      font-weight: 600;
+      font-size: 18px;
+      letter-spacing: 0.02em;
+    }
+    .brand-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .brand-copy h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    .brand-copy p {
+      margin: 0;
+      font-size: 13px;
+      color: var(--color-muted);
+    }
+    .quickstart {
+      background: #f8fafc;
+      border: 1px solid var(--color-border);
+      border-radius: 16px;
+      padding: 16px 18px;
+      line-height: 1.55;
+    }
+    .quickstart h4 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+    }
+    .quickstart p {
+      margin: 0;
+      font-size: 13px;
+      color: #334155;
+    }
+    .sidebar-section {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .section-heading {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .section-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #e0f2fe;
+      color: #0284c7;
+      flex-shrink: 0;
+    }
+    .section-heading h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    .section-heading p {
+      margin: 6px 0 0;
+      font-size: 13px;
+      color: var(--color-muted);
+      line-height: 1.5;
+    }
+    .field-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #334155;
+    }
+    .search-box {
+      position: relative;
+    }
+    .search-input {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--color-border);
+      font-size: 14px;
+      background: #ffffff;
+      color: #0f172a;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .search-input::placeholder {
+      color: #94a3b8;
+    }
+    .search-input:focus {
+      outline: none;
+      border-color: var(--color-accent);
+      box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15);
+    }
+    .search-results {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: calc(100% + 4px);
+      background: #ffffff;
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+      box-shadow: 0 18px 36px rgba(15, 23, 42, 0.18);
+      max-height: 260px;
+      overflow-y: auto;
+      z-index: 20;
+      padding: 6px 0;
+      display: none;
+    }
     .search-results.open { display: block; }
-    .search-item { padding: 8px 12px; cursor: pointer; }
-    .search-item:hover, .search-item.active { background: #eff6ff; }
-    .search-primary { font-size: 14px; font-weight: 600; color: #111827; }
-    .search-secondary { font-size: 12px; color: #6b7280; margin-top: 2px; }
-    .search-status { margin-top: 6px; font-size: 12px; color: #6b7280; min-height: 16px; }
+    .search-item {
+      padding: 10px 14px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .search-item:hover,
+    .search-item.active {
+      background: #ebf2ff;
+    }
+    .search-primary {
+      font-size: 14px;
+      font-weight: 600;
+      color: #111827;
+    }
+    .search-secondary {
+      font-size: 12px;
+      color: #6b7280;
+    }
+    .search-status {
+      font-size: 12px;
+      color: var(--color-muted);
+      min-height: 16px;
+    }
     .search-status.error { color: #dc2626; }
-    .search-status.info { color: #2563eb; }
-    .row { display: flex; align-items: center; margin-bottom: 10px; gap: 10px; }
-    .row label { flex: 1; font-size: 13px; color: #374151; }
-    .row input[type="range"] { flex: 1.6; }
-    .row span { font-weight: 600; width: 36px; text-align: right; color: #111827; }
-    .row select { flex: 1; padding: 6px 8px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; color: #111827; font-size: 13px; }
-    .row select:focus { outline: none; border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59,130,246,0.25); }
-    .filter-row { align-items: center; }
-    .filter-row .spacer { flex: 0.2; }
-    .pins-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #374151; }
+    .search-status.info { color: var(--color-accent); }
+    select {
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--color-border);
+      background: #ffffff;
+      font-size: 14px;
+      color: #0f172a;
+      appearance: none;
+      background-image: linear-gradient(45deg, transparent 50%, #94a3b8 50%), linear-gradient(135deg, #94a3b8 50%, transparent 50%);
+      background-position: calc(100% - 18px) calc(50% - 4px), calc(100% - 12px) calc(50% - 4px);
+      background-size: 6px 6px, 6px 6px;
+      background-repeat: no-repeat;
+      padding-right: 36px;
+    }
+    select:focus {
+      outline: none;
+      border-color: var(--color-accent);
+      box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+    }
+    .mode-picker,
+    .poi-picker {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .poi-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .helper-text {
+      margin: 0;
+      font-size: 12px;
+      color: var(--color-muted);
+    }
+    .btn {
+      border: none;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.2s ease;
+      padding: 10px 14px;
+    }
+    .btn:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 2px;
+    }
+    .btn-primary {
+      background: var(--color-accent);
+      color: #ffffff;
+      box-shadow: 0 12px 24px rgba(37, 99, 235, 0.22);
+    }
+    .btn-primary:hover {
+      background: #1d4ed8;
+      transform: translateY(-1px);
+    }
+    .btn-ghost {
+      background: #eef2ff;
+      color: #4f46e5;
+    }
+    .btn-ghost:hover {
+      background: #e0e7ff;
+    }
+    .btn-surface {
+      background: #f8fafc;
+      color: #0f172a;
+      border: 1px solid var(--color-border);
+    }
+    .btn-surface:hover {
+      background: #eef2f8;
+    }
+    .btn-icon {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      border-radius: 50%;
+      background: #f1f5f9;
+      color: #475569;
+    }
+    .btn-icon:hover {
+      background: #e2e8f0;
+    }
+    .btn-full { width: 100%; }
+    .remove-btn {
+      border: none;
+      background: transparent;
+      cursor: pointer;
+    }
+    .filters-empty {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 16px;
+      border-radius: 14px;
+      border: 1px dashed #cbd5f5;
+      background: rgba(59, 130, 246, 0.04);
+      color: #1d4ed8;
+      font-size: 13px;
+    }
+    .filters-empty strong { font-size: 13px; }
+    .filter-rows {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .filter-card {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 16px;
+      border-radius: 16px;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      box-shadow: 0 12px 20px rgba(15, 23, 42, 0.04);
+    }
+    .filter-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .filter-name {
+      font-size: 15px;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    .filter-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .pins-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #475569;
+      cursor: pointer;
+      user-select: none;
+    }
     .pins-toggle input { cursor: pointer; }
-    .remove-btn { background: transparent; border: none; color: #6b7280; cursor: pointer; padding: 4px 6px; border-radius: 6px; font-size: 13px; }
-    .remove-btn:hover { background: #f3f4f6; color: #111827; }
-    .status { margin-top: 10px; font-size: 12px; }
-    .nudge { font-size: 12px; color: #666; background: #eee; padding: 5px; border-radius: 3px; display: none; }
-    .footer { position: absolute; bottom: 5px; right: 10px; font-size: 11px; background: rgba(255,255,255,0.7); padding: 2px 5px; border-radius: 3px; z-index: 1; }
-    .hover-box { position: absolute; top: 10px; right: 10px; background: #fff; padding: 10px 12px; border-radius: 6px; z-index: 2; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 220px; max-width: 280px; pointer-events: none; }
-    .hover-box h4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
-    .hover-box .kv { display: flex; justify-content: space-between; font-size: 13px; margin: 4px 0; }
-    .hover-box .muted { color: #666; font-size: 12px; }
-    .towns-box { position: absolute; top: 120px; right: 10px; background: #fff; padding: 10px 12px; border-radius: 6px; z-index: 2; box-shadow: 0 1px 3px rgba(0,0,0,0.1); min-width: 240px; max-width: 300px; pointer-events: auto; }
-    .towns-box h4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
-    .towns-box ul { margin: 0; padding-left: 18px; max-height: 220px; overflow: auto; }
-    .towns-box .muted { color: #666; font-size: 12px; }
-    .loading-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); z-index: 9999; display: none; align-items: center; justify-content: center; }
+    .filter-slider {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+    }
+    input[type="range"] { accent-color: var(--color-accent); }
+    .slider-value {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 44px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .nudge {
+      font-size: 12px;
+      color: #475569;
+      background: #f8fafc;
+      border-radius: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--color-border);
+      display: none;
+    }
+    #hover-box {
+      background: #f8fafc;
+      border: 1px solid var(--color-border);
+      border-radius: 16px;
+      padding: 18px 20px;
+      box-shadow: inset 0 0 0 0 rgba(0,0,0,0);
+    }
+    #hover-box h4 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    #hover-box .kv {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+      color: #0f172a;
+    }
+    .muted {
+      color: var(--color-muted);
+      font-size: 13px;
+    }
+    .sidebar-footer {
+      margin-top: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .sidebar-footer p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--color-muted);
+    }
+    .map-surface {
+      position: relative;
+      flex: 1;
+      background: #0f172a;
+    }
+    #map {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+    .map-footer {
+      position: absolute;
+      left: 16px;
+      bottom: 16px;
+      font-size: 11px;
+      background: rgba(255, 255, 255, 0.8);
+      padding: 4px 10px;
+      border-radius: 999px;
+      color: #334155;
+      backdrop-filter: blur(4px);
+      box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
+      pointer-events: none;
+    }
+    .sidebar-toggle {
+      display: none;
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 5;
+      border: none;
+      background: rgba(15, 23, 42, 0.8);
+      color: #ffffff;
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+    .sidebar-toggle:hover { background: rgba(15, 23, 42, 0.9); }
+    .sidebar-backdrop {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.28);
+      z-index: 3;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .sidebar-backdrop.visible {
+      display: block;
+      opacity: 1;
+    }
+    @media (max-width: 1100px) {
+      :root { --sidebar-width: 320px; }
+      .sidebar-inner { padding: 24px 24px 28px; }
+    }
+    @media (max-width: 960px) {
+      .sidebar {
+        position: absolute;
+        inset: 0 auto 0 0;
+        max-width: min(420px, 92vw);
+        transform: translateX(-105%);
+        height: 100%;
+      }
+      .sidebar.open {
+        transform: translateX(0);
+        box-shadow: 24px 0 48px rgba(15, 23, 42, 0.25);
+      }
+      .sidebar-toggle { display: inline-flex; }
+      .map-surface { flex: 1; }
+    }
+    @media (max-width: 640px) {
+      .sidebar-toggle {
+        top: 14px;
+        left: 14px;
+        width: 40px;
+        height: 40px;
+      }
+      .sidebar-inner { padding: 22px 20px 26px; }
+      .poi-controls {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      select { width: 100%; }
+    }
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.48);
+      z-index: 9999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
     .loading-overlay.active { display: flex; }
-    .loading-box { background: white; padding: 24px 32px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.3); text-align: center; }
-    .loading-spinner { width: 40px; height: 40px; border: 4px solid #e5e7eb; border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+    .loading-box {
+      background: #ffffff;
+      padding: 28px 36px;
+      border-radius: 16px;
+      box-shadow: 0 30px 60px rgba(15, 23, 42, 0.25);
+      text-align: center;
+    }
+    .loading-spinner {
+      width: 42px;
+      height: 42px;
+      border: 4px solid #e2e8f0;
+      border-top-color: var(--color-accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 18px;
+    }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
   </style>
 </head>
 <body>
-<div class="panel">
-  <h3>TownScout Criteria</h3>
-  <div class="search-container">
-    <label for="place-search-input">Search for a custom location</label>
-    <div class="search-box">
-      <input id="place-search-input" class="search-input" type="text" placeholder="Search for an address or place" autocomplete="off" aria-autocomplete="list" aria-controls="place-search-results" aria-expanded="false" />
-      <div id="place-search-results" class="search-results" role="listbox"></div>
+<div class="app-shell">
+  <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">
+    <span class="sr-only">Toggle filters panel</span>
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <line x1="4" y1="6" x2="20" y2="6"></line>
+      <line x1="4" y1="12" x2="20" y2="12"></line>
+      <line x1="4" y1="18" x2="20" y2="18"></line>
+    </svg>
+  </button>
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-inner">
+      <div class="sidebar-header">
+        <div class="brand-icon" aria-hidden="true">TS</div>
+        <div class="brand-copy">
+          <h1>TownScout</h1>
+          <p>Explore livability by travel time</p>
+        </div>
+      </div>
+      <div class="quickstart">
+        <h4>Getting started</h4>
+        <p>Search for a home base, choose how you travel, then layer the places you rely on to reveal reachable neighborhoods.</p>
+      </div>
+      <div class="sidebar-section">
+        <div class="section-heading">
+          <span class="section-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="7"></circle>
+              <line x1="20" y1="20" x2="16.65" y2="16.65"></line>
+            </svg>
+          </span>
+          <div>
+            <h2>Set Your Home Base</h2>
+            <p>Search for an address or drop a pin to anchor the map to your day-to-day starting point.</p>
+          </div>
+        </div>
+        <div class="field-group search-container">
+          <label for="place-search-input">Custom location</label>
+          <div class="search-box">
+            <input id="place-search-input" class="search-input" type="text" placeholder="Search for an address or place (e.g. Seattle, WA)" autocomplete="off" aria-autocomplete="list" aria-controls="place-search-results" aria-expanded="false" />
+            <div id="place-search-results" class="search-results" role="listbox"></div>
+          </div>
+          <div id="place-search-status" class="search-status"></div>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="section-heading">
+          <span class="section-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="4" y1="21" x2="4" y2="14"></line>
+              <line x1="4" y1="10" x2="4" y2="3"></line>
+              <line x1="12" y1="21" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12" y2="3"></line>
+              <line x1="20" y1="21" x2="20" y2="16"></line>
+              <line x1="20" y1="12" x2="20" y2="3"></line>
+              <line x1="1" y1="14" x2="7" y2="14"></line>
+              <line x1="9" y1="8" x2="15" y2="8"></line>
+              <line x1="17" y1="16" x2="23" y2="16"></line>
+            </svg>
+          </span>
+          <div>
+            <h2>Build Your Criteria</h2>
+            <p>Select travel mode, then add points of interest you want nearby. Adjust minutes to fine-tune reach.</p>
+          </div>
+        </div>
+        <div id="filters" class="field-group">
+          <div class="mode-picker">
+            <label for="mode-select">Travel mode</label>
+            <select id="mode-select">
+              <option value="drive" selected>Drive</option>
+              <option value="walk">Walk</option>
+            </select>
+          </div>
+          <div class="poi-picker">
+            <label for="poi-select">Add a place type</label>
+            <div class="poi-controls">
+              <select id="poi-select"></select>
+              <button id="add-poi" class="btn btn-primary" type="button">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+                <span>Add</span>
+              </button>
+              <button id="add-custom" class="btn btn-surface" type="button" title="Pick a custom location on the map">Map Pick</button>
+            </div>
+            <p class="helper-text">Need inspiration? Try layering groceries, daycare, coffee, or your office.</p>
+          </div>
+          <div id="filters-empty-state" class="filters-empty">
+            <strong>No filters yet.</strong>
+            <span>Add a point of interest or drop a custom pin to see matching areas.</span>
+          </div>
+          <div id="filter-rows" class="filter-rows"></div>
+          <div id="nudge" class="nudge">Try increasing minutes to see more areas.</div>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="section-heading">
+          <span class="section-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9"></circle>
+              <polyline points="12 7 12 12 15 15"></polyline>
+            </svg>
+          </span>
+          <div>
+            <h2>Live Travel Insights</h2>
+            <p>Hover any hex on the map to compare travel time for each of your saved places.</p>
+          </div>
+        </div>
+        <div id="hover-box">
+          <h4>Travel Time (minutes)</h4>
+          <div id="hover-content" class="muted">Move cursor over a hex</div>
+        </div>
+      </div>
+      <div class="sidebar-footer">
+        <button id="share" class="btn btn-ghost btn-full" type="button">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"></path>
+            <polyline points="16 6 12 2 8 6"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          <span class="btn-label">Share current map</span>
+        </button>
+        <p>Copy a link to revisit this exact combination of travel mode and places.</p>
+      </div>
     </div>
-    <div id="place-search-status" class="search-status"></div>
+  </aside>
+  <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+  <div class="map-surface">
+    <div id="map"></div>
+    <div class="map-footer">Map data © OpenStreetMap contributors</div>
   </div>
-  <div id="filters">
-    <div class="row filter-row">
-      <label>Mode</label>
-      <select id="mode-select">
-        <option value="drive" selected>Drive</option>
-        <option value="walk">Walk</option>
-      </select>
-      <span class="spacer"></span>
-    </div>
-    <!-- POI selector + dynamic sliders -->
-    <div class="row filter-row">
-      <label for="poi-select">Add POI</label>
-      <select id="poi-select"></select>
-      <button id="add-poi" class="remove-btn" title="Add selected POI">Add</button>
-      <button id="add-custom" class="remove-btn" title="Pick a custom location on the map">Custom</button>
-    </div>
-    <div id="filter-rows"></div>
-  </div>
-  <div id="nudge" class="nudge">Try increasing minutes to see more areas.</div>
-  <button id="share" style="width: 100%; margin-top: 10px; padding: 5px;">Share Map</button>
-</div>
-
-<div id="map"></div>
-
-<div id="hover-box" class="hover-box">
-  <h4>Travel Time (minutes)</h4>
-  <div id="hover-content" class="muted">Move cursor over a hex</div>
 </div>
 
 <div id="loading-overlay" class="loading-overlay">
@@ -103,10 +688,6 @@
     <div class="loading-spinner"></div>
     <div id="loading-text" style="font-size: 14px; color: #374151;">Computing drive times...</div>
   </div>
-</div>
-
-<div class="footer">
-  Map data © OpenStreetMap contributors
 </div>
 
 <script>
@@ -226,6 +807,71 @@
   const selectedPOIs = [];
   const activePins = {}; // rowKey -> { brands: string[], sourceId: string, layerIds: string[] }
   let PICKING_CUSTOM = false;
+
+  const sidebarEl = document.getElementById('sidebar');
+  const sidebarToggleBtn = document.getElementById('sidebar-toggle');
+  const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+  const filtersEmptyStateEl = document.getElementById('filters-empty-state');
+  const viewportQuery = window.matchMedia('(max-width: 960px)');
+
+  function isCompactViewport() {
+    return viewportQuery.matches;
+  }
+
+  function setSidebarOpen(open) {
+    if (!sidebarEl) return;
+    if (open) {
+      sidebarEl.classList.add('open');
+    } else {
+      sidebarEl.classList.remove('open');
+    }
+    if (sidebarToggleBtn) {
+      sidebarToggleBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+    if (sidebarBackdrop) {
+      sidebarBackdrop.classList.toggle('visible', open && isCompactViewport());
+    }
+  }
+
+  function toggleSidebar() {
+    if (!sidebarEl) return;
+    const shouldOpen = !sidebarEl.classList.contains('open');
+    setSidebarOpen(shouldOpen);
+  }
+
+  function applyViewportState(e) {
+    const matches = e && typeof e.matches === 'boolean' ? e.matches : isCompactViewport();
+    if (matches) {
+      setSidebarOpen(false);
+    } else {
+      setSidebarOpen(true);
+    }
+  }
+
+  if (typeof viewportQuery.addEventListener === 'function') {
+    viewportQuery.addEventListener('change', applyViewportState);
+  } else if (typeof viewportQuery.addListener === 'function') {
+    viewportQuery.addListener(applyViewportState);
+  }
+
+  if (sidebarToggleBtn) {
+    sidebarToggleBtn.addEventListener('click', () => {
+      toggleSidebar();
+    });
+  }
+
+  if (sidebarBackdrop) {
+    sidebarBackdrop.addEventListener('click', () => setSidebarOpen(false));
+  }
+
+  applyViewportState(viewportQuery);
+
+  function updateFilterEmptyState() {
+    if (!filtersEmptyStateEl) return;
+    filtersEmptyStateEl.style.display = selectedPOIs.length > 0 ? 'none' : 'flex';
+  }
+
+  updateFilterEmptyState();
 
   function showLoading(text = 'Computing drive times...') {
     const overlay = document.getElementById('loading-overlay');
@@ -381,21 +1027,38 @@
         const labelEl = document.querySelector(`#row_${poi.type}_${poi.id} label[for="slider_${poi.id}"]`);
         if (labelEl) labelEl.textContent = `${poi.label}`;
       }
+      updateFilterEmptyState();
       return;
     }
     selectedPOIs.push(poi);
     const container = document.getElementById('filter-rows');
+    if (!container) return;
     const row = document.createElement('div');
-    row.className = 'row';
+    row.className = 'filter-card';
     row.id = `row_${poi.type}_${poi.id}`;
     row.innerHTML = `
-      <label for="slider_${poi.id}">${poi.label}</label>
-      <input id="slider_${poi.id}" type="range" min="${poi.min}" max="${poi.max}" step="${poi.step}" value="${poi.def}">
-      <span id="val_${poi.id}">${poi.def}</span>
-      <label class="pins-toggle" title="Show pins for ${poi.label}"><input id="pins_${poi.type}_${poi.id}" type="checkbox"> Pins</label>
-      <button class="remove-btn" id="rm_${poi.id}" title="Remove ${poi.label}">✕</button>
+      <div class="filter-header">
+        <label class="filter-name" for="slider_${poi.id}">${poi.label}</label>
+        <div class="filter-actions">
+          <label class="pins-toggle" title="Show pins for ${poi.label}">
+            <input id="pins_${poi.type}_${poi.id}" type="checkbox">
+            <span>Pins</span>
+          </label>
+          <button class="remove-btn btn-icon" type="button" id="rm_${poi.id}" title="Remove ${poi.label}" aria-label="Remove ${poi.label}">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="filter-slider">
+        <input id="slider_${poi.id}" type="range" min="${poi.min}" max="${poi.max}" step="${poi.step}" value="${poi.def}">
+        <span id="val_${poi.id}" class="slider-value">${poi.def}</span>
+      </div>
     `;
     container.appendChild(row);
+    updateFilterEmptyState();
     document.getElementById(`slider_${poi.id}`).addEventListener('input', debouncedUpdate);
     const pinsEl = document.getElementById(`pins_${poi.type}_${poi.id}`);
     if (pinsEl) {
@@ -413,6 +1076,7 @@
         delete dAnchorCache[poi.id];
         delete customCoverageMinutes[poi.id];
       }
+      updateFilterEmptyState();
       updateMapFilter();
     });
     if (poi.type === 'custom') {
@@ -745,6 +1409,9 @@
       placeSearchMarker.setLngLat([lon, lat]).addTo(map);
       const poi = { type: 'custom', id: customKeyForLonLat(lon, lat), label, lon, lat, def: 30, min: 5, max: 240, step: 5 };
       addPOIRow(poi);
+      if (isCompactViewport()) {
+        setSidebarOpen(false);
+      }
       if (placeSearchInputEl) {
         placeSearchInputEl.value = label;
         placeSearchInputEl.blur();
@@ -1107,9 +1774,22 @@
     url.search = params.toString();
     navigator.clipboard.writeText(url.toString()).then(() => {
       const btn = document.getElementById('share');
-      const originalText = btn.textContent;
-      btn.textContent = 'Copied!';
-      setTimeout(() => (btn.textContent = originalText), 1500);
+      if (!btn) return;
+      const labelEl = btn.querySelector('.btn-label');
+      const originalText = labelEl ? labelEl.textContent : btn.textContent;
+      if (labelEl) {
+        labelEl.textContent = 'Copied!';
+      } else {
+        btn.textContent = 'Copied!';
+      }
+      setTimeout(() => {
+        const fallback = originalText || 'Share current map';
+        if (labelEl) {
+          labelEl.textContent = fallback;
+        } else {
+          btn.textContent = fallback;
+        }
+      }, 1500);
     });
   });
 
