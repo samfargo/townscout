@@ -32,12 +32,21 @@ export default function ShareButton() {
   }, []);
 
   return (
-    <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+    <div className="flex items-center justify-between rounded-2xl border border-stone-300 bg-[#f3ecd9] px-4 py-3 shadow-[0_12px_28px_-24px_rgba(76,54,33,0.25)]">
       <div>
-        <p className="text-sm font-semibold text-slate-800">Share this view</p>
-        <p className="text-xs text-slate-500">Copy a link with the current filters applied.</p>
+        <p className="text-sm font-semibold text-stone-900">Share this view</p>
+        <p className="text-xs text-stone-500">Copy a link with the current filters applied.</p>
       </div>
-      <Button size="sm" variant="outline" onClick={handleShare}>
+      <Button
+        size="sm"
+        variant="outline"
+        className={
+          copied
+            ? 'border border-stone-400 bg-stone-200 text-stone-800 focus-visible:ring-amber-700'
+            : 'border border-amber-900 bg-amber-800 text-amber-50 shadow-sm transition-transform hover:-translate-y-0.5 hover:bg-amber-900 focus-visible:ring-amber-700'
+        }
+        onClick={handleShare}
+      >
         {copied ? 'Copied' : 'Copy link'}
       </Button>
     </div>

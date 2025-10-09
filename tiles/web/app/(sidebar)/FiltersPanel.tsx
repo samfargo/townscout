@@ -20,6 +20,19 @@ import { useStore, type Mode } from '@/lib/state/store';
 
 const SLIDER_DEBOUNCE_MS = 120;
 
+const antiqueCardClass =
+  'border-stone-300 bg-[#fbf7ec] p-0 shadow-[0_18px_32px_-28px_rgba(76,54,33,0.25)]';
+const antiqueHeaderClass =
+  'mb-0 flex items-center justify-between gap-3 rounded-2xl rounded-b-none border-b border-stone-200 bg-[#f2ebd9] px-4 py-3';
+const antiqueContentClass = 'space-y-4 px-4 pb-4 pt-3 text-sm text-stone-700';
+const antiqueLabelClass = 'text-xs uppercase tracking-wide text-stone-500';
+const antiqueBadgeClass =
+  'border border-amber-900 bg-amber-800 text-amber-50 shadow-sm';
+const antiqueOutlineButtonClass =
+  'border border-stone-300 bg-[#fbf7ec] text-stone-800 shadow-sm transition-transform hover:-translate-y-0.5 hover:bg-[#f2ebd9] focus-visible:ring-amber-700';
+const antiqueOutlineActiveClass =
+  'border border-amber-900 bg-amber-800 text-amber-50 shadow-sm transition-transform hover:-translate-y-0.5 hover:bg-amber-900 focus-visible:ring-amber-700';
+
 export default function FiltersPanel() {
   const pois = useStore((state) => state.pois);
   const sliders = useStore((state) => state.sliders);
@@ -75,11 +88,11 @@ export default function FiltersPanel() {
         const currentMode = poiModes[poi.id] ?? defaultMode;
         const pendingModeChange = modePending[poi.id] ?? false;
         return (
-          <Card key={poi.id}>
-            <CardHeader>
+          <Card key={poi.id} className={antiqueCardClass}>
+            <CardHeader className={antiqueHeaderClass}>
               <div>
-                <CardTitle>{poi.label}</CardTitle>
-                <p className="text-xs text-slate-500 capitalize">{poi.type}</p>
+                <CardTitle className="font-serif text-stone-900">{poi.label}</CardTitle>
+                <p className="text-xs capitalize text-stone-500">{poi.type}</p>
               </div>
               <Button
                 variant="ghost"
@@ -87,16 +100,17 @@ export default function FiltersPanel() {
                 onClick={() => removePOI(poi.id)}
                 aria-label={`Remove ${poi.label}`}
                 title="Remove filter"
+                className="text-amber-900 transition-transform hover:-translate-y-0.5 hover:bg-[#f2ebd9]"
               >
                 <span aria-hidden>X</span>
               </Button>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className={antiqueContentClass}>
               <div className="flex items-center justify-between">
-                <span className="text-xs uppercase tracking-wide text-slate-500">
-                  Max travel time
-                </span>
-                <Badge variant="muted">{sliderValue} min</Badge>
+                <span className={antiqueLabelClass}>Max travel time</span>
+                <Badge variant="muted" className={antiqueBadgeClass}>
+                  {sliderValue} min
+                </Badge>
               </div>
               <Slider
                 min={MIN_MINUTES}
@@ -120,9 +134,7 @@ export default function FiltersPanel() {
                 }}
               />
               <div className="flex items-center justify-between">
-                <span className="text-xs uppercase tracking-wide text-slate-500">
-                  Travel mode
-                </span>
+                <span className={antiqueLabelClass}>Travel mode</span>
                 <ModeToggle
                   value={currentMode}
                   disabled={pendingModeChange}
@@ -153,7 +165,8 @@ function ModeToggle({
     <div className="flex items-center gap-2">
       <Button
         size="sm"
-        variant={value === 'drive' ? 'default' : 'outline'}
+        variant="outline"
+        className={value === 'drive' ? antiqueOutlineActiveClass : antiqueOutlineButtonClass}
         disabled={disabled || value === 'drive'}
         onClick={() => onChange('drive')}
       >
@@ -161,7 +174,8 @@ function ModeToggle({
       </Button>
       <Button
         size="sm"
-        variant={value === 'walk' ? 'default' : 'outline'}
+        variant="outline"
+        className={value === 'walk' ? antiqueOutlineActiveClass : antiqueOutlineButtonClass}
         disabled={disabled || value === 'walk'}
         onClick={() => onChange('walk')}
       >

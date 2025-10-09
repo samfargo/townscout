@@ -32,42 +32,44 @@ export default function HoverBox() {
   }, [hover, pois, cache, poiModes, defaultMode]);
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Hover details</CardTitle>
+    <Card className="border-stone-300 bg-[#fbf7ec] p-0 shadow-[0_18px_30px_-26px_rgba(76,54,33,0.22)]">
+      <CardHeader className="mb-0 rounded-2xl rounded-b-none border-b border-stone-200 bg-[#f2ebd9] px-4 py-3">
+        <CardTitle className="font-serif text-stone-900">Hover details</CardTitle>
       </CardHeader>
-      <CardContent>
-        {!hover && <p className="text-sm text-slate-500">Hover over the map to view details.</p>}
+      <CardContent className="space-y-3 px-4 pb-4 pt-3 text-sm text-stone-700">
+        {!hover && (
+          <p className="text-sm text-stone-500">Hover over the map to view details.</p>
+        )}
         {hover && travelTimes.length === 0 && (
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
-              <dt className="text-xs uppercase tracking-wide text-slate-500">Hex ID</dt>
-              <dd className="text-sm font-medium text-slate-800 font-mono text-xs">
+              <dt className="text-xs uppercase tracking-wide text-stone-500">Hex ID</dt>
+              <dd className="font-mono text-xs font-medium text-stone-700">
                 {hover.h3_id || 'N/A'}
               </dd>
             </div>
-            <p className="text-sm text-slate-500 mt-3">
+            <p className="mt-3 text-sm text-stone-500">
               Add filters to see travel times from this hex.
             </p>
           </div>
         )}
         {hover && travelTimes.length > 0 && (
           <dl className="space-y-2">
-            <div className="flex items-center justify-between gap-3 pb-2 border-b border-slate-200">
-              <dt className="text-xs uppercase tracking-wide text-slate-500">Hex ID</dt>
-              <dd className="text-xs font-mono text-slate-600">
+            <div className="flex items-center justify-between gap-3 border-b border-stone-200 pb-2">
+              <dt className="text-xs uppercase tracking-wide text-stone-500">Hex ID</dt>
+              <dd className="text-xs font-mono text-stone-600">
                 {String(hover.h3_id || 'N/A').slice(-8)}
               </dd>
             </div>
             {travelTimes.map(({ label, minutes, mode }) => (
               <div key={label} className="flex items-center justify-between gap-3">
-                <dt className="flex items-center gap-2 text-xs text-slate-600">
+                <dt className="flex items-center gap-2 text-xs text-stone-700">
                   <span>{label}</span>
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                  <span className="rounded-full border border-stone-300 bg-[#f7f0de] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stone-600">
                     {mode === 'drive' ? 'Drive' : 'Walk'}
                   </span>
                 </dt>
-                <dd className="text-sm font-semibold text-slate-800">
+                <dd className="text-sm font-semibold text-stone-800">
                   {minutes !== null ? `${minutes} min` : 'Unreachable'}
                 </dd>
               </div>

@@ -28,6 +28,11 @@ function createPlacesSession() {
   return `session-${Date.now()}`;
 }
 
+const brassPrimaryButtonClass =
+  'border border-amber-900 bg-amber-800 text-amber-50 shadow-sm transition-transform hover:-translate-y-0.5 hover:bg-amber-900 focus-visible:ring-amber-700';
+const brassActiveButtonClass =
+  'border border-stone-400 bg-stone-200 text-stone-800 focus-visible:ring-amber-700';
+
 export default function SearchBox() {
   const catalog = useStore((state) => state.catalog);
   const pois = useStore((state) => state.pois);
@@ -161,18 +166,18 @@ export default function SearchBox() {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Add filters</CardTitle>
-        <p className="text-xs text-slate-500">
+    <Card className="border-stone-300 bg-[#fbf7ec] p-0 shadow-[0_20px_36px_-30px_rgba(76,54,33,0.28)]">
+      <CardHeader className="mb-0 flex flex-col gap-2 rounded-2xl rounded-b-none border-b border-stone-200 bg-[#f2ebd9] p-5">
+        <CardTitle className="font-serif text-sm font-semibold text-stone-900">Add filters</CardTitle>
+        <p className="text-xs text-stone-600">
           Pick a category, a place of interest, or create a custom location.
         </p>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4 px-5 pb-5 pt-4 text-sm text-stone-700">
         <div className="space-y-2">
           <DropdownSection label="Categories">
             {!catalog.loaded && (
-              <p className="px-1 text-xs text-slate-500">Loading catalog…</p>
+              <p className="px-1 text-xs text-stone-500">Loading catalog…</p>
             )}
             {catalog.loaded && categoryGroups.length === 0 && (
               <p className="px-1 text-xs text-red-600">Catalog unavailable right now.</p>
@@ -187,7 +192,8 @@ export default function SearchBox() {
                     <CatalogRow key={id} title={group.label}>
                       <Button
                         size="sm"
-                        variant={active ? 'secondary' : 'default'}
+                        variant="outline"
+                        className={active ? brassActiveButtonClass : brassPrimaryButtonClass}
                         disabled={active || loading}
                         onClick={() => handleAddCategory(group)}
                       >
@@ -201,10 +207,10 @@ export default function SearchBox() {
           </DropdownSection>
           <DropdownSection label="POI">
             {!catalog.loaded && (
-              <p className="px-1 text-xs text-slate-500">Loading POIs…</p>
+              <p className="px-1 text-xs text-stone-500">Loading POIs…</p>
             )}
             {catalog.loaded && precomputedBrands.length === 0 && (
-              <p className="px-1 text-xs text-slate-500">No precomputed POIs available.</p>
+              <p className="px-1 text-xs text-stone-500">No precomputed POIs available.</p>
             )}
             {catalog.loaded && precomputedBrands.length > 0 && (
               <div className="space-y-2">
@@ -215,7 +221,12 @@ export default function SearchBox() {
                     <CatalogRow key={brand.id} title={brand.label}>
                       <Button
                         size="sm"
-                        variant={active ? 'secondary' : 'outline'}
+                        variant="outline"
+                        className={
+                          active
+                            ? brassActiveButtonClass
+                            : 'border border-stone-300 bg-[#faf4e5] text-stone-800 shadow-sm transition-transform hover:-translate-y-0.5 hover:bg-[#f6eedb] focus-visible:ring-amber-700'
+                        }
                         disabled={active || loading}
                         onClick={() => handleAddBrand(brand)}
                       >
@@ -228,23 +239,24 @@ export default function SearchBox() {
             )}
           </DropdownSection>
         </div>
-        <Separator />
+        <Separator className="bg-stone-300/80" />
         <div className="space-y-3">
           <LabelledField label="Custom location">
             <Input
               value={placeInput}
               onChange={(event) => setPlaceInput(event.target.value)}
               placeholder="Search for an address or place"
+              className="border-stone-300 bg-[#fdfaf1] text-stone-800 placeholder:text-stone-400 focus-visible:ring-amber-700 focus-visible:ring-offset-[#fbf7ec]"
             />
           </LabelledField>
           {placesResult.isFetching && (
-            <p className="text-xs text-slate-500">Searching…</p>
+            <p className="text-xs text-stone-500">Searching…</p>
           )}
           {placesResult.error && (
             <p className="text-xs text-red-600">Unable to reach Places autocomplete right now.</p>
           )}
           {!placesResult.isFetching && placeSuggestions.length === 0 && placeInput.length >= 2 && (
-            <p className="text-xs text-slate-500">No matches found.</p>
+            <p className="text-xs text-stone-500">No matches found.</p>
           )}
           <div className="space-y-2">
             {placeSuggestions.map((suggestion) => {
@@ -257,17 +269,18 @@ export default function SearchBox() {
               return (
                 <div
                   key={suggestion.id}
-                  className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2"
+                  className="flex items-center justify-between rounded-xl border border-stone-300 bg-[#f9f3e4] px-3 py-2 shadow-sm"
                 >
                   <div className="flex flex-col">
-                    <span className="text-sm font-medium text-slate-800">{suggestion.label}</span>
+                    <span className="text-sm font-medium text-stone-900">{suggestion.label}</span>
                     {suggestion.sublabel && (
-                      <span className="text-xs text-slate-500">{suggestion.sublabel}</span>
+                      <span className="text-xs text-stone-500">{suggestion.sublabel}</span>
                     )}
                   </div>
                   <Button
                     size="sm"
-                    variant={active ? 'secondary' : 'default'}
+                    variant="outline"
+                    className={active ? brassActiveButtonClass : brassPrimaryButtonClass}
                     disabled={active || loading}
                     onClick={() => handleAddCustom(suggestion)}
                   >
@@ -277,9 +290,9 @@ export default function SearchBox() {
               );
             })}
           </div>
-          <p className="text-xs text-slate-400">
-            Think: friend's house, work address etc. Custom pins fetch up to {normalizeMinutes(30)} minutes of coverage. Increase the slider
-            to expand the radius.
+          <p className="text-xs text-stone-500">
+            Think: friend's house, work address etc. Custom pins fetch up to {normalizeMinutes(30)} minutes of coverage. Increase the slider to
+            expand the radius.
           </p>
         </div>
       </CardContent>
@@ -290,7 +303,7 @@ export default function SearchBox() {
 function LabelledField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</span>
+      <span className="text-xs font-semibold uppercase tracking-wide text-stone-500">{label}</span>
       {children}
     </label>
   );
@@ -298,9 +311,9 @@ function LabelledField({ label, children }: { label: string; children: React.Rea
 
 function CatalogRow({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2">
+    <div className="flex items-center justify-between rounded-xl border border-stone-300 bg-[#f7f0de] px-3 py-2 shadow-sm">
       <div className="flex flex-col">
-        <span className="text-sm font-medium text-slate-800">{title}</span>
+        <span className="text-sm font-medium text-stone-900">{title}</span>
       </div>
       {children}
     </div>
@@ -309,11 +322,11 @@ function CatalogRow({ title, children }: { title: string; children: React.ReactN
 
 function DropdownSection({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <details className="rounded-xl border border-slate-200 bg-slate-50">
-      <summary className="cursor-pointer select-none px-3 py-2 text-sm font-semibold text-slate-700">
+    <details className="rounded-2xl border border-stone-300 bg-[#f2ebd9] shadow-inner">
+      <summary className="cursor-pointer select-none rounded-2xl px-3 py-2 text-sm font-semibold text-stone-700 transition-colors hover:bg-[#ebdfc3]">
         {label}
       </summary>
-      <div className="space-y-2 border-t border-slate-200 bg-white px-3 py-3 max-h-60 overflow-y-auto">
+      <div className="max-h-60 space-y-2 overflow-y-auto border-t border-stone-200 bg-[#fbf7ec] px-3 py-3">
         {children}
       </div>
     </details>
