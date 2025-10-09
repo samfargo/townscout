@@ -1,4 +1,5 @@
 'use client';
+// Shows hover details for the focused map hex.
 
 import React from 'react';
 

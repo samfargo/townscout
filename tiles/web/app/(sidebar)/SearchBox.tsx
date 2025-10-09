@@ -1,4 +1,5 @@
 'use client';
+// Handles catalog picks through dropdowns and custom pins.
 
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -7,7 +8,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
-import { Badge } from '@/components/ui/badge';
 import {
   addBrand,
   addCategory,
@@ -32,7 +32,6 @@ export default function SearchBox() {
   const catalog = useStore((state) => state.catalog);
   const pois = useStore((state) => state.pois);
 
-  const [searchTerm, setSearchTerm] = React.useState('');
   const [placeInput, setPlaceInput] = React.useState('');
   const [placesQuery, setPlacesQuery] = React.useState('');
   const [pending, setPending] = React.useState<string | null>(null);
@@ -62,22 +61,19 @@ export default function SearchBox() {
     });
   }, [catalog]);
 
-  const normalizedTerm = searchTerm.trim().toLowerCase();
-
-  const matchingCategories = React.useMemo(() => {
-    if (!normalizedTerm) return categoryGroups.slice(0, 6);
-    return categoryGroups
-      .filter((group) => group.label.toLowerCase().includes(normalizedTerm))
-      .slice(0, 6);
-  }, [categoryGroups, normalizedTerm]);
-
-  const matchingBrands = React.useMemo(() => {
-    const brands = catalog.brands;
-    if (!normalizedTerm) return brands.slice(0, 8);
-    return brands
-      .filter((brand) => brand.label.toLowerCase().includes(normalizedTerm))
-      .slice(0, 8);
-  }, [catalog.brands, normalizedTerm]);
+  const precomputedBrands = React.useMemo(() => {
+    if (!catalog.loaded) return [];
+    const ids = new Set<string>();
+    for (const brandIds of Object.values(catalog.catToBrands)) {
+      for (const brandId of brandIds) {
+        ids.add(String(brandId));
+      }
+    }
+    return catalog.brands
+      .filter((brand) => ids.has(brand.id))
+      .slice()
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [catalog.loaded, catalog.brands, catalog.catToBrands]);
 
   const placesResult = useQuery({
     queryKey: ['places-autocomplete', session, placesQuery],
@@ -167,76 +163,70 @@ export default function SearchBox() {
   return (
     <Card>
       <CardHeader>
-        <div>
-          <CardTitle>Add coverage filters</CardTitle>
-          <p className="mt-1 text-xs text-slate-500">
-            Stack multiple place types or drop a custom pin to filter reachable hexes.
-          </p>
-        </div>
+        <CardTitle>Add filters</CardTitle>
+        <p className="text-xs text-slate-500">
+          Pick a category, a place of interest, or create a custom location.
+        </p>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="space-y-3">
-          <LabelledField label="Catalog search">
-            <Input
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder="Search for restaurants, grocery, brands…"
-            />
-          </LabelledField>
-          {!catalog.loaded && (
-            <p className="text-xs text-slate-500">Loading catalog…</p>
-          )}
-          <div className="space-y-2">
-            {catalog.loaded && matchingCategories.length === 0 && (
-              <p className="text-sm text-slate-500">No categories match “{searchTerm}”.</p>
-            )}
-            {matchingCategories.map((group) => {
-              const id = group.ids.join(',');
-              const active = isPoiActive(id);
-              const loading = pending === `category:${id}`;
-              return (
-                <CatalogRow
-                  key={id}
-                  title={group.label}
-                  subtitle={`${group.ids.length} category${group.ids.length > 1 ? ' types' : ''}`}
-                >
-                  <Button
-                    size="sm"
-                    variant={active ? 'secondary' : 'default'}
-                    disabled={active || loading}
-                    onClick={() => handleAddCategory(group)}
-                  >
-                    {active ? 'Added' : loading ? 'Adding…' : 'Add'}
-                  </Button>
-                </CatalogRow>
-              );
-            })}
-          </div>
-        </div>
-        <Separator />
         <div className="space-y-2">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Brands
-          </h4>
-          {matchingBrands.length === 0 && (
-            <p className="text-sm text-slate-500">No brands match “{searchTerm}”.</p>
-          )}
-          {matchingBrands.map((brand) => {
-            const active = isPoiActive(brand.id);
-            const loading = pending === `brand:${brand.id}`;
-            return (
-              <CatalogRow key={brand.id} title={brand.label}>
-                <Button
-                  size="sm"
-                  variant={active ? 'secondary' : 'outline'}
-                  disabled={active || loading}
-                  onClick={() => handleAddBrand(brand)}
-                >
-                  {active ? 'Added' : loading ? 'Adding…' : 'Add'}
-                </Button>
-              </CatalogRow>
-            );
-          })}
+          <DropdownSection label="Categories">
+            {!catalog.loaded && (
+              <p className="px-1 text-xs text-slate-500">Loading catalog…</p>
+            )}
+            {catalog.loaded && categoryGroups.length === 0 && (
+              <p className="px-1 text-xs text-red-600">Catalog unavailable right now.</p>
+            )}
+            {catalog.loaded && categoryGroups.length > 0 && (
+              <div className="space-y-2">
+                {categoryGroups.map((group) => {
+                  const id = group.ids.join(',');
+                  const active = isPoiActive(id);
+                  const loading = pending === `category:${id}`;
+                  return (
+                    <CatalogRow key={id} title={group.label}>
+                      <Button
+                        size="sm"
+                        variant={active ? 'secondary' : 'default'}
+                        disabled={active || loading}
+                        onClick={() => handleAddCategory(group)}
+                      >
+                        {active ? 'Added' : loading ? 'Adding…' : 'Add'}
+                      </Button>
+                    </CatalogRow>
+                  );
+                })}
+              </div>
+            )}
+          </DropdownSection>
+          <DropdownSection label="POI">
+            {!catalog.loaded && (
+              <p className="px-1 text-xs text-slate-500">Loading POIs…</p>
+            )}
+            {catalog.loaded && precomputedBrands.length === 0 && (
+              <p className="px-1 text-xs text-slate-500">No precomputed POIs available.</p>
+            )}
+            {catalog.loaded && precomputedBrands.length > 0 && (
+              <div className="space-y-2">
+                {precomputedBrands.map((brand) => {
+                  const active = isPoiActive(brand.id);
+                  const loading = pending === `brand:${brand.id}`;
+                  return (
+                    <CatalogRow key={brand.id} title={brand.label}>
+                      <Button
+                        size="sm"
+                        variant={active ? 'secondary' : 'outline'}
+                        disabled={active || loading}
+                        onClick={() => handleAddBrand(brand)}
+                      >
+                        {active ? 'Added' : loading ? 'Adding…' : 'Add'}
+                      </Button>
+                    </CatalogRow>
+                  );
+                })}
+              </div>
+            )}
+          </DropdownSection>
         </div>
         <Separator />
         <div className="space-y-3">
@@ -288,8 +278,7 @@ export default function SearchBox() {
             })}
           </div>
           <p className="text-xs text-slate-400">
-            Custom pins fetch up to {normalizeMinutes(30)} minutes of coverage. Increase the slider
-            to expand the radius.
+            Think: friend&apos;s house, work address etc.
           </p>
         </div>
       </CardContent>
@@ -306,22 +295,26 @@ function LabelledField({ label, children }: { label: string; children: React.Rea
   );
 }
 
-function CatalogRow({
-  title,
-  subtitle,
-  children
-}: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}) {
+function CatalogRow({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2">
+    <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2">
       <div className="flex flex-col">
         <span className="text-sm font-medium text-slate-800">{title}</span>
-        {subtitle && <Badge variant="muted">{subtitle}</Badge>}
       </div>
       {children}
     </div>
+  );
+}
+
+function DropdownSection({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <details className="rounded-xl border border-slate-200 bg-slate-50">
+      <summary className="cursor-pointer select-none px-3 py-2 text-sm font-semibold text-slate-700">
+        {label}
+      </summary>
+      <div className="space-y-2 border-t border-slate-200 bg-white px-3 py-3 max-h-60 overflow-y-auto">
+        {children}
+      </div>
+    </details>
   );
 }
