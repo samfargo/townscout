@@ -1,3 +1,4 @@
+// Composes the map and sidebar into the homepage shell.
 import dynamic from "next/dynamic";
 
 import Sidebar from "@/app/(sidebar)/Sidebar";
@@ -6,9 +7,9 @@ const MapCanvas = dynamic(() => import("@/app/(map)/MapCanvas"), { ssr: false })
 
 export default function HomePage() {
   return (
-    <div className="flex min-h-screen w-full">
+    <div className="flex h-screen min-h-0 w-full overflow-hidden">
       <Sidebar />
-      <main className="relative flex-1">
+      <main className="relative flex-1 min-h-0 overflow-hidden">
         <div className="absolute inset-0">
           <MapCanvas />
         </div>

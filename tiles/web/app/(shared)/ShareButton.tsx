@@ -1,4 +1,5 @@
 'use client';
+// Provides copyable sharing links for the current view.
 
 import React from 'react';
 

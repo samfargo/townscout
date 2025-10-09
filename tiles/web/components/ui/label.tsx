@@ -1,4 +1,5 @@
-"use client";
+'use client';
+// Wrapper around Radix Label with Tailwind styling.
 
 import * as React from "react";
 import * as LabelPrimitive from "@radix-ui/react-label";

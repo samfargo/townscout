@@ -1,3 +1,4 @@
+// Root layout wiring metadata and global styles.
 import type { Metadata } from "next";
 import { Providers } from "./providers";
 

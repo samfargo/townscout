@@ -205,5 +205,5 @@ clean:  ## Clean all generated data files
 	rm -rf data/osm/cache
 
 serve: ## Serve the frontend + tiles via FastAPI (supports HTTP Range)
-	@echo "Serving frontend at http://localhost:5173/tiles/web/index.html"
+	@echo "Serving API + tiles at http://localhost:5173 (start Next.js separately: npm run dev in tiles/web)"
 	.venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 5173 --reload --env-file .env

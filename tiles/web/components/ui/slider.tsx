@@ -1,4 +1,5 @@
-"use client";
+'use client';
+// Styled Radix slider with optional value display.
 
 import * as React from "react";
 import * as SliderPrimitive from "@radix-ui/react-slider";

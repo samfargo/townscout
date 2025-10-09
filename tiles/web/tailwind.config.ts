@@ -1,3 +1,4 @@
+// Tailwind CSS configuration covering app, lib, and styles files.
 import type { Config } from "tailwindcss";
 
 const config: Config = {

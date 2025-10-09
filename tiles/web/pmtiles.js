@@ -1,3 +1,4 @@
+// Prebuilt PMTiles bundle used to load vector tiles in MapLibre.
 "use strict";
 var pmtiles = (() => {
   var __defProp = Object.defineProperty;

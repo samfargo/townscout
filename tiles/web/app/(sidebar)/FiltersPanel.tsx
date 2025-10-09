@@ -1,4 +1,5 @@
 'use client';
+// Manages travel-time sliders for each active POI filter.
 
 import React from 'react';
 
@@ -6,20 +7,32 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Slider } from '@/components/ui/slider';
-import { MIN_MINUTES, MAX_MINUTES, MINUTE_STEP, removePOI, updateSlider } from '@/lib/actions';
+import {
+  changePoiMode,
+  MIN_MINUTES,
+  MAX_MINUTES,
+  MINUTE_STEP,
+  removePOI,
+  updateSlider
+} from '@/lib/actions';
 import { debounce } from '@/lib/utils/debounce';
-import { useStore } from '@/lib/state/store';
+import { useStore, type Mode } from '@/lib/state/store';
+
+const SLIDER_DEBOUNCE_MS = 120;
 
 export default function FiltersPanel() {
   const pois = useStore((state) => state.pois);
   const sliders = useStore((state) => state.sliders);
+  const poiModes = useStore((state) => state.poiModes);
+  const defaultMode = useStore((state) => state.mode);
 
   const [local, setLocal] = React.useState<Record<string, number>>({});
+  const [modePending, setModePending] = React.useState<Record<string, boolean>>({});
   const debouncedUpdate = React.useMemo(
     () =>
       debounce((id: string, value: number) => {
         updateSlider(id, value);
-      }, 50),
+      }, SLIDER_DEBOUNCE_MS),
     []
   );
 
@@ -35,20 +48,32 @@ export default function FiltersPanel() {
     });
   }, [sliders]);
 
-  if (!pois.length) {
-    return (
-      <div className="rounded-2xl border border-dashed border-sky-200 bg-sky-50 p-6 text-sm text-sky-700">
-        No filters yet. Add a place type or drop a custom pin to start filtering reachable hexes.
-      </div>
-    );
-  }
+  const makeValue = React.useCallback(
+    (id: string) => local[id] ?? sliders[id] ?? 30,
+    [local, sliders]
+  );
 
-  const makeValue = (id: string) => local[id] ?? sliders[id] ?? 30;
+  const handleModeChange = React.useCallback(async (id: string, target: Mode) => {
+    setModePending((prev) => ({ ...prev, [id]: true }));
+    try {
+      await changePoiMode(id, target);
+    } catch (error) {
+      console.error('Failed to change travel mode', error);
+    } finally {
+      setModePending((prev) => {
+        const copy = { ...prev };
+        delete copy[id];
+        return copy;
+      });
+    }
+  }, []);
 
   return (
     <div className="space-y-3">
       {pois.map((poi) => {
         const sliderValue = makeValue(poi.id);
+        const currentMode = poiModes[poi.id] ?? defaultMode;
+        const pendingModeChange = modePending[poi.id] ?? false;
         return (
           <Card key={poi.id}>
             <CardHeader>
@@ -56,11 +81,17 @@ export default function FiltersPanel() {
                 <CardTitle>{poi.label}</CardTitle>
                 <p className="text-xs text-slate-500 capitalize">{poi.type}</p>
               </div>
-              <Button variant="ghost" size="sm" onClick={() => removePOI(poi.id)}>
-                Remove
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => removePOI(poi.id)}
+                aria-label={`Remove ${poi.label}`}
+                title="Remove filter"
+              >
+                <span aria-hidden>X</span>
               </Button>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs uppercase tracking-wide text-slate-500">
                   Max travel time
@@ -88,10 +119,54 @@ export default function FiltersPanel() {
                   updateSlider(poi.id, next);
                 }}
               />
+              <div className="flex items-center justify-between">
+                <span className="text-xs uppercase tracking-wide text-slate-500">
+                  Travel mode
+                </span>
+                <ModeToggle
+                  value={currentMode}
+                  disabled={pendingModeChange}
+                  onChange={(mode) => {
+                    if (mode === currentMode) return;
+                    void handleModeChange(poi.id, mode);
+                  }}
+                />
+              </div>
             </CardContent>
           </Card>
         );
       })}
+    </div>
+  );
+}
+
+function ModeToggle({
+  value,
+  onChange,
+  disabled
+}: {
+  value: Mode;
+  onChange: (mode: Mode) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <Button
+        size="sm"
+        variant={value === 'drive' ? 'default' : 'outline'}
+        disabled={disabled || value === 'drive'}
+        onClick={() => onChange('drive')}
+      >
+        Drive
+      </Button>
+      <Button
+        size="sm"
+        variant={value === 'walk' ? 'default' : 'outline'}
+        disabled={disabled || value === 'walk'}
+        onClick={() => onChange('walk')}
+      >
+        Walk
+      </Button>
     </div>
   );
 }

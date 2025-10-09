@@ -1,4 +1,5 @@
-"use client";
+'use client';
+// Styled button component following shadcn patterns.
 
 import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";

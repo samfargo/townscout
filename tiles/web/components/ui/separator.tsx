@@ -1,4 +1,5 @@
-"use client";
+'use client';
+// Separator component for horizontal and vertical dividers.
 
 import * as React from "react";
 

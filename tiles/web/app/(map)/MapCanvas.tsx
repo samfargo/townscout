@@ -1,24 +1,18 @@
 'use client';
+// Hosts the MapLibre canvas and wires it to global state.
 
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 import { useEffect, useRef, useState } from 'react';
 
+import { applyCurrentFilter } from '@/lib/actions';
 import { MapController } from '@/lib/map/MapController';
 import { registerMapController } from '@/lib/map/controllerRegistry';
-import { buildCombinedFilter } from '@/lib/map/expressions';
 import { useStore } from '@/lib/state/store';
 
 export default function MapCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [controller] = useState(() => new MapController());
-  const [ready, setReady] = useState(false);
-
-  const mode = useStore((state) => state.mode);
-  const pois = useStore((state) => state.pois);
-  const sliders = useStore((state) => state.sliders);
-  const cache = useStore((state) => state.dAnchorCache);
-  const cacheVersions = useStore((state) => state.cacheVersions);
   const setHover = useStore((state) => state.setHover);
 
   useEffect(() => {
@@ -31,9 +25,8 @@ export default function MapCanvas() {
       .then(() => {
         if (cancelled) return;
         registerMapController(controller);
-        controller.setMode(mode);
         detachHover = controller.onHover((props) => setHover(props));
-        setReady(true);
+        applyCurrentFilter({ immediate: true });
       })
       .catch((err) => {
         console.error('Failed to initialise map', err);
@@ -43,18 +36,9 @@ export default function MapCanvas() {
       cancelled = true;
       detachHover?.();
       setHover(null);
+      // Keep map instance alive; React Strict Mode will remount the component.
     };
-  }, [controller, mode, setHover]);
-
-  useEffect(() => {
-    if (!ready) return;
-    if (!pois.length) {
-      controller.setFilter(mode, null);
-      return;
-    }
-    const filter = buildCombinedFilter(pois, sliders, cache, cacheVersions);
-    controller.setFilter(mode, filter);
-  }, [ready, controller, mode, pois, sliders, cache]);
+  }, [controller, setHover]);
 
   return <div ref={containerRef} className="h-full w-full" />;
 }

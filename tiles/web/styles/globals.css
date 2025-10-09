@@ -1,3 +1,4 @@
+/* Global styles and layout defaults for TownScout. */
 :root {
   --sidebar-width: 360px;
   --color-bg: #f5f7fb;
@@ -27,6 +28,21 @@ body {
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* Ensure clean MapLibre rendering */
+.maplibregl-map {
+  background: #ffffff;
+  position: relative;
+  overflow: hidden;
+}
+
+.maplibregl-canvas-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .maplibregl-ctrl-group button {

@@ -1,3 +1,4 @@
+// Vitest setup mirroring Next.js aliases for tests.
 import { defineConfig } from "vitest/config";
 import path from "path";
 

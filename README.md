@@ -127,18 +127,21 @@ app.mount("/tiles/web", StaticFiles(directory="tiles/web"), name="tiles-web")
 
 ---
 
-## 8) Frontend (MapLibre)
+## 8) Frontend (MapLibre + Next.js)
 
-The dropdow menun on the cleint side should be a list of every POI, and there should be just the name of the category at the start of each category's POI which the user can select to encompass the whole category. Or the user can select individual POI.
+The web UI ships as a Next.js App Router project in `tiles/web`. Client components (e.g. `MapCanvas`, `SearchBox`, `FiltersPanel`) stay thin and offload imperative work to `lib/` just like the original demo. Development loop:
 
-**PMTiles protocol:** local import, no CDN. Demo UI lives at `tiles/web/index.html` and composes anchor arrays with API‑served D_anchor (categories, brands, and custom points).
-
-```js
-let protocol = new pmtiles.Protocol();
-maplibregl.addProtocol("pmtiles", protocol.tile);
-const T_HEX_R7_URL = "pmtiles:///tiles/t_hex_r7_drive.pmtiles";
-const T_HEX_R8_URL = "pmtiles:///tiles/t_hex_r8_drive.pmtiles";
+```bash
+cd tiles/web
+npm install
+npm run dev
 ```
+
+Run the FastAPI backend alongside `npm run dev`. By default we expect it on `http://127.0.0.1:5173`; override that with `NEXT_PUBLIC_TOWNSCOUT_API_BASE_URL` (or `NEXT_PUBLIC_API_BASE_URL`) when your backend runs elsewhere. `lib/services/api.ts` resolves every relative `/api/...` call via that helper, falling back to the browser origin in production deployments.
+
+`/app/api/catalog/route.ts` proxies catalog requests to the FastAPI service so the frontend gets real data; only when the upstream call fails do we return the empty fallback payload.
+
+**PMTiles protocol:** local import, no CDN. The map controller registers the `pmtiles` protocol before instantiating MapLibre so tiles continue to stream from `pmtiles:///tiles/t_hex_r7_drive.pmtiles` and `pmtiles:///tiles/t_hex_r8_drive.pmtiles`.
 
 **GPU Filter Expression (anchor‑mode):**
 
@@ -476,7 +479,10 @@ Taxonomy & Config Files (minimal)
 - Compute minutes (T_hex long format): `make minutes`
 - Compute D_anchor category tables: `make d_anchor_category`
 - Compute D_anchor brand tables: `make d_anchor_brand`
-- Merge + summarize, build tiles, and serve demo: `make merge tiles` then `make serve` and open `http://localhost:5173/tiles/web/index.html`
+- Merge + summarize, build tiles, and bring up the stack:
+  - `make merge tiles` then `make serve` (FastAPI on `http://127.0.0.1:5173`)
+  - In a new terminal: `cd tiles/web && npm install && npm run dev`
+  - Visit `http://localhost:3000` (Next.js) — the app will call back to the FastAPI service on port 5173 unless you override `NEXT_PUBLIC_TOWNSCOUT_API_BASE_URL`
 
 ### Full Pipeline Command
 ```bash
@@ -495,7 +501,7 @@ For maximum POI coverage (especially dense brands):
 3. Increase K-best parameters (`--k-best 20+`) for dense urban areas if needed
 
 API:
-- Run: `uvicorn api.main:app --reload`
+- Run: `uvicorn api.main:app --reload --host 0.0.0.0 --port 5173` (or expose the same base URL you pass via `NEXT_PUBLIC_TOWNSCOUT_API_BASE_URL`)
 - Categories: `GET /api/categories?mode=drive`
 - D_anchor slice: `GET /api/d_anchor?category=<id>&mode=drive`
 - D_anchor brand slice: `GET /api/d_anchor_brand?brand=<id or alias>&mode=drive`

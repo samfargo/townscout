@@ -1,4 +1,5 @@
-"use client";
+'use client';
+// Wraps the app with a shared React Query client.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";

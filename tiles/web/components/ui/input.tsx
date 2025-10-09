@@ -1,4 +1,5 @@
-"use client";
+'use client';
+// Tailwind-styled text input element.
 
 import * as React from "react";
 

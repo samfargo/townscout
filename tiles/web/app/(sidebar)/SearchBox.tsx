@@ -278,7 +278,8 @@ export default function SearchBox() {
             })}
           </div>
           <p className="text-xs text-slate-400">
-            Think: friend&apos;s house, work address etc.
+            Think: friend's house, work address etc. Custom pins fetch up to {normalizeMinutes(30)} minutes of coverage. Increase the slider
+            to expand the radius.
           </p>
         </div>
       </CardContent>

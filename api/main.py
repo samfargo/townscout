@@ -14,7 +14,7 @@ import pandas as pd
 import h3
 import requests
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -47,6 +47,10 @@ APP_NAME = "TownScout D_anchor API"
 STATE = os.environ.get("TS_STATE", "massachusetts")
 _DANCHOR_CATEGORY_DIR = os.environ.get("TS_DANCHOR_CATEGORY_DIR", os.path.join("data", "d_anchor_category"))
 _DANCHOR_BRAND_DIR = os.environ.get("TS_DANCHOR_BRAND_DIR", os.path.join("data", "d_anchor_brand"))
+
+_FRONTEND_ENV = (os.environ.get("TS_FRONTEND_ORIGIN") or os.environ.get("TOWNSCOUT_FRONTEND_ORIGIN") or "").strip()
+_DEFAULT_FRONTEND_ORIGIN = os.environ.get("TS_DEFAULT_FRONTEND_ORIGIN", "http://localhost:3000").strip() or None
+_FRONTEND_ORIGIN = _FRONTEND_ENV or _DEFAULT_FRONTEND_ORIGIN
 
 GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY")
 GOOGLE_PLACES_AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
@@ -613,8 +617,15 @@ app.add_middleware(
 
 @app.get("/")
 async def serve_frontend():
-    """Serve the main frontend page"""
-    return FileResponse("tiles/web/index.html")
+    """Redirect to the Next.js frontend if configured; otherwise emit API status."""
+    if _FRONTEND_ORIGIN:
+        return RedirectResponse(_FRONTEND_ORIGIN, status_code=307)
+    return JSONResponse(
+        {
+            "app": APP_NAME,
+            "frontend": "Next.js frontend is served separately. Set TS_FRONTEND_ORIGIN (or TS_DEFAULT_FRONTEND_ORIGIN='') to disable redirect.",
+        }
+    )
 
 @app.get("/health")
 def health():

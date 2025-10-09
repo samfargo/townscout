@@ -1,22 +1,19 @@
 'use client';
+// Assembles the sidebar layout with search, filters, and sharing.
 
 import React from 'react';
 
-import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import HoverBox from '@/app/(sidebar)/HoverBox';
 import FiltersPanel from '@/app/(sidebar)/FiltersPanel';
 import SearchBox from '@/app/(sidebar)/SearchBox';
 import ShareButton from '@/app/(shared)/ShareButton';
-import { changeMode } from '@/lib/actions';
-import { useMode } from '@/lib/state/selectors';
 
 export default function Sidebar() {
   return (
-    <aside className="flex h-full w-[var(--sidebar-width)] flex-col border-r border-slate-200 bg-white shadow-sidebar">
-      <div className="flex h-full flex-col gap-6 overflow-y-auto px-7 py-8">
+    <aside className="flex h-full min-h-0 w-[var(--sidebar-width)] shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-white shadow-sidebar">
+      <div className="flex flex-1 flex-col gap-6 overflow-y-auto px-7 py-8">
         <Header />
-        <ModeSwitcher />
         <SearchBox />
         <FiltersPanel />
         <HoverBox />
@@ -38,52 +35,6 @@ function Header() {
         <p className="text-sm text-slate-500">
           Explore drive-time and walk-time coverage across the U.S.
         </p>
-      </div>
-    </div>
-  );
-}
-
-function ModeSwitcher() {
-  const mode = useMode();
-  const [pending, setPending] = React.useState(false);
-
-  const change = async (target: "drive" | "walk") => {
-    if (mode === target) return;
-    setPending(true);
-    try {
-      await changeMode(target);
-    } finally {
-      setPending(false);
-    }
-  };
-
-  return (
-    <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-      <div>
-        <p className="text-sm font-semibold text-slate-800">Travel mode</p>
-        <p className="text-xs text-slate-500">Switch between drive and walk coverage.</p>
-      </div>
-      <div className="flex items-center gap-2">
-        <Button
-          size="sm"
-          variant={mode === 'drive' ? 'default' : 'outline'}
-          disabled={pending}
-          onClick={() => {
-            void change('drive');
-          }}
-        >
-          Drive
-        </Button>
-        <Button
-          size="sm"
-          variant={mode === 'walk' ? 'default' : 'outline'}
-          disabled={pending}
-          onClick={() => {
-            void change('walk');
-          }}
-        >
-          Walk
-        </Button>
       </div>
     </div>
   );

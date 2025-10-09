@@ -1,4 +1,5 @@
-"use client";
+'use client';
+// Badge component with simple visual variants.
 
 import * as React from "react";
 
