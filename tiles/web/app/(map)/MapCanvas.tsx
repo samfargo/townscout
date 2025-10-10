@@ -29,7 +29,7 @@ export default function MapCanvas() {
         applyCurrentFilter({ immediate: true });
       })
       .catch((err) => {
-        console.error('Failed to initialise map', err);
+        console.error('❌ [MapCanvas] Failed to initialise map:', err);
       });
 
     return () => {
@@ -37,6 +37,7 @@ export default function MapCanvas() {
       detachHover?.();
       setHover(null);
       // Keep map instance alive; React Strict Mode will remount the component.
+      // Note: Don't unregister controller - let it persist through remounts
     };
   }, [controller, setHover]);
 

@@ -7,6 +7,9 @@ import { fetchDAnchor } from './services/dAnchor';
 import { getMapController } from './map/controllerRegistry';
 import { buildMinutesExpression } from './map/expressions';
 
+// Set to true for verbose debugging
+const DEBUG = false;
+
 export const MIN_MINUTES = 5;
 export const MAX_MINUTES = 60;
 export const MINUTE_STEP = 5;
@@ -26,10 +29,15 @@ export async function ensureCatalogLoaded(): Promise<Catalog> {
 
 // POI management
 export async function addBrand(brandId: string, label: string): Promise<void> {
+  if (DEBUG) console.log('🎯 [addBrand] Starting - brandId:', brandId, 'label:', label);
+  
+  // Ensure catalog is ready so we can correctly fetch dAnchor data
+  await ensureCatalogLoaded();
   const store = useStore.getState();
   
   // Check if already added
   if (store.pois.some((p) => p.id === brandId)) {
+    if (DEBUG) console.log('⚠️ [addBrand] Brand already added, skipping');
     return;
   }
   
@@ -42,6 +50,8 @@ export async function addBrand(brandId: string, label: string): Promise<void> {
 }
 
 export async function addCategory(categoryId: string, label: string, ids: string[]): Promise<void> {
+  // Ensure catalog is ready so we can correctly fetch dAnchor data
+  await ensureCatalogLoaded();
   const store = useStore.getState();
   
   if (store.pois.some((p) => p.id === categoryId)) {
@@ -144,12 +154,17 @@ export async function applyCurrentFilter(
   const controller = getMapController();
   
   if (!controller) {
+    if (DEBUG) console.warn('⚠️ [applyCurrentFilter] No map controller available yet');
     return;
   }
   
   const filters: Record<Mode, { filter: any | null; active: boolean }> = {
     drive: { filter: null, active: false },
     walk: { filter: null, active: false }
+  };
+  const perModeExpressions: Record<Mode, any[]> = {
+    drive: [],
+    walk: []
   };
   const climateFilter = buildClimateFilterExpression(store.climateSelections);
   
@@ -160,27 +175,26 @@ export async function applyCurrentFilter(
     const anchorMap = store.dAnchorCache[poi.id]?.[mode];
     
     if (!anchorMap || Object.keys(anchorMap).length === 0) {
+      if (DEBUG) console.warn(`⚠️ [applyCurrentFilter] Skipping POI ${poi.id} - no anchor data`);
       continue;
     }
     
     const expression = buildMinutesExpression(anchorMap, maxMinutes);
-    
-    if (!filters[mode].active) {
-      filters[mode].filter = expression;
-      filters[mode].active = true;
-    } else {
-      // Combine with OR logic
-      filters[mode].filter = ['any', filters[mode].filter, expression];
-    }
+    perModeExpressions[mode].push(expression);
   }
+
+  (Object.keys(perModeExpressions) as Mode[]).forEach((mode) => {
+    const combined = combineWithAll(...perModeExpressions[mode]);
+    if (!combined) return;
+    filters[mode].active = true;
+    filters[mode].filter = combined;
+  });
 
   if (climateFilter) {
     const fallbackMode = store.mode;
     (Object.keys(filters) as Mode[]).forEach((mode) => {
       if (filters[mode].active) {
-        filters[mode].filter = filters[mode].filter
-          ? ['all', climateFilter, filters[mode].filter]
-          : climateFilter;
+        filters[mode].filter = combineWithAll(climateFilter, filters[mode].filter);
       }
     });
     if (!filters[fallbackMode].active) {
@@ -216,18 +230,25 @@ export async function restorePersistedFilters(): Promise<void> {
 
 // Helper function to load dAnchor data
 async function loadDAnchor(id: string, mode: Mode): Promise<void> {
+  // Ensure catalog is loaded before fetching dAnchor data
+  await ensureCatalogLoaded();
   const store = useStore.getState();
   const catalog = store.catalog;
-  
+
   if (!catalog) {
+    console.warn("[loadDAnchor] Catalog unavailable – skipping dAnchor fetch for", id);
     return;
   }
-  
+
   try {
     const data = await fetchDAnchor(id, mode, catalog);
     store.setDAnchorCache(id, mode, data);
+    if (DEBUG) {
+      const anchorCount = Object.keys(data).length;
+      console.log('✅ [loadDAnchor] Loaded', anchorCount, 'anchors for', id, mode);
+    }
   } catch (error) {
-    console.error(`Failed to load dAnchor for ${id} (${mode}):`, error);
+    console.error(`❌ [loadDAnchor] Failed to load dAnchor for ${id} (${mode}):`, error);
   }
 }
 
@@ -252,4 +273,23 @@ function sequenceEquals(a: readonly string[], b: readonly string[]): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+function combineWithAll(...conditions: Array<any | null | undefined>): any | null {
+  const flattened: any[] = [];
+  for (const condition of conditions) {
+    if (!condition) continue;
+    if (Array.isArray(condition) && condition[0] === 'all') {
+      flattened.push(...condition.slice(1));
+    } else {
+      flattened.push(condition);
+    }
+  }
+  if (!flattened.length) {
+    return null;
+  }
+  if (flattened.length === 1) {
+    return flattened[0];
+  }
+  return ['all', ...flattened];
 }

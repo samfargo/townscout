@@ -28,7 +28,7 @@ export async function fetchDAnchor(
     // Fetch the distance-to-anchor map for the given POI and mode
     return await fetchApi<DAnchorMap>(path);
   } catch (error) {
-    console.error(`Failed to fetch dAnchor for ${poiId} (${mode}):`, error);
+    console.error(`❌ [fetchDAnchor] Failed to fetch dAnchor for ${poiId} (${mode}):`, error);
     return {};
   }
 }

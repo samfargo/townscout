@@ -28,11 +28,12 @@ export function createBaseStyle(): StyleSpecification {
       't_hex_r7_drive': {
         type: 'vector',
         url: 'pmtiles:///tiles/t_hex_r7_drive.pmtiles'
-      },
-      't_hex_r8_walk': {
-        type: 'vector',
-        url: 'pmtiles:///tiles/t_hex_r8_walk.pmtiles'
       }
+      // Walk tiles commented out - not available yet
+      // 't_hex_r8_walk': {
+      //   type: 'vector',
+      //   url: 'pmtiles:///tiles/t_hex_r8_walk.pmtiles'
+      // }
     },
     layers: [
       {
@@ -72,21 +73,22 @@ export function createBaseStyle(): StyleSpecification {
           'fill-opacity': 0.4
         }
       },
-      {
-        id: LAYER_IDS.walkR8,
-        type: 'fill',
-        source: 't_hex_r8_walk',
-        'source-layer': 't_hex_r8_walk',
-        minzoom: 8,
-        maxzoom: 22,
-        layout: {
-          visibility: 'none'
-        },
-        paint: {
-          'fill-color': '#3b82f6',
-          'fill-opacity': 0.4
-        }
-      }
+      // Walk layer commented out - tiles not available yet
+      // {
+      //   id: LAYER_IDS.walkR8,
+      //   type: 'fill',
+      //   source: 't_hex_r8_walk',
+      //   'source-layer': 't_hex_r8_walk',
+      //   minzoom: 8,
+      //   maxzoom: 22,
+      //   layout: {
+      //     visibility: 'none'
+      //   },
+      //   paint: {
+      //     'fill-color': '#3b82f6',
+      //     'fill-opacity': 0.4
+      //   }
+      // }
     ]
   };
 }

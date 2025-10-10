@@ -13,8 +13,16 @@ export function buildMinutesExpression(
   const matchArgs: (string | number)[] = [];
   
   for (const anchorId of anchorIds) {
-    matchArgs.push(parseInt(anchorId, 10));  // Match key (as number)
-    matchArgs.push(anchorMap[anchorId]);      // Match value
+    const parsedId = parseInt(anchorId, 10);
+    const seconds = Number(anchorMap[anchorId]);
+    if (!Number.isFinite(parsedId)) {
+      continue;
+    }
+    if (!Number.isFinite(seconds)) {
+      continue;
+    }
+    matchArgs.push(parsedId);  // Match key (as number)
+    matchArgs.push(seconds);   // Match value in seconds
   }
 
   const terms: MapExpression[] = [];

@@ -9,10 +9,10 @@ export type ModeFilterState = {
   active: boolean;
 };
 
-const HEX_LAYERS = [LAYER_IDS.driveR8, LAYER_IDS.walkR8, LAYER_IDS.driveR7];
+const HEX_LAYERS = [LAYER_IDS.driveR8, LAYER_IDS.driveR7]; // Walk layers commented out - tiles not available
 const MODE_LAYERS: Record<Mode, string[]> = {
   drive: [LAYER_IDS.driveR8, LAYER_IDS.driveR7],
-  walk: [LAYER_IDS.walkR8]
+  walk: [] // Walk tiles not available yet
 };
 
 let protocolRegistered = false;
@@ -34,6 +34,7 @@ export class MapController {
       import("maplibre-gl"),
       import("pmtiles")
     ]);
+    
     const maplibre = (maplibreModule as any).default ?? maplibreModule;
     const pmtiles = (pmtilesModule as any).default ?? pmtilesModule;
     const MapCtor = (maplibre as typeof import("maplibre-gl")).Map;
@@ -71,10 +72,20 @@ export class MapController {
     map.addControl(new NavigationControlCtor({ visualizePitch: true }), "top-right");
 
     this.map = map;
-
-    await new Promise<void>((resolve) => {
+    
+    // Use a timeout to detect if the map load event is stuck
+    const loadPromise = new Promise<void>((resolve) => {
       map.on("load", () => resolve());
     });
+    
+    const timeoutPromise = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        console.warn('⚠️ Map load timeout - proceeding anyway');
+        resolve();
+      }, 10000);
+    });
+    
+    await Promise.race([loadPromise, timeoutPromise]);
 
     this.showFallback();
   }
@@ -88,6 +99,7 @@ export class MapController {
     if (!this.map) return;
 
     const anyActive = Object.values(filters).some((entry) => entry.active);
+    
     if (!anyActive) {
       this.showFallback();
       return;
@@ -95,11 +107,13 @@ export class MapController {
 
     for (const mode of Object.keys(MODE_LAYERS) as Mode[]) {
       const state = filters[mode];
+      
       if (!state || !state.active) {
         this.setVisibilityForMode(mode, "none");
         this.applyFilterForMode(mode, null);
         continue;
       }
+      
       this.setVisibilityForMode(mode, "visible");
       this.applyFilterForMode(mode, state.filter ?? null);
     }
@@ -155,6 +169,7 @@ export class MapController {
 
   private applyFilterForMode(mode: Mode, filter: any | null) {
     if (!this.map) return;
+    
     for (const layerId of MODE_LAYERS[mode]) {
       if (this.map.getLayer(layerId)) {
         this.map.setFilter(layerId, filter as any);
