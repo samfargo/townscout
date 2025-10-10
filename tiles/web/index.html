@@ -1,0 +1,2006 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>TownScout</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+  <!-- Use pmtiles.js for protocol -->
+  <script src="/tiles/web/pmtiles.js"></script>
+  <style>
+    :root {
+      --sidebar-width: 360px;
+      --color-bg: #f5f7fb;
+      --color-border: #e2e8f0;
+      --color-accent: #2563eb;
+      --color-muted: #64748b;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--color-bg);
+      color: #0f172a;
+    }
+    .app-shell {
+      position: relative;
+      display: flex;
+      min-height: 100vh;
+      height: 100vh;
+      height: 100dvh;
+      width: 100%;
+    }
+    .sidebar {
+      flex: 0 0 var(--sidebar-width);
+      max-width: var(--sidebar-width);
+      height: 100%;
+      min-height: 0;
+      background: #ffffff;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 12px 0 40px rgba(15, 23, 42, 0.08);
+      border-right: 1px solid var(--color-border);
+      z-index: 4;
+      transition: transform 0.3s ease;
+    }
+    .sidebar-inner {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+      padding: 28px 28px 32px;
+      height: 100%;
+      overflow-y: auto;
+    }
+    .sidebar-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .brand-icon {
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #2563eb, #38bdf8);
+      color: #ffffff;
+      font-weight: 600;
+      font-size: 18px;
+      letter-spacing: 0.02em;
+    }
+    .brand-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .brand-copy h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    .brand-copy p {
+      margin: 0;
+      font-size: 13px;
+      color: var(--color-muted);
+    }
+    .quickstart {
+      background: #f8fafc;
+      border: 1px solid var(--color-border);
+      border-radius: 16px;
+      padding: 16px 18px;
+      line-height: 1.55;
+    }
+    .quickstart h4 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+    }
+    .quickstart p {
+      margin: 0;
+      font-size: 13px;
+      color: #334155;
+    }
+    .sidebar-section {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .section-heading {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .section-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #e0f2fe;
+      color: #0284c7;
+      flex-shrink: 0;
+    }
+    .section-heading h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    .section-heading p {
+      margin: 6px 0 0;
+      font-size: 13px;
+      color: var(--color-muted);
+      line-height: 1.5;
+    }
+    .field-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #334155;
+    }
+    .search-box {
+      position: relative;
+    }
+    .search-input {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--color-border);
+      font-size: 14px;
+      background: #ffffff;
+      color: #0f172a;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .search-input::placeholder {
+      color: #94a3b8;
+    }
+    .search-input:focus {
+      outline: none;
+      border-color: var(--color-accent);
+      box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15);
+    }
+    .search-results {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: calc(100% + 4px);
+      background: #ffffff;
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+      box-shadow: 0 18px 36px rgba(15, 23, 42, 0.18);
+      max-height: 260px;
+      overflow-y: auto;
+      z-index: 20;
+      padding: 6px 0;
+      display: none;
+    }
+    .search-results.open { display: block; }
+    .search-item {
+      padding: 10px 14px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .search-item:hover,
+    .search-item.active {
+      background: #ebf2ff;
+    }
+    .search-primary {
+      font-size: 14px;
+      font-weight: 600;
+      color: #111827;
+    }
+    .search-secondary {
+      font-size: 12px;
+      color: #6b7280;
+    }
+    .search-status {
+      font-size: 12px;
+      color: var(--color-muted);
+      min-height: 16px;
+    }
+    .search-status.error { color: #dc2626; }
+    .search-status.info { color: var(--color-accent); }
+    select {
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--color-border);
+      background: #ffffff;
+      font-size: 14px;
+      color: #0f172a;
+      appearance: none;
+      background-image: linear-gradient(45deg, transparent 50%, #94a3b8 50%), linear-gradient(135deg, #94a3b8 50%, transparent 50%);
+      background-position: calc(100% - 18px) calc(50% - 4px), calc(100% - 12px) calc(50% - 4px);
+      background-size: 6px 6px, 6px 6px;
+      background-repeat: no-repeat;
+      padding-right: 36px;
+    }
+    select:focus {
+      outline: none;
+      border-color: var(--color-accent);
+      box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+    }
+    .mode-picker,
+    .poi-picker {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .poi-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .helper-text {
+      margin: 0;
+      font-size: 12px;
+      color: var(--color-muted);
+    }
+    .btn {
+      border: none;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.2s ease;
+      padding: 10px 14px;
+    }
+    .btn:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 2px;
+    }
+    .btn-primary {
+      background: var(--color-accent);
+      color: #ffffff;
+      box-shadow: 0 12px 24px rgba(37, 99, 235, 0.22);
+    }
+    .btn-primary:hover {
+      background: #1d4ed8;
+      transform: translateY(-1px);
+    }
+    .btn-ghost {
+      background: #eef2ff;
+      color: #4f46e5;
+    }
+    .btn-ghost:hover {
+      background: #e0e7ff;
+    }
+    .btn-surface {
+      background: #f8fafc;
+      color: #0f172a;
+      border: 1px solid var(--color-border);
+    }
+    .btn-surface:hover {
+      background: #eef2f8;
+    }
+    .btn-icon {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      border-radius: 50%;
+      background: #f1f5f9;
+      color: #475569;
+    }
+    .btn-icon:hover {
+      background: #e2e8f0;
+    }
+    .btn-full { width: 100%; }
+    .remove-btn {
+      border: none;
+      background: transparent;
+      cursor: pointer;
+    }
+    .filters-empty {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 16px;
+      border-radius: 14px;
+      border: 1px dashed #cbd5f5;
+      background: rgba(59, 130, 246, 0.04);
+      color: #1d4ed8;
+      font-size: 13px;
+    }
+    .filters-empty strong { font-size: 13px; }
+    .filter-rows {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .filter-card {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 16px;
+      border-radius: 16px;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      box-shadow: 0 12px 20px rgba(15, 23, 42, 0.04);
+    }
+    .filter-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .filter-name {
+      font-size: 15px;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    .filter-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .pins-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #475569;
+      cursor: pointer;
+      user-select: none;
+    }
+    .pins-toggle input { cursor: pointer; }
+    .filter-slider {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+    }
+    input[type="range"] { accent-color: var(--color-accent); }
+    .slider-value {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 44px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .nudge {
+      font-size: 12px;
+      color: #475569;
+      background: #f8fafc;
+      border-radius: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--color-border);
+      display: none;
+    }
+    #hover-box {
+      background: #f8fafc;
+      border: 1px solid var(--color-border);
+      border-radius: 16px;
+      padding: 18px 20px;
+      box-shadow: inset 0 0 0 0 rgba(0,0,0,0);
+    }
+    #hover-box h4 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    #hover-box .kv {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+      color: #0f172a;
+    }
+    .muted {
+      color: var(--color-muted);
+      font-size: 13px;
+    }
+    .sidebar-footer {
+      margin-top: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .sidebar-footer p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--color-muted);
+    }
+    .map-surface {
+      position: relative;
+      flex: 1;
+      height: 100%;
+      min-height: 0;
+      background: #0f172a;
+    }
+    #map {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+    .map-footer {
+      position: absolute;
+      left: 16px;
+      bottom: 16px;
+      font-size: 11px;
+      background: rgba(255, 255, 255, 0.8);
+      padding: 4px 10px;
+      border-radius: 999px;
+      color: #334155;
+      backdrop-filter: blur(4px);
+      box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
+      pointer-events: none;
+    }
+    .sidebar-toggle {
+      display: none;
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 5;
+      border: none;
+      background: rgba(15, 23, 42, 0.8);
+      color: #ffffff;
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+    .sidebar-toggle:hover { background: rgba(15, 23, 42, 0.9); }
+    .sidebar-backdrop {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.28);
+      z-index: 3;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .sidebar-backdrop.visible {
+      display: block;
+      opacity: 1;
+    }
+    @media (max-width: 1100px) {
+      :root { --sidebar-width: 320px; }
+      .sidebar-inner { padding: 24px 24px 28px; }
+    }
+    @media (max-width: 960px) {
+      .sidebar {
+        position: absolute;
+        inset: 0 auto 0 0;
+        max-width: min(420px, 92vw);
+        transform: translateX(-105%);
+        height: 100%;
+      }
+      .sidebar.open {
+        transform: translateX(0);
+        box-shadow: 24px 0 48px rgba(15, 23, 42, 0.25);
+      }
+      .sidebar-toggle { display: inline-flex; }
+      .map-surface { flex: 1; }
+    }
+    @media (max-width: 640px) {
+      .sidebar-toggle {
+        top: 14px;
+        left: 14px;
+        width: 40px;
+        height: 40px;
+      }
+      .sidebar-inner { padding: 22px 20px 26px; }
+      .poi-controls {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      select { width: 100%; }
+    }
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.48);
+      z-index: 9999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    .loading-overlay.active { display: flex; }
+    .loading-box {
+      background: #ffffff;
+      padding: 28px 36px;
+      border-radius: 16px;
+      box-shadow: 0 30px 60px rgba(15, 23, 42, 0.25);
+      text-align: center;
+    }
+    .loading-spinner {
+      width: 42px;
+      height: 42px;
+      border: 4px solid #e2e8f0;
+      border-top-color: var(--color-accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 18px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+  </style>
+</head>
+<body>
+<div class="app-shell">
+  <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">
+    <span class="sr-only">Toggle filters panel</span>
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <line x1="4" y1="6" x2="20" y2="6"></line>
+      <line x1="4" y1="12" x2="20" y2="12"></line>
+      <line x1="4" y1="18" x2="20" y2="18"></line>
+    </svg>
+  </button>
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-inner">
+      <div class="sidebar-header">
+        <div class="brand-icon" aria-hidden="true">TS</div>
+        <div class="brand-copy">
+          <h1>Vicinity</h1>
+          <p>Explore livability by travel time</p>
+        </div>
+      </div>
+      <div class="quickstart">
+        <h4>Getting started</h4>
+        <p>Search for a home base, choose how you travel, then layer the places you rely on to reveal reachable neighborhoods.</p>
+      </div>
+      <div class="sidebar-section">
+        <div class="section-heading">
+          <span class="section-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="7"></circle>
+              <line x1="20" y1="20" x2="16.65" y2="16.65"></line>
+            </svg>
+          </span>
+          <div>
+            <h2>Set Your Home Base</h2>
+            <p>Search for an address or drop a pin to anchor the map to your day-to-day starting point.</p>
+          </div>
+        </div>
+        <div class="field-group search-container">
+          <label for="place-search-input">Custom location</label>
+          <div class="search-box">
+            <input id="place-search-input" class="search-input" type="text" placeholder="Search for an address or place (e.g. Seattle, WA)" autocomplete="off" aria-autocomplete="list" aria-controls="place-search-results" aria-expanded="false" />
+            <div id="place-search-results" class="search-results" role="listbox"></div>
+          </div>
+          <div id="place-search-status" class="search-status"></div>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="section-heading">
+          <span class="section-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="4" y1="21" x2="4" y2="14"></line>
+              <line x1="4" y1="10" x2="4" y2="3"></line>
+              <line x1="12" y1="21" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12" y2="3"></line>
+              <line x1="20" y1="21" x2="20" y2="16"></line>
+              <line x1="20" y1="12" x2="20" y2="3"></line>
+              <line x1="1" y1="14" x2="7" y2="14"></line>
+              <line x1="9" y1="8" x2="15" y2="8"></line>
+              <line x1="17" y1="16" x2="23" y2="16"></line>
+            </svg>
+          </span>
+          <div>
+            <h2>Build Your Criteria</h2>
+            <p>Select travel mode, then add points of interest you want nearby. Adjust minutes to fine-tune reach.</p>
+          </div>
+        </div>
+        <div id="filters" class="field-group">
+          <div class="mode-picker">
+            <label for="mode-select">Travel mode</label>
+            <select id="mode-select">
+              <option value="drive" selected>Drive</option>
+              <option value="walk">Walk</option>
+            </select>
+          </div>
+          <div class="poi-picker">
+            <label for="poi-select">Add a place type</label>
+            <div class="poi-controls">
+              <select id="poi-select"></select>
+              <button id="add-poi" class="btn btn-primary" type="button">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+                <span>Add</span>
+              </button>
+              <button id="add-custom" class="btn btn-surface" type="button" title="Pick a custom location on the map">Map Pick</button>
+            </div>
+            <p class="helper-text">Need inspiration? Try layering groceries, daycare, coffee, or your office.</p>
+          </div>
+          <div id="filters-empty-state" class="filters-empty">
+            <strong>No filters yet.</strong>
+            <span>Add a point of interest or drop a custom pin to see matching areas.</span>
+          </div>
+          <div id="filter-rows" class="filter-rows"></div>
+          <div id="nudge" class="nudge">Try increasing minutes to see more areas.</div>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="section-heading">
+          <span class="section-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9"></circle>
+              <polyline points="12 7 12 12 15 15"></polyline>
+            </svg>
+          </span>
+          <div>
+            <h2>Live Travel Insights</h2>
+            <p>Hover any hex on the map to compare travel time for each of your saved places.</p>
+          </div>
+        </div>
+        <div id="hover-box">
+          <h4>Travel Time (minutes)</h4>
+          <div id="hover-content" class="muted">Move cursor over a hex</div>
+        </div>
+      </div>
+      <div class="sidebar-footer">
+        <button id="share" class="btn btn-ghost btn-full" type="button">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"></path>
+            <polyline points="16 6 12 2 8 6"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          <span class="btn-label">Share current map</span>
+        </button>
+        <p>Copy a link to revisit this exact combination of travel mode and places.</p>
+      </div>
+    </div>
+  </aside>
+  <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+  <div class="map-surface">
+    <div id="map"></div>
+    <div class="map-footer">Map data © OpenStreetMap contributors</div>
+  </div>
+</div>
+
+<div id="loading-overlay" class="loading-overlay">
+  <div class="loading-box">
+    <div class="loading-spinner"></div>
+    <div id="loading-text" style="font-size: 14px; color: #374151;">Computing drive times...</div>
+  </div>
+</div>
+
+<script>
+  // ---------- PMTiles Protocol ----------
+  let protocol = new pmtiles.Protocol();
+  maplibregl.addProtocol("pmtiles", protocol.tile);
+
+  const R7_DRIVE_URL = "pmtiles:///tiles/t_hex_r7_drive.pmtiles";
+  const R8_DRIVE_URL = "pmtiles:///tiles/t_hex_r8_drive.pmtiles";
+  const R8_WALK_URL  = "pmtiles:///tiles/t_hex_r8_walk.pmtiles";
+  const R7_DRIVE_HTTP = R7_DRIVE_URL.replace(/^pmtiles:\/\//, '');
+  const R8_DRIVE_HTTP = R8_DRIVE_URL.replace(/^pmtiles:\/\//, '');
+  const R8_WALK_HTTP  = R8_WALK_URL.replace(/^pmtiles:\/\//, '');
+
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+      version: 8,
+      sources: {
+        'osm': {
+          type: 'raster',
+          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          attribution: '© OpenStreetMap contributors'
+        },
+        'us_r7_drive': {
+          type: 'vector',
+          url: R7_DRIVE_URL,
+          attribution: "TownScout"
+        },
+        'us_r8_drive': {
+          type: 'vector',
+          url: R8_DRIVE_URL
+        },
+        'us_r8_walk': {
+          type: 'vector',
+          url: R8_WALK_URL
+        }
+      },
+      layers: [
+        { id: 'osm-base', type: 'raster', source: 'osm', paint: { 'raster-opacity': 0.7 } },
+        {
+          id: 'layer_r7_drive',
+          type: 'fill',
+          source: 'us_r7_drive',
+          'source-layer': 't_hex_r7_drive',
+          maxzoom: 9.5,
+          paint: {
+            'fill-color': '#1976d2',
+            'fill-opacity': ['interpolate', ['linear'], ['zoom'], 7, 0.5, 9, 0.3],
+            'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        {
+          id: 'layer_r8_drive',
+          type: 'fill',
+          source: 'us_r8_drive',
+          'source-layer': 't_hex_r8_drive',
+          minzoom: 7.5,
+          paint: {
+            'fill-color': '#1976d2',
+            'fill-opacity': ['interpolate', ['linear'], ['zoom'], 7.5, 0, 9, 0.5],
+            'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        {
+          id: 'layer_r8_walk',
+          type: 'fill',
+          source: 'us_r8_walk',
+          'source-layer': 't_hex_r8_walk',
+          minzoom: 8,
+          layout: { 'visibility': 'none' },
+          paint: {
+            'fill-color': '#10b981',
+            'fill-opacity': 0.5,
+            'fill-outline-color': 'rgba(0, 0, 0, 0.1)'
+          }
+        }
+      ]
+    },
+    center: [-98.58, 39.83], // US center
+    zoom: 4
+  });
+
+  // ---------- Hover Box ----------
+  function updateHoverBox(feature) {
+    const contentEl = document.getElementById('hover-content');
+    // In anchor mode, the mousemove handler renders hover content;
+    // for no-feature cases or non-anchor fallback, show a simple hint.
+    contentEl.innerHTML = '<span class="muted">Move cursor over a hex</span>';
+  }
+  
+  // ---------- Filter Logic ----------
+  // ---------- Dynamic POI Filters (Anchor Mode Only) ----------
+  // Anchor-mode required: we compose a{i}_s with D_anchor maps from the API
+  let ANCHOR_MODE = true; // anchor arrays present; compose with D_anchor
+  let CURRENT_MODE = 'drive'; // 'drive' | 'walk'
+  const MAX_K = 20; // align with tiles: support up to 20 anchors; missing ones coalesce to sentinel
+  const dAnchorCache = {}; // { categoryId|brandId|customKey: { anchorId: seconds } }
+  const customCoverageMinutes = {}; // { customKey: max minutes covered }
+  const CUSTOM_MIN_MINUTES = 5;
+  const CUSTOM_MAX_MINUTES = 240;
+  const CUSTOM_FETCH_GRANULARITY = 5; // Fetch custom D_anchor in 5-minute increments
+
+  const PLACE_AUTOCOMPLETE_MIN_CHARS = 2;
+  const PLACE_AUTOCOMPLETE_DEBOUNCE_MS = 200;
+  const PLACE_SUGGESTION_LIMIT = 8;
+  let placeSearchSessionToken = null;
+  let placeSearchAbortController = null;
+  let placeSearchSuggestions = [];
+  let placeSearchActiveIndex = -1;
+  let placeSearchInputEl = null;
+  let placeSearchResultsEl = null;
+  let placeSearchStatusEl = null;
+  let placeSearchMarker = null;
+
+  const selectedPOIs = [];
+  const activePins = {}; // rowKey -> { brands: string[], sourceId: string, layerIds: string[] }
+  let PICKING_CUSTOM = false;
+
+  const sidebarEl = document.getElementById('sidebar');
+  const sidebarToggleBtn = document.getElementById('sidebar-toggle');
+  const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+  const filtersEmptyStateEl = document.getElementById('filters-empty-state');
+  const viewportQuery = window.matchMedia('(max-width: 960px)');
+
+  function isCompactViewport() {
+    return viewportQuery.matches;
+  }
+
+  function setSidebarOpen(open) {
+    if (!sidebarEl) return;
+    if (open) {
+      sidebarEl.classList.add('open');
+    } else {
+      sidebarEl.classList.remove('open');
+    }
+    if (sidebarToggleBtn) {
+      sidebarToggleBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+    if (sidebarBackdrop) {
+      sidebarBackdrop.classList.toggle('visible', open && isCompactViewport());
+    }
+  }
+
+  function toggleSidebar() {
+    if (!sidebarEl) return;
+    const shouldOpen = !sidebarEl.classList.contains('open');
+    setSidebarOpen(shouldOpen);
+  }
+
+  function applyViewportState(e) {
+    const matches = e && typeof e.matches === 'boolean' ? e.matches : isCompactViewport();
+    if (matches) {
+      setSidebarOpen(false);
+    } else {
+      setSidebarOpen(true);
+    }
+  }
+
+  if (typeof viewportQuery.addEventListener === 'function') {
+    viewportQuery.addEventListener('change', applyViewportState);
+  } else if (typeof viewportQuery.addListener === 'function') {
+    viewportQuery.addListener(applyViewportState);
+  }
+
+  if (sidebarToggleBtn) {
+    sidebarToggleBtn.addEventListener('click', () => {
+      toggleSidebar();
+    });
+  }
+
+  if (sidebarBackdrop) {
+    sidebarBackdrop.addEventListener('click', () => setSidebarOpen(false));
+  }
+
+  applyViewportState(viewportQuery);
+
+  function updateFilterEmptyState() {
+    if (!filtersEmptyStateEl) return;
+    filtersEmptyStateEl.style.display = selectedPOIs.length > 0 ? 'none' : 'flex';
+  }
+
+  updateFilterEmptyState();
+
+  function showLoading(text = 'Computing drive times...') {
+    const overlay = document.getElementById('loading-overlay');
+    const textEl = document.getElementById('loading-text');
+    if (textEl) textEl.textContent = text;
+    if (overlay) overlay.classList.add('active');
+  }
+
+  function hideLoading() {
+    const overlay = document.getElementById('loading-overlay');
+    if (overlay) overlay.classList.remove('active');
+  }
+
+  // (min-cols fallback removed)
+
+  function buildMinExprForCategory(catId) {
+    // Compose min over top-K anchors: a{i}_s + D_anchor[a{i}_id]
+    const catMap = dAnchorCache[catId] || {};
+    const literalMap = ["literal", catMap];
+    const UNREACHABLE = 65535;
+    const terms = [];
+    for (let i = 0; i < MAX_K; i++) {
+      const aSec = ["coalesce", ["get", `a${i}_s`], UNREACHABLE];
+      const aidStr = ["to-string", ["get", `a${i}_id`]];
+      const catSec = ["coalesce", ["get", aidStr, literalMap], UNREACHABLE];
+      terms.push(["+", aSec, catSec]);
+    }
+    return ["min", ...terms];
+  }
+
+  function buildMinExprForBrand(brandId) {
+    // Like category: min over a{i}_s + D_anchor_brand[a{i}_id]
+    const brandMap = dAnchorCache[brandId] || {};
+    const literalMap = ["literal", brandMap];
+    const UNREACHABLE = 65535;
+    const terms = [];
+    for (let i = 0; i < MAX_K; i++) {
+      const aSec = ["coalesce", ["get", `a${i}_s`], UNREACHABLE];
+      const aidStr = ["to-string", ["get", `a${i}_id`]];
+      const bSec = ["coalesce", ["get", aidStr, literalMap], UNREACHABLE];
+      terms.push(["+", aSec, bSec]);
+    }
+    return ["min", ...terms];
+  }
+
+  function buildMinExprForCustom(customId) {
+    // Same as brand: min over a{i}_s + D_anchor_custom[a{i}_id]
+    const customMap = dAnchorCache[customId] || {};
+    const literalMap = ["literal", customMap];
+    const UNREACHABLE = 65535;
+    const terms = [];
+    for (let i = 0; i < MAX_K; i++) {
+      const aSec = ["coalesce", ["get", `a${i}_s`], UNREACHABLE];
+      const aidStr = ["to-string", ["get", `a${i}_id`]];
+      const cSec = ["coalesce", ["get", aidStr, literalMap], UNREACHABLE];
+      terms.push(["+", aSec, cSec]);
+    }
+    return ["min", ...terms];
+  }
+
+  function buildFilterExpressionCombined() {
+    const clauses = ["all"];
+    selectedPOIs.forEach((p) => {
+      const slider = document.getElementById(`slider_${p.id}`);
+      if (!slider) return;
+      if (p.type === 'category') {
+        if (dAnchorCache[p.id] && Object.keys(dAnchorCache[p.id]).length > 0) {
+          const maxMin = parseInt(slider.value, 10) * 60; // seconds
+          const minExpr = buildMinExprForCategory(p.id);
+          clauses.push(["<=", minExpr, maxMin]);
+        }
+      } else if (p.type === 'brand') {
+        if (dAnchorCache[p.id] && Object.keys(dAnchorCache[p.id]).length > 0) {
+          const maxMin = parseInt(slider.value, 10) * 60; // seconds
+          const minExpr = buildMinExprForBrand(p.id);
+          clauses.push(["<=", minExpr, maxMin]);
+        }
+      } else if (p.type === 'custom') {
+        const cacheEntry = dAnchorCache[p.id];
+        const entrySize = cacheEntry ? Object.keys(cacheEntry).length : 0;
+        console.log(`Custom POI ${p.id}: cache has ${entrySize} entries, slider=${slider.value}min`);
+        if (cacheEntry && entrySize > 0) {
+          const maxMin = parseInt(slider.value, 10) * 60; // seconds
+          const minExpr = buildMinExprForCustom(p.id);
+          clauses.push(["<=", minExpr, maxMin]);
+        } else {
+          console.warn(`Custom POI ${p.id}: no cache data available yet`);
+        }
+      }
+    });
+    console.log(`Filter expression has ${clauses.length - 1} clauses`);
+    return clauses;
+  }
+
+  async function updateMapFilter() {
+    // Update inline value bubbles
+    selectedPOIs.forEach((poi) => {
+      const slider = document.getElementById(`slider_${poi.id}`);
+      const valSpan = document.getElementById(`val_${poi.id}`);
+      if (slider && valSpan) valSpan.textContent = slider.value;
+    });
+
+    // Ensure custom POIs have coverage for the current slider minutes before filtering
+    const pending = [];
+    selectedPOIs.forEach((poi) => {
+      if (poi.type !== 'custom') return;
+      const slider = document.getElementById(`slider_${poi.id}`);
+      if (!slider) return;
+      const minutes = normalizeMinutes(slider.value);
+      const covered = customCoverageMinutes[poi.id] || 0;
+      if (covered >= minutes) return;
+      pending.push(fetchDAnchorCustom(poi.lon, poi.lat, minutes));
+    });
+    if (pending.length > 0) {
+      try {
+        await Promise.all(pending);
+      } catch (err) {
+        console.error('Failed to refresh custom D_anchor coverage', err);
+      }
+    }
+
+    // If no POIs selected, show all hexes (no filter)
+    const filter = selectedPOIs.length > 0 ? buildFilterExpressionCombined() : null;
+    // Apply to current mode layer(s)
+    if (CURRENT_MODE === 'drive') {
+      map.setFilter('layer_r8_drive', filter);
+      map.setFilter('layer_r7_drive', filter);
+      map.setFilter('layer_r8_walk', null);
+    } else {
+      map.setFilter('layer_r8_walk', filter);
+      map.setFilter('layer_r8_drive', null);
+      map.setFilter('layer_r7_drive', null);
+    }
+  }
+
+  function debounce(fn, ms) {
+    let timer;
+    return (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), ms);
+    };
+  }
+  
+  const debouncedUpdate = debounce(updateMapFilter, 50);
+
+  function addPOIRow(poi) {
+    const existingIdx = selectedPOIs.findIndex(p => p.id === poi.id && p.type === poi.type);
+    if (existingIdx >= 0) {
+      const existing = selectedPOIs[existingIdx];
+      const merged = Object.assign({}, existing, poi);
+      selectedPOIs[existingIdx] = merged;
+      if (poi.label && poi.label !== existing.label) {
+        const labelEl = document.querySelector(`#row_${poi.type}_${poi.id} label[for="slider_${poi.id}"]`);
+        if (labelEl) labelEl.textContent = `${poi.label}`;
+      }
+      updateFilterEmptyState();
+      return;
+    }
+    selectedPOIs.push(poi);
+    const container = document.getElementById('filter-rows');
+    if (!container) return;
+    const row = document.createElement('div');
+    row.className = 'filter-card';
+    row.id = `row_${poi.type}_${poi.id}`;
+    row.innerHTML = `
+      <div class="filter-header">
+        <label class="filter-name" for="slider_${poi.id}">${poi.label}</label>
+        <div class="filter-actions">
+          <label class="pins-toggle" title="Show pins for ${poi.label}">
+            <input id="pins_${poi.type}_${poi.id}" type="checkbox">
+            <span>Pins</span>
+          </label>
+          <button class="remove-btn btn-icon" type="button" id="rm_${poi.id}" title="Remove ${poi.label}" aria-label="Remove ${poi.label}">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="filter-slider">
+        <input id="slider_${poi.id}" type="range" min="${poi.min}" max="${poi.max}" step="${poi.step}" value="${poi.def}">
+        <span id="val_${poi.id}" class="slider-value">${poi.def}</span>
+      </div>
+    `;
+    container.appendChild(row);
+    updateFilterEmptyState();
+    document.getElementById(`slider_${poi.id}`).addEventListener('input', debouncedUpdate);
+    const pinsEl = document.getElementById(`pins_${poi.type}_${poi.id}`);
+    if (pinsEl) {
+      pinsEl.addEventListener('change', async (e) => {
+        await togglePinsForPoi(poi, e.target.checked);
+      });
+    }
+    document.getElementById(`rm_${poi.id}`).addEventListener('click', () => {
+      // Remove from selected list and DOM
+      const idx = selectedPOIs.findIndex(p => p.id === poi.id && p.type === poi.type);
+      if (idx >= 0) selectedPOIs.splice(idx, 1);
+      row.remove();
+      removePinsForPoi(poi);
+      if (poi.type === 'custom') {
+        delete dAnchorCache[poi.id];
+        delete customCoverageMinutes[poi.id];
+      }
+      updateFilterEmptyState();
+      updateMapFilter();
+    });
+    if (poi.type === 'custom') {
+      const initialMinutes = normalizeMinutes(poi.def);
+      showLoading('Computing drive times for custom location...');
+      fetchDAnchorCustom(poi.lon, poi.lat, initialMinutes)
+        .then(() => {
+          console.log(`Custom D_anchor loaded for ${poi.id}, cache has ${Object.keys(dAnchorCache[poi.id] || {}).length} anchors (coverage=${customCoverageMinutes[poi.id] || 0}min)`);
+          hideLoading();
+          updateMapFilter();
+        })
+        .catch(e => {
+          console.error(`Failed to fetch custom D_anchor for ${poi.id}:`, e);
+          hideLoading();
+          alert('Failed to compute drive times. Please try again or choose a different location.');
+          updateMapFilter(); // Still update to show the POI in the list
+        });
+    } else if (ANCHOR_MODE && poi.type === 'category') {
+      fetchDAnchor(poi.id).then(() => updateMapFilter());
+    } else {
+      updateMapFilter();
+    }
+  }
+
+  async function fetchJSON(url) {
+    console.log(`fetchJSON: requesting ${url}`);
+    try {
+      const resp = await fetch(url);
+      console.log(`fetchJSON: got response status ${resp.status} for ${url}`);
+      if (!resp.ok) {
+        const text = await resp.text();
+        console.error(`fetchJSON: HTTP ${resp.status} - ${text}`);
+        throw new Error(`HTTP ${resp.status}: ${text}`);
+      }
+      const data = await resp.json();
+      console.log(`fetchJSON: successfully parsed JSON for ${url}`);
+      return data;
+    } catch (e) {
+      console.error(`fetchJSON: exception for ${url}:`, e);
+      throw e;
+    }
+  }
+
+  // (tile metadata probing and fallback removed)
+
+  // (fallback selector removed)
+
+  function initPoiSelector() {
+    initCatalogSelector().catch(() => {
+      const select = document.getElementById('poi-select');
+      select.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Catalog unavailable';
+      select.appendChild(opt);
+    });
+  }
+
+  // ---------- Catalog + Anchor Mode ----------
+  async function fetchDAnchor(categoryId) {
+    if (dAnchorCache[categoryId]) return dAnchorCache[categoryId];
+    const data = await fetchJSON(`/api/d_anchor?category=${encodeURIComponent(categoryId)}&mode=${encodeURIComponent(CURRENT_MODE)}`);
+    dAnchorCache[categoryId] = data;
+    return data;
+  }
+
+  async function initCatalogSelector() {
+    const resp = await fetchJSON(`/api/catalog?mode=${encodeURIComponent(CURRENT_MODE)}`);
+    const categories = Array.isArray(resp.categories) ? resp.categories : [];
+    const brands = Array.isArray(resp.brands) ? resp.brands : [];
+    const catToBrands = resp.cat_to_brands || {};
+    ANCHOR_MODE = true; // always anchor-mode; D_anchor fetched on demand
+    // Stash for URL parsing and labels
+    window._categoriesById = new Map(categories.map(c => [String(c.id), c.label]));
+    window._brandLabelById = new Map(brands.map(b => [String(b.id), b.label]));
+    window._catToBrands = catToBrands;
+    populateCatalogSelector(categories, brands, catToBrands);
+  }
+
+  // ---------- Custom D_anchor ----------
+  function customKeyForLonLat(lon, lat) {
+    const lonf = Number(lon).toFixed(5);
+    const latf = Number(lat).toFixed(5);
+    return `custom@${lonf},${latf}`;
+  }
+
+  function normalizeMinutes(value) {
+    const raw = Number.parseInt(value, 10);
+    if (!Number.isFinite(raw) || raw <= 0) return CUSTOM_MIN_MINUTES;
+    const clamped = Math.max(CUSTOM_MIN_MINUTES, Math.min(CUSTOM_MAX_MINUTES, raw));
+    const steps = Math.ceil(clamped / CUSTOM_FETCH_GRANULARITY);
+    return steps * CUSTOM_FETCH_GRANULARITY;
+  }
+
+  async function fetchDAnchorCustom(lon, lat, minutes) {
+    const key = customKeyForLonLat(lon, lat);
+    const requested = normalizeMinutes(minutes ?? CUSTOM_MIN_MINUTES);
+    const covered = customCoverageMinutes[key] || 0;
+    if (dAnchorCache[key] && covered >= requested) {
+      return dAnchorCache[key];
+    }
+    const params = new URLSearchParams();
+    params.set('lon', String(lon));
+    params.set('lat', String(lat));
+    params.set('mode', CURRENT_MODE);
+    params.set('cutoff', String(requested));
+    params.set('overflow_cutoff', String(requested));
+    const url = `/api/d_anchor_custom?${params.toString()}`;
+    console.log(`Fetching custom D_anchor (${requested}min) from: ${url}`);
+    const data = await fetchJSON(url);
+    dAnchorCache[key] = data;
+    customCoverageMinutes[key] = requested;
+    return data;
+  }
+
+  // ---------- Places Autocomplete (Custom Location) ----------
+  function generatePlacesSessionToken() {
+    if (window.crypto && window.crypto.randomUUID) {
+      return window.crypto.randomUUID();
+    }
+    return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function locationBiasForPlacesAutocomplete() {
+    const bbox = currentBboxParam();
+    if (bbox) return bbox;
+    try {
+      const center = map.getCenter();
+      if (center) return `${center.lng},${center.lat}`;
+    } catch (e) {}
+    return null;
+  }
+
+  function setPlaceSearchStatus(message, tone = '') {
+    if (!placeSearchStatusEl) return;
+    placeSearchStatusEl.textContent = message || '';
+    placeSearchStatusEl.className = 'search-status';
+    if (tone) placeSearchStatusEl.classList.add(tone);
+  }
+
+  function resetPlacesSuggestions(options = {}) {
+    placeSearchSuggestions = [];
+    placeSearchActiveIndex = -1;
+    if (placeSearchResultsEl) {
+      placeSearchResultsEl.innerHTML = '';
+      placeSearchResultsEl.classList.remove('open');
+    }
+    if (placeSearchInputEl) {
+      placeSearchInputEl.setAttribute('aria-expanded', 'false');
+      placeSearchInputEl.removeAttribute('aria-activedescendant');
+      placeSearchInputEl.removeAttribute('aria-busy');
+    }
+    if (options.clearStatus) {
+      setPlaceSearchStatus('', '');
+    }
+  }
+
+  function updatePlaceSearchHighlight(newIndex) {
+    const items = placeSearchResultsEl ? placeSearchResultsEl.querySelectorAll('.search-item') : [];
+    if (!items.length) {
+      placeSearchActiveIndex = -1;
+      if (placeSearchInputEl) placeSearchInputEl.removeAttribute('aria-activedescendant');
+      return;
+    }
+    let idx = typeof newIndex === 'number' ? newIndex : placeSearchActiveIndex;
+    if (idx < 0 || idx >= items.length) {
+      idx = -1;
+    }
+    placeSearchActiveIndex = idx;
+    items.forEach((el, i) => {
+      if (i === placeSearchActiveIndex) {
+        el.classList.add('active');
+        el.setAttribute('aria-selected', 'true');
+        if (placeSearchInputEl) {
+          placeSearchInputEl.setAttribute('aria-activedescendant', el.id || '');
+        }
+        el.scrollIntoView({ block: 'nearest' });
+      } else {
+        el.classList.remove('active');
+        el.setAttribute('aria-selected', 'false');
+      }
+    });
+    if (placeSearchActiveIndex === -1 && placeSearchInputEl) {
+      placeSearchInputEl.removeAttribute('aria-activedescendant');
+    }
+  }
+
+  function renderPlaceSearchSuggestions() {
+    if (!placeSearchResultsEl) return;
+    placeSearchResultsEl.innerHTML = '';
+    if (!placeSearchSuggestions.length) {
+      placeSearchResultsEl.classList.remove('open');
+      if (placeSearchInputEl) placeSearchInputEl.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    placeSearchSuggestions.forEach((suggestion, index) => {
+      const item = document.createElement('div');
+      item.className = 'search-item';
+      item.id = `place-search-item-${index}`;
+      item.setAttribute('role', 'option');
+      const primary = document.createElement('div');
+      primary.className = 'search-primary';
+      primary.textContent = suggestion.label || suggestion.sublabel || 'Unnamed place';
+      item.appendChild(primary);
+      if (suggestion.sublabel && suggestion.sublabel !== suggestion.label) {
+        const secondary = document.createElement('div');
+        secondary.className = 'search-secondary';
+        secondary.textContent = suggestion.sublabel;
+        item.appendChild(secondary);
+      }
+      item.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        selectPlaceSuggestion(index);
+      });
+      placeSearchResultsEl.appendChild(item);
+    });
+    placeSearchResultsEl.classList.add('open');
+    if (placeSearchInputEl) placeSearchInputEl.setAttribute('aria-expanded', 'true');
+    updatePlaceSearchHighlight(-1);
+  }
+
+  async function requestPlacesAutocomplete(value) {
+    const query = String(value || '').trim();
+    if (query.length < PLACE_AUTOCOMPLETE_MIN_CHARS) {
+      resetPlacesSuggestions();
+      return;
+    }
+    if (!placeSearchSessionToken) {
+      placeSearchSessionToken = generatePlacesSessionToken();
+    }
+    if (placeSearchAbortController) {
+      placeSearchAbortController.abort();
+    }
+    placeSearchAbortController = new AbortController();
+    if (placeSearchInputEl) placeSearchInputEl.setAttribute('aria-busy', 'true');
+    setPlaceSearchStatus('Searching…', 'info');
+    const params = new URLSearchParams();
+    params.set('q', query);
+    params.set('session', placeSearchSessionToken);
+    params.set('limit', String(PLACE_SUGGESTION_LIMIT));
+    const bias = locationBiasForPlacesAutocomplete();
+    if (bias) params.set('locationBias', bias);
+    try {
+      const resp = await fetch(`/api/places/autocomplete?${params.toString()}`, { signal: placeSearchAbortController.signal });
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try {
+          const errJson = await resp.json();
+          if (errJson && errJson.detail) detail = errJson.detail;
+        } catch (e) {}
+        throw new Error(detail);
+      }
+      const data = await resp.json();
+      const results = Array.isArray(data.results) ? data.results : [];
+      placeSearchSuggestions = results.slice(0, PLACE_SUGGESTION_LIMIT);
+      renderPlaceSearchSuggestions();
+      if (placeSearchSuggestions.length === 0) {
+        setPlaceSearchStatus('No matches found.', 'info');
+      } else {
+        setPlaceSearchStatus('', '');
+      }
+    } catch (error) {
+      if (error && error.name === 'AbortError') return;
+      console.error('Places autocomplete failed', error);
+      setPlaceSearchStatus('Unable to fetch suggestions. Please try again.', 'error');
+      resetPlacesSuggestions();
+    } finally {
+      if (placeSearchInputEl) placeSearchInputEl.removeAttribute('aria-busy');
+      placeSearchAbortController = null;
+    }
+  }
+
+  function selectPlaceSuggestion(index) {
+    if (index == null) index = placeSearchActiveIndex;
+    if (index == null || index < 0) index = placeSearchSuggestions.length === 1 ? 0 : index;
+    const suggestion = placeSearchSuggestions[index];
+    if (!suggestion) return;
+    if (placeSearchAbortController) {
+      placeSearchAbortController.abort();
+      placeSearchAbortController = null;
+    }
+    if (placeSearchInputEl) {
+      const value = suggestion.label || suggestion.sublabel || '';
+      placeSearchInputEl.value = value;
+      placeSearchInputEl.setAttribute('aria-busy', 'true');
+    }
+    resetPlacesSuggestions();
+    setPlaceSearchStatus('Fetching location…', 'info');
+    fetchPlaceDetails(suggestion);
+  }
+
+  async function fetchPlaceDetails(suggestion) {
+    if (!suggestion || !suggestion.id) {
+      setPlaceSearchStatus('Missing place identifier.', 'error');
+      if (placeSearchInputEl) placeSearchInputEl.removeAttribute('aria-busy');
+      return;
+    }
+    if (!placeSearchSessionToken) {
+      placeSearchSessionToken = generatePlacesSessionToken();
+    }
+    const params = new URLSearchParams();
+    params.set('id', suggestion.id);
+    params.set('session', placeSearchSessionToken);
+    try {
+      const resp = await fetch(`/api/places/details?${params.toString()}`);
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try {
+          const errJson = await resp.json();
+          if (errJson && errJson.detail) detail = errJson.detail;
+        } catch (e) {}
+        throw new Error(detail);
+      }
+      const data = await resp.json();
+      const result = data && data.result ? data.result : null;
+      if (!result || typeof result.lon !== 'number' || typeof result.lat !== 'number') {
+        throw new Error('Missing coordinates');
+      }
+      const lon = result.lon;
+      const lat = result.lat;
+      const label = result.label || suggestion.label || 'Custom Location';
+      const sublabel = result.sublabel || suggestion.sublabel || '';
+      try {
+        const targetZoom = Math.max(map.getZoom(), 13);
+        map.easeTo({ center: [lon, lat], zoom: targetZoom, duration: 800 });
+      } catch (e) {}
+      if (!placeSearchMarker) {
+        placeSearchMarker = new maplibregl.Marker({ color: '#ef4444' });
+      }
+      placeSearchMarker.setLngLat([lon, lat]).addTo(map);
+      const poi = { type: 'custom', id: customKeyForLonLat(lon, lat), label, lon, lat, def: 30, min: 5, max: 240, step: 5 };
+      addPOIRow(poi);
+      if (isCompactViewport()) {
+        setSidebarOpen(false);
+      }
+      if (placeSearchInputEl) {
+        placeSearchInputEl.value = label;
+        placeSearchInputEl.blur();
+        placeSearchInputEl.removeAttribute('aria-busy');
+      }
+      placeSearchSessionToken = null;
+      if (sublabel) {
+        setPlaceSearchStatus(sublabel, '');
+      } else {
+        setPlaceSearchStatus('', '');
+      }
+    } catch (error) {
+      console.error('Place details failed', error);
+      setPlaceSearchStatus(error && error.message ? error.message : 'Unable to fetch place details.', 'error');
+      if (placeSearchInputEl) placeSearchInputEl.removeAttribute('aria-busy');
+    }
+  }
+
+  function initializePlaceSearch() {
+    placeSearchInputEl = document.getElementById('place-search-input');
+    placeSearchResultsEl = document.getElementById('place-search-results');
+    placeSearchStatusEl = document.getElementById('place-search-status');
+    if (!placeSearchInputEl) return;
+    const scheduleAutocomplete = debounce((value) => {
+      requestPlacesAutocomplete(value);
+    }, PLACE_AUTOCOMPLETE_DEBOUNCE_MS);
+    placeSearchInputEl.addEventListener('focus', () => {
+      placeSearchSessionToken = generatePlacesSessionToken();
+      setPlaceSearchStatus('Type at least two characters to search.', 'info');
+    });
+    placeSearchInputEl.addEventListener('input', (event) => {
+      const value = event.target.value || '';
+      if (value.trim().length < PLACE_AUTOCOMPLETE_MIN_CHARS) {
+        if (placeSearchAbortController) {
+          placeSearchAbortController.abort();
+          placeSearchAbortController = null;
+        }
+        resetPlacesSuggestions();
+        if (value.trim().length === 0) {
+          setPlaceSearchStatus('', '');
+        } else {
+          setPlaceSearchStatus('Keep typing…', 'info');
+        }
+        return;
+      }
+      scheduleAutocomplete(value);
+    });
+    placeSearchInputEl.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown') {
+        if (!placeSearchSuggestions.length) return;
+        event.preventDefault();
+        const next = placeSearchActiveIndex + 1;
+        const wrapped = next >= placeSearchSuggestions.length ? 0 : next;
+        placeSearchActiveIndex = wrapped;
+        updatePlaceSearchHighlight(placeSearchActiveIndex);
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        if (!placeSearchSuggestions.length) return;
+        event.preventDefault();
+        const prev = placeSearchActiveIndex <= 0 ? placeSearchSuggestions.length - 1 : placeSearchActiveIndex - 1;
+        placeSearchActiveIndex = prev;
+        updatePlaceSearchHighlight(placeSearchActiveIndex);
+        return;
+      }
+      if (event.key === 'Enter') {
+        if (placeSearchSuggestions.length > 0) {
+          event.preventDefault();
+          const index = placeSearchActiveIndex >= 0 ? placeSearchActiveIndex : 0;
+          selectPlaceSuggestion(index);
+        }
+      }
+      if (event.key === 'Escape') {
+        resetPlacesSuggestions({ clearStatus: true });
+      }
+    });
+    placeSearchInputEl.addEventListener('blur', () => {
+      setTimeout(() => {
+        if (document.activeElement !== placeSearchInputEl) {
+          resetPlacesSuggestions();
+          placeSearchSessionToken = null;
+        }
+      }, 120);
+    });
+    document.addEventListener('click', (event) => {
+      if (!placeSearchInputEl) return;
+      if (event.target === placeSearchInputEl) return;
+      if (placeSearchResultsEl && placeSearchResultsEl.contains(event.target)) return;
+      resetPlacesSuggestions();
+    });
+  }
+
+  // (min-column fallback removed; GPU composition only)
+
+  function populateCatalogSelector(categories, brands, catToBrands) {
+    const select = document.getElementById('poi-select');
+    select.innerHTML = '';
+    const brandMap = new Map(brands.map(b => [String(b.id), b.label]));
+    // Group categories by label to avoid repeated labels (e.g., multiple "Restaurant")
+    const groups = new Map(); // label -> { label, ids:Set<string>, brandIds:Set<string> }
+    categories.forEach(cat => {
+      const label = String(cat.label);
+      const scid = String(cat.id);
+      const g = groups.get(label) || { label, ids: new Set(), brandIds: new Set() };
+      g.ids.add(scid);
+      const bidList = catToBrands[String(cat.id)] || [];
+      bidList.forEach(bid => g.brandIds.add(String(bid)));
+      groups.set(label, g);
+    });
+
+    // Stash mapping of joined-ids -> label for URL parsing
+    window._groupLabelByIds = new Map();
+
+    const addedBrands = new Set();
+    Array.from(groups.values()).sort((a,b) => a.label.localeCompare(b.label)).forEach(g => {
+      const og = document.createElement('optgroup');
+      og.label = g.label;
+      // Category-level selection (joined ids)
+      const joined = Array.from(g.ids).sort().join(',');
+      const optAll = document.createElement('option');
+      optAll.value = `cat:${joined}`;
+      optAll.textContent = g.label;
+      og.appendChild(optAll);
+      window._groupLabelByIds.set(joined, g.label);
+      // Brand list (union across grouped categories)
+      Array.from(g.brandIds).sort().forEach(bid => {
+        const opt = document.createElement('option');
+        opt.value = `brand:${bid}`;
+        opt.textContent = brandMap.get(bid) || bid;
+        og.appendChild(opt);
+        addedBrands.add(bid);
+      });
+      select.appendChild(og);
+    });
+
+    // Add any extra brands (no category mapping) under Other Brands
+    const extra = brands.filter(b => !addedBrands.has(String(b.id)));
+    if (extra.length) {
+      const og = document.createElement('optgroup');
+      og.label = 'Other Brands';
+      extra.forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = `brand:${b.id}`;
+        opt.textContent = b.label;
+        og.appendChild(opt);
+      });
+      select.appendChild(og);
+    }
+    const addBtn = document.getElementById('add-poi');
+    addBtn.onclick = async () => {
+      const v = select.value || '';
+      if (v.startsWith('cat:')) {
+        const id = v.slice(4); // may be comma-joined ids
+        const label = (window._groupLabelByIds && window._groupLabelByIds.get(String(id))) || (window._categoriesById && window._categoriesById.get(String(id))) || `Category ${id}`;
+        const ids = String(id).split(',').filter(Boolean);
+        addPOIRow({ type: 'category', id, ids, label, def: 30, min: 5, max: 240, step: 5 });
+        await ensureCombinedDAnchor(id, ids);
+        updateMapFilter();
+      } else if (v.startsWith('brand:')) {
+        const id = v.slice(6);
+        const label = brandMap.get(id) || (window._brandLabelById && window._brandLabelById.get(id)) || id;
+        addPOIRow({ type: 'brand', id, label, def: 30, min: 5, max: 240, step: 5 });
+        try { await fetchDAnchorBrand(id); } catch (e) {}
+        updateMapFilter();
+      }
+    };
+  }
+
+  async function ensureCombinedDAnchor(key, ids) {
+    // Ensure dAnchorCache[key] contains per-anchor seconds = min over ids' maps
+    if (!Array.isArray(ids)) ids = String(key).split(',').filter(Boolean);
+    // Fetch missing pieces
+    await Promise.all(ids.map((cid) => dAnchorCache[cid] ? Promise.resolve(dAnchorCache[cid]) : fetchDAnchor(cid)));
+    const combined = {};
+    ids.forEach((cid) => {
+      const m = dAnchorCache[cid] || {};
+      for (const [aid, sec] of Object.entries(m)) {
+        const v = combined[aid];
+        combined[aid] = (v == null) ? sec : Math.min(v, sec);
+      }
+    });
+    dAnchorCache[key] = combined;
+    return combined;
+  }
+
+  async function fetchDAnchorBrand(brandId) {
+    if (dAnchorCache[brandId]) return dAnchorCache[brandId];
+    const data = await fetchJSON(`/api/d_anchor_brand?brand=${encodeURIComponent(brandId)}&mode=${encodeURIComponent(CURRENT_MODE)}`);
+    dAnchorCache[brandId] = data;
+    return data;
+  }
+
+  // ---------- Pins (POI locations) ----------
+  function rowKeyForPoi(poi) {
+    return `${poi.type}_${poi.id}`;
+  }
+
+  function getBrandIdsForPoi(poi) {
+    if (poi.type === 'brand') return [String(poi.id)];
+    const mapping = window._catToBrands || {};
+    const ids = Array.isArray(poi.ids) ? poi.ids : String(poi.id).split(',').filter(Boolean);
+    const out = new Set();
+    ids.forEach((cid) => {
+      const arr = mapping[String(cid)] || [];
+      arr.forEach((b) => out.add(String(b)));
+    });
+    return Array.from(out);
+  }
+
+  function currentBboxParam() {
+    try {
+      const b = map.getBounds();
+      return `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function fetchPinsGeoJSON(brands) {
+    const params = new URLSearchParams();
+    params.set('brands', brands.join(','));
+    const bbox = currentBboxParam();
+    if (bbox) params.set('bbox', bbox);
+    return await fetchJSON(`/api/poi_points?${params.toString()}`);
+  }
+
+  function removePinsForPoi(poi) {
+    const key = rowKeyForPoi(poi);
+    const rec = activePins[key];
+    if (!rec) return;
+    // Remove layers first, then source
+    try { if (map.getLayer(rec.layerIds[2])) map.removeLayer(rec.layerIds[2]); } catch (e) {}
+    try { if (map.getLayer(rec.layerIds[1])) map.removeLayer(rec.layerIds[1]); } catch (e) {}
+    try { if (map.getLayer(rec.layerIds[0])) map.removeLayer(rec.layerIds[0]); } catch (e) {}
+    try { if (map.getSource(rec.sourceId)) map.removeSource(rec.sourceId); } catch (e) {}
+    delete activePins[key];
+  }
+
+  async function togglePinsForPoi(poi, checked) {
+    const key = rowKeyForPoi(poi);
+    if (!checked) {
+      removePinsForPoi(poi);
+      return;
+    }
+    if (poi.type === 'custom') {
+      // Add a single-point source + simple circle layer
+      const sourceId = `pins_${key}`;
+      const layerId = `pins_${key}_point`;
+      try { if (map.getLayer(layerId)) map.removeLayer(layerId); } catch (e) {}
+      try { if (map.getSource(sourceId)) map.removeSource(sourceId); } catch (e) {}
+      const geo = { type: 'FeatureCollection', features: [ { type: 'Feature', geometry: { type: 'Point', coordinates: [poi.lon, poi.lat] }, properties: {} } ] };
+      map.addSource(sourceId, { type: 'geojson', data: geo });
+      map.addLayer({ id: layerId, type: 'circle', source: sourceId, paint: { 'circle-radius': 6, 'circle-color': '#ef4444', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1.2 } });
+      activePins[key] = { brands: [], sourceId, layerIds: [layerId] };
+      return;
+    }
+    const brands = getBrandIdsForPoi(poi);
+    if (!brands || brands.length === 0) {
+      // No known brands under this selection
+      return;
+    }
+    const geo = await fetchPinsGeoJSON(brands);
+    const sourceId = `pins_${key}`;
+    const unclusterId = `pins_${key}_points`;
+    const clusterId = `pins_${key}_clusters`;
+    const clusterCountId = `pins_${key}_count`;
+    // Clean any stale layers/sources
+    try { if (map.getLayer(clusterCountId)) map.removeLayer(clusterCountId); } catch(e) {}
+    try { if (map.getLayer(clusterId)) map.removeLayer(clusterId); } catch(e) {}
+    try { if (map.getLayer(unclusterId)) map.removeLayer(unclusterId); } catch(e) {}
+    try { if (map.getSource(sourceId)) map.removeSource(sourceId); } catch(e) {}
+
+    map.addSource(sourceId, { type: 'geojson', data: geo, cluster: true, clusterRadius: 40, clusterMaxZoom: 14 });
+    // Unclustered points
+    map.addLayer({
+      id: unclusterId,
+      type: 'circle',
+      source: sourceId,
+      filter: ['!', ['has', 'point_count']],
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 2.5, 10, 4, 14, 6],
+        'circle-color': '#8b5cf6',
+        'circle-opacity': 0.85,
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 0.8
+      }
+    });
+    // Cluster circles
+    map.addLayer({
+      id: clusterId,
+      type: 'circle',
+      source: sourceId,
+      filter: ['has', 'point_count'],
+      paint: {
+        'circle-radius': ['step', ['get', 'point_count'], 12, 25, 16, 50, 20],
+        'circle-color': '#8b5cf6',
+        'circle-opacity': 0.6
+      }
+    });
+    // Cluster counts
+    map.addLayer({
+      id: clusterCountId,
+      type: 'symbol',
+      source: sourceId,
+      filter: ['has', 'point_count'],
+      layout: {
+        'text-field': ['get', 'point_count_abbreviated'],
+        'text-size': 12
+      },
+      paint: { 'text-color': '#ffffff' }
+    });
+
+    activePins[key] = { brands, sourceId, layerIds: [unclusterId, clusterId, clusterCountId] };
+  }
+
+  async function refreshActivePins() {
+    const keys = Object.keys(activePins);
+    if (!keys.length) return;
+    for (const key of keys) {
+      const rec = activePins[key];
+      try {
+        const geo = await fetchPinsGeoJSON(rec.brands);
+        const src = map.getSource(rec.sourceId);
+        if (src && src.setData) src.setData(geo);
+      } catch (e) {
+        // ignore transient errors
+      }
+    }
+  }
+
+  // ---------- Share URL ----------
+  document.getElementById('share').addEventListener('click', () => {
+    const params = new URLSearchParams();
+    // Mode
+    params.set('mode', CURRENT_MODE);
+    // Categories
+    const cats = selectedPOIs.filter(p => p.type === 'category').map(p => {
+      const slider = document.getElementById('slider_' + p.id);
+      const v = slider ? slider.value : p.def;
+      return `${encodeURIComponent(p.id)}:${v}`;
+    });
+    if (cats.length) params.set('cat', cats.join(','));
+    // Brands
+    const brands = selectedPOIs.filter(p => p.type === 'brand').map(p => {
+      const slider = document.getElementById('slider_' + p.id);
+      const v = slider ? slider.value : p.def;
+      return `${encodeURIComponent(p.id)}:${v}`;
+    });
+    if (brands.length) params.set('brand', brands.join(','));
+    // Custom
+    const customs = selectedPOIs.filter(p => p.type === 'custom').map(p => {
+      const slider = document.getElementById('slider_' + p.id);
+      const v = slider ? slider.value : p.def;
+      const lon = Number(p.lon).toFixed(5);
+      const lat = Number(p.lat).toFixed(5);
+      return `${encodeURIComponent(lon + '|' + lat)}:${v}`;
+    });
+    if (customs.length) params.set('custom', customs.join(','));
+    const url = new URL(window.location.href);
+    url.search = params.toString();
+    navigator.clipboard.writeText(url.toString()).then(() => {
+      const btn = document.getElementById('share');
+      if (!btn) return;
+      const labelEl = btn.querySelector('.btn-label');
+      const originalText = labelEl ? labelEl.textContent : btn.textContent;
+      if (labelEl) {
+        labelEl.textContent = 'Copied!';
+      } else {
+        btn.textContent = 'Copied!';
+      }
+      setTimeout(() => {
+        const fallback = originalText || 'Share current map';
+        if (labelEl) {
+          labelEl.textContent = fallback;
+        } else {
+          btn.textContent = fallback;
+        }
+      }, 1500);
+    });
+  });
+
+  async function applyUrlParams() {
+    const params = new URLSearchParams(window.location.search);
+    // Mode
+    const m = params.get('mode');
+    if (m === 'walk' || m === 'drive') {
+      CURRENT_MODE = m;
+      document.getElementById('mode-select').value = m;
+      // Toggle layers now if already loaded
+      try {
+        if (ANCHOR_MODE) {
+          map.setLayoutProperty('layer_r8_drive', 'visibility', m === 'drive' ? 'visible' : 'none');
+          map.setLayoutProperty('layer_r8_walk', 'visibility', m === 'walk' ? 'visible' : 'none');
+          map.setLayoutProperty('layer_r7_drive', 'visibility', 'none');
+        }
+      } catch (e) {}
+    }
+    // Categories
+    if (params.has('cat')) {
+      const pairs = params.get('cat').split(',');
+      for (const item of pairs) {
+        const [idEnc, val] = item.split(':');
+        const id = decodeURIComponent(idEnc);
+        const ids = String(id).split(',').filter(Boolean);
+        const label = (window._groupLabelByIds && window._groupLabelByIds.get(String(id))) || (ids.length === 1 ? (window._categoriesById && window._categoriesById.get(String(id))) : null) || `Category ${id}`;
+        addPOIRow({ type: 'category', id, ids, label, def: 30, min: 5, max: 240, step: 5 });
+        const slider = document.getElementById(`slider_${id}`);
+        if (slider && val) slider.value = val;
+        await ensureCombinedDAnchor(id, ids);
+      }
+    }
+    // Brands
+    if (params.has('brand')) {
+      const pairs = params.get('brand').split(',');
+      for (const item of pairs) {
+        const [idEnc, val] = item.split(':');
+        const id = decodeURIComponent(idEnc);
+        const label = (window._brandLabelById && window._brandLabelById.get(id)) || id.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        addPOIRow({ type: 'brand', id, label, def: 30, min: 5, max: 240, step: 5 });
+        const slider = document.getElementById(`slider_${id}`);
+        if (slider && val) slider.value = val;
+        try { await fetchDAnchorBrand(id); } catch (e) {}
+      }
+    }
+    // Custom
+    if (params.has('custom')) {
+      const pairs = params.get('custom').split(',');
+      for (const item of pairs) {
+        const [coordEnc, val] = item.split(':');
+        const coord = decodeURIComponent(coordEnc);
+        const [lonS, latS] = coord.split('|');
+        const lon = parseFloat(lonS);
+        const lat = parseFloat(latS);
+        const id = customKeyForLonLat(lon, lat);
+        addPOIRow({ type: 'custom', id, label: 'Custom Location', lon, lat, def: 30, min: 5, max: 240, step: 5 });
+        const slider = document.getElementById(`slider_${id}`);
+        if (slider && val) slider.value = val;
+        try { await fetchDAnchorCustom(lon, lat); } catch (e) {}
+      }
+    }
+    if (selectedPOIs.length === 0) {
+      // Default: none preselected; user picks from dropdown
+    }
+  }
+
+  // ---------- Mode Toggle ----------
+  function setLayerVisibility(id, vis) {
+    try {
+      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
+    } catch (e) {}
+  }
+
+  function setMode(mode) {
+    if (CURRENT_MODE === mode) return;
+    CURRENT_MODE = mode;
+    // Toggle layers
+    if (ANCHOR_MODE) {
+      setLayerVisibility('layer_r7_drive', 'none');
+      setLayerVisibility('layer_r8_drive', mode === 'drive' ? 'visible' : 'none');
+      setLayerVisibility('layer_r8_walk', mode === 'walk' ? 'visible' : 'none');
+    }
+    // Reset caches and refetch D_anchor for selected categories, brands, and custom locations
+    for (const k in dAnchorCache) delete dAnchorCache[k];
+    for (const k in customCoverageMinutes) delete customCoverageMinutes[k];
+    if (ANCHOR_MODE) {
+      initCatalogSelector();
+      const loaders = selectedPOIs.map(p => {
+        if (p.type === 'category') {
+          return fetchDAnchor(p.id);
+        } else if (p.type === 'brand') {
+          return fetchDAnchorBrand(p.id);
+        } else if (p.type === 'custom') {
+          return fetchDAnchorCustom(p.lon, p.lat);
+        }
+        return Promise.resolve();
+      });
+      Promise.all(loaders).then(() => updateMapFilter());
+    } else {
+      updateMapFilter();
+    }
+    // No tile-column fallback; catalog remains the source of truth
+  }
+
+  document.getElementById('mode-select').addEventListener('change', (e) => {
+    setMode(e.target.value);
+  });
+
+  // ---------- Map Events ----------
+  map.on('load', async () => {
+    initPoiSelector();
+    initializePlaceSearch();
+    // Wait a tick for metadata to resolve and selector to populate (anchor vs min mode)
+    setTimeout(async () => {
+      await applyUrlParams();
+      updateMapFilter();
+    }, 50);
+
+    map.on('mousemove', (e) => {
+      const layers = ['layer_r8_drive', 'layer_r8_walk', 'layer_r7_drive'];
+      const features = map.queryRenderedFeatures(e.point, { layers });
+      if (features && features.length > 0) {
+        const f = features[0];
+        if (ANCHOR_MODE) {
+          // Build hover details for selected categories and brands
+          const props = f.properties || {};
+          let html = '';
+          selectedPOIs.forEach((p) => {
+            if (p.type === 'category') {
+              const UNREACH = 65535;
+              let minsSec = UNREACH;
+              for (let i = 0; i < MAX_K; i++) {
+                const aSec = (props[`a${i}_s`] ?? UNREACH);
+                const aid = String(props[`a${i}_id`] ?? '');
+                const catMap = dAnchorCache[p.id] || {};
+                const catSec = (aid && catMap[aid] != null) ? catMap[aid] : UNREACH;
+                const tot = aSec + catSec;
+                if (tot < minsSec) minsSec = tot;
+              }
+              const mins = (minsSec >= UNREACH) ? 'N/A' : Math.ceil(minsSec / 60) + ' min';
+              html += `<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`;
+            } else if (p.type === 'brand') {
+              const UNREACH = 65535;
+              let minsSec = UNREACH;
+              for (let i = 0; i < MAX_K; i++) {
+                const aSec = (props[`a${i}_s`] ?? UNREACH);
+                const aid = String(props[`a${i}_id`] ?? '');
+                const brandMap = dAnchorCache[p.id] || {};
+                const bSec = (aid && brandMap[aid] != null) ? brandMap[aid] : UNREACH;
+                const tot = aSec + bSec;
+                if (tot < minsSec) minsSec = tot;
+              }
+              const mins = (minsSec >= UNREACH) ? 'N/A' : Math.ceil(minsSec / 60) + ' min';
+              html += `<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`;
+            } else if (p.type === 'custom') {
+              const UNREACH = 65535;
+              let minsSec = UNREACH;
+              for (let i = 0; i < MAX_K; i++) {
+                const aSec = (props[`a${i}_s`] ?? UNREACH);
+                const aid = String(props[`a${i}_id`] ?? '');
+                const customMap = dAnchorCache[p.id] || {};
+                const cSec = (aid && customMap[aid] != null) ? customMap[aid] : UNREACH;
+                const tot = aSec + cSec;
+                if (tot < minsSec) minsSec = tot;
+              }
+              const mins = (minsSec >= UNREACH) ? 'N/A' : Math.ceil(minsSec / 60) + ' min';
+              html += `<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`;
+            }
+          });
+          document.getElementById('hover-content').innerHTML = html || '<span class="muted">Select a category, brand, or custom location</span>';
+        } else {
+          updateHoverBox(f);
+        }
+      } else {
+        updateHoverBox(null);
+      }
+    });
+    map.on('moveend', refreshActivePins);
+
+    // Enable map-pick for custom location
+    document.getElementById('add-custom').addEventListener('click', () => {
+      PICKING_CUSTOM = true;
+      const btn = document.getElementById('add-custom');
+      const original = btn.textContent;
+      btn.textContent = 'Click map…';
+      const once = async (e) => {
+        if (!PICKING_CUSTOM) return;
+        PICKING_CUSTOM = false;
+        btn.textContent = original;
+        try {
+          const lngLat = e.lngLat || (e.point && map.unproject(e.point));
+          const lon = lngLat.lng;
+          const lat = lngLat.lat;
+          const id = customKeyForLonLat(lon, lat);
+          addPOIRow({ type: 'custom', id, label: 'Custom Location', lon, lat, def: 30, min: 5, max: 240, step: 5 });
+          // Note: addPOIRow will call fetchDAnchorCustom and show loading indicator
+        } finally {
+          map.off('click', once);
+        }
+      };
+      map.once('click', once);
+    });
+  });
+
+</script>
+</body>
+</html>

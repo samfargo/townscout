@@ -6,8 +6,8 @@ import "@/styles/tailwind.css";
 import "@/styles/globals.css";
 
 export const metadata: Metadata = {
-  title: "TownScout",
-  description: "Explore drive-time and walk-time coverage for the places that matter."
+  title: "VICINITY",
+  description: ""
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

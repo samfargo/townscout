@@ -20,6 +20,10 @@ except Exception:
         int_to_str = h3.int_to_str
         to_boundary = h3.cell_to_boundary
 
+TEMP_SCALE = 0.1
+PPT_MM_SCALE = 0.1
+PPT_IN_SCALE = 0.1
+
 def hex_polygon_lonlat(h3_addr: str):
     # returns a closed lon/lat ring for GeoJSON
     try:
@@ -49,6 +53,27 @@ def coerce_jsonable(props: dict):
         else:
             out[k] = v
     return out
+
+def decode_climate_columns(df: pd.DataFrame) -> pd.DataFrame:
+    decoded = df.copy()
+    temp_cols = [c for c in decoded.columns if c.endswith("_f_q")]
+    ppt_mm_cols = [c for c in decoded.columns if c.endswith("_mm_q")]
+    ppt_in_cols = [c for c in decoded.columns if c.endswith("_in_q")]
+
+    for col in temp_cols:
+        new_col = col[:-2]  # strip _q suffix
+        decoded[new_col] = decoded[col].astype("float64", copy=False) * TEMP_SCALE
+    for col in ppt_mm_cols:
+        new_col = col[:-2]
+        decoded[new_col] = decoded[col].astype("float64", copy=False) * PPT_MM_SCALE
+    for col in ppt_in_cols:
+        new_col = col[:-2]
+        decoded[new_col] = decoded[col].astype("float64", copy=False) * PPT_IN_SCALE
+
+    drop_cols = temp_cols + ppt_mm_cols + ppt_in_cols
+    if drop_cols:
+        decoded = decoded.drop(columns=drop_cols)
+    return decoded
 
 def main():
     ap = argparse.ArgumentParser()
@@ -108,6 +133,9 @@ def main():
     else:
         # Keep everything except the h3 column itself
         df = df[[c for c in df.columns if True]]
+
+    if os.environ.get("CLIMATE_DECODE_AT_EXPORT", "").lower() in {"1", "true", "yes"}:
+        df = decode_climate_columns(df)
 
     with open(args.output, "w") as out:
         # Use .itertuples() instead of .iterrows() to preserve dtypes

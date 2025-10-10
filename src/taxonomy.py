@@ -114,11 +114,6 @@ BRAND_REGISTRY = {
     "bjs": ("BJ's Wholesale Club", ["bj's", "bjs wholesale"]),
     "sams_club": ("Sam's Club", ["sams club"]),
     "panera": ("Panera Bread", ["panera"]),
-    "subway": ("Subway", []),
-    "dominos": ("Domino's", ["dominos", "domino's pizza"]),
-    "pizza_hut": ("Pizza Hut", []),
-    "little_caesars": ("Little Caesars", ["little caesars pizza"]),
-    "seven_eleven": ("7-Eleven", ["7 eleven", "7‑eleven", "seven eleven"]),
     "ikea": ("IKEA", []),
     "best_buy": ("Best Buy", []),
 }

@@ -181,15 +181,21 @@ def _normalize_autocomplete_prediction(pred: dict) -> dict:
         lat_f = None
         lon_f = None
 
-    return {
+    normalized: dict[str, Any] = {
         "id": pred.get("placeId"),
         "type": _classify_place(place_types),
         "label": label or sublabel or pred.get("placeId"),
-        "sublabel": sublabel,
-        "lat": lat_f,
-        "lon": lon_f,
-        "bbox": _extract_bbox(place_blob.get("viewport")),
     }
+    if sublabel is not None:
+        normalized["sublabel"] = sublabel
+    if lat_f is not None:
+        normalized["lat"] = lat_f
+    if lon_f is not None:
+        normalized["lon"] = lon_f
+    bbox = _extract_bbox(place_blob.get("viewport"))
+    if bbox is not None:
+        normalized["bbox"] = bbox
+    return normalized
 
 
 def _normalize_place_detail(place: dict) -> dict:
@@ -732,7 +738,7 @@ def places_autocomplete(
     _ensure_places_key()
     query = q.strip()
     if len(query) < 2:
-        return {"results": []}
+        return {"suggestions": [], "has_more": False}
     payload: dict[str, Any] = {
         "input": query,
         "sessionToken": session,
@@ -804,7 +810,7 @@ def places_autocomplete(
     # Truncate client-side expectations while signaling availability of more predictions
     limited = normalized[:limit]
     return {
-        "results": limited,
+        "suggestions": limited,
         "has_more": len(normalized) > len(limited),
     }
 

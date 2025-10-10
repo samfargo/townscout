@@ -41,26 +41,12 @@ export default function HoverBox() {
           <p className="text-sm text-stone-500">Hover over the map to view details.</p>
         )}
         {hover && travelTimes.length === 0 && (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-xs uppercase tracking-wide text-stone-500">Hex ID</dt>
-              <dd className="font-mono text-xs font-medium text-stone-700">
-                {hover.h3_id || 'N/A'}
-              </dd>
-            </div>
-            <p className="mt-3 text-sm text-stone-500">
-              Add filters to see travel times from this hex.
-            </p>
-          </div>
+          <p className="text-sm text-stone-500">
+            Add filters to see travel times from this hex.
+          </p>
         )}
         {hover && travelTimes.length > 0 && (
           <dl className="space-y-2">
-            <div className="flex items-center justify-between gap-3 border-b border-stone-200 pb-2">
-              <dt className="text-xs uppercase tracking-wide text-stone-500">Hex ID</dt>
-              <dd className="text-xs font-mono text-stone-600">
-                {String(hover.h3_id || 'N/A').slice(-8)}
-              </dd>
-            </div>
             {travelTimes.map(({ label, minutes, mode }) => (
               <div key={label} className="flex items-center justify-between gap-3">
                 <dt className="flex items-center gap-2 text-xs text-stone-700">

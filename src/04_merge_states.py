@@ -82,6 +82,22 @@ def main():
     # Anchor-mode only: final_wide is the anchor arrays joined to base hexes
     final_wide = base_hexes
 
+    climate_path = "out/climate/hex_climate.parquet"
+    if os.path.exists(climate_path):
+        print("[info] Attaching climate data...")
+        climate = pd.read_parquet(climate_path, dtype_backend="pyarrow")
+        cast_map = {}
+        for col in climate.columns:
+            if col.endswith("_f_q"):
+                cast_map[col] = "int16"
+            elif col.endswith("_mm_q"):
+                cast_map[col] = "uint16"
+        if cast_map:
+            climate = climate.astype(cast_map, copy=False)
+        final_wide = final_wide.merge(climate, on=["h3_id", "res"], how="left")
+    else:
+        print("[warn] climate parquet missing; skipping weather merge")
+
     # 3. Split by resolution and save
     os.makedirs("state_tiles", exist_ok=True)
     

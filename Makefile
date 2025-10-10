@@ -9,7 +9,7 @@ OVERFLOW?=60
 K_BEST?=20
 
 .PHONY: help init clean all \
-	download pois anchors minutes geojson tiles native d_anchor_category d_anchor_brand merge
+	download pois anchors minutes geojson tiles native d_anchor_category d_anchor_brand merge climate
 
 help:  ## Show this help message
 	@echo "TownScout Data Pipeline - Available targets:"
@@ -120,9 +120,18 @@ d_anchor_category: anchors | build/native.stamp ## 3.6b Compute anchor->category
 	    --out-dir data/d_anchor_category ; \
 	done
 
+CLIMATE_PARQUET := out/climate/hex_climate.parquet
+
+$(CLIMATE_PARQUET): $(MINUTE_FILES)
+	@mkdir -p $(dir $@)
+	$(PY) src/climate/prism_to_hex.py
+
+climate: $(CLIMATE_PARQUET) ## Build PRISM climate parquet for r7 + r8
+	@echo "[ok] Climate parquet ready at $(CLIMATE_PARQUET)"
+
 # --- Merge & Summaries ---
 # Produce both outputs in one run; use a stamp to avoid duplicate execution.
-MERGE_DEPS := $(MINUTE_FILES) $(ANCHOR_FILES)
+MERGE_DEPS := $(MINUTE_FILES) $(ANCHOR_FILES) $(CLIMATE_PARQUET)
 .PHONY: merge
 merge: $(MERGE_DEPS) ## 4. Merge per-state data and create summaries
 	$(PY) src/04_merge_states.py
