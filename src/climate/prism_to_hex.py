@@ -44,6 +44,40 @@ PPT_MM_SCALE = 0.1  # tenths of millimetres
 PPT_IN_SCALE = 0.1  # tenths of inches
 MM_PER_INCH = 25.4
 
+
+def classify_climate_expr() -> pl.Expr:
+    """Return a Polars expression that maps derived climate metrics to a label."""
+    summer = pl.col("temp_mean_summer_f")
+    winter = pl.col("temp_mean_winter_f")
+    ppt = pl.col("ppt_ann_in")
+    ppt_summer = pl.col("ppt_jul_in")
+    ppt_winter = pl.col("ppt_dec_in")
+
+    def cond(expression: pl.Expr) -> pl.Expr:
+        return expression.fill_null(False)
+
+    return (
+        pl.when(cond((summer < 60) & (winter < 30)))
+        .then(pl.lit("Arctic Cold"))
+        .when(cond((summer >= 65) & (winter < 32) & (ppt > 20)))
+        .then(pl.lit("Cold Seasonal"))
+        .when(cond((summer >= 70) & (summer <= 80) & (winter >= 32) & (winter <= 45) & (ppt >= 25) & (ppt <= 50)))
+        .then(pl.lit("Mild Continental"))
+        .when(cond((summer < 70) & (winter > 35) & (ppt > 35)))
+        .then(pl.lit("Cool Maritime"))
+        .when(cond((summer > 80) & (winter > 45) & (ppt > 40)))
+        .then(pl.lit("Warm Humid"))
+        .when(cond((ppt < 10) & (summer > 80)))
+        .then(pl.lit("Hot Dry (Desert)"))
+        .when(cond((ppt >= 10) & (ppt < 20) & (summer >= 75) & (summer <= 85)))
+        .then(pl.lit("Warm Semi-Arid"))
+        .when(cond((ppt < 30) & (ppt_winter > ppt_summer) & (summer > 75)))
+        .then(pl.lit("Mediterranean Mild"))
+        .when(cond((summer >= 60) & (summer <= 75) & (winter < 35)))
+        .then(pl.lit("Mountain Mixed"))
+        .otherwise(pl.lit("Unclassified"))
+    )
+
 try:
     import h3
 
@@ -397,6 +431,16 @@ def process(
                 inch_col = f"ppt_{month}_in"
                 df = df.with_columns(mm_to_inches(pl.col(col)).alias(inch_col))
             df = df.with_columns(mm_to_inches(pl.col("ppt_ann_mm")).alias("ppt_ann_in"))
+
+        required_for_climate = {
+            "temp_mean_summer_f",
+            "temp_mean_winter_f",
+            "ppt_ann_in",
+            "ppt_jul_in",
+            "ppt_dec_in",
+        }
+        if required_for_climate.issubset(set(df.columns)):
+            df = df.with_columns(classify_climate_expr().alias("climate_label"))
 
         # Remove monthly min/max source columns before quantization to keep schema compact
         drop_pre_quantize = [c for c in df.columns if c.startswith("tmin_") or c.startswith("tmax_")]

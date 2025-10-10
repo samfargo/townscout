@@ -15,8 +15,10 @@ import pandas as pd
 from tqdm import tqdm
 import numpy as np
 import h3
+import polars as pl
 
 from config import STATES, H3_RES_LOW, H3_RES_HIGH
+from climate.prism_to_hex import classify_climate_expr, TEMP_SCALE, PPT_MM_SCALE, PPT_IN_SCALE
 
 def main():
     """Main function to merge state data and create summaries."""
@@ -104,6 +106,27 @@ def main():
                 climate["res"] = climate["res"].astype("int32", copy=False)
             except TypeError:
                 climate["res"] = climate["res"].astype("int32[pyarrow]", copy=False)
+        
+        # Convert quantized values back to floats for climate label generation
+        climate_pl = pl.from_pandas(climate)
+        temp_cols = [c for c in climate_pl.columns if c.endswith("_f_q")]
+        ppt_mm_cols = [c for c in climate_pl.columns if c.endswith("_mm_q")]
+        ppt_in_cols = [c for c in climate_pl.columns if c.endswith("_in_q")]
+
+        for col in temp_cols:
+            new_col = col[:-2]  # strip _q suffix
+            climate_pl = climate_pl.with_columns((pl.col(col).cast(pl.Float64) * TEMP_SCALE).alias(new_col))
+        for col in ppt_mm_cols:
+            new_col = col[:-2]
+            climate_pl = climate_pl.with_columns((pl.col(col).cast(pl.Float64) * PPT_MM_SCALE).alias(new_col))
+        for col in ppt_in_cols:
+            new_col = col[:-2]
+            climate_pl = climate_pl.with_columns((pl.col(col).cast(pl.Float64) * PPT_IN_SCALE).alias(new_col))
+
+        # Generate climate label
+        climate_pl = climate_pl.with_columns(classify_climate_expr().alias("climate_label"))
+        climate = climate_pl.to_pandas()
+        
         final_wide = final_wide.merge(climate, on=["h3_id", "res"], how="left")
     else:
         print("[warn] climate parquet missing; skipping weather merge")

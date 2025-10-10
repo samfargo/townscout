@@ -1,5 +1,7 @@
 # TownScout: System Overview & LLM Implementation Spec
 
+> Architectural map: `docs/ARCHITECTURE_OVERVIEW.md`
+
 ## 1) Purpose, Context, Goals
 
 **Purpose.** TownScout helps a user answer: *“Where should I live given my criteria?”* by computing travel‑time proximity to things that matter (Chipotle, Costco, airports, schools, etc.) and rendering results as a fast, interactive map.
@@ -85,94 +87,11 @@ Overture ─┘                 └─>  D_anchor parquet (per category/brand)  
 
 ---
 
-## 6) Computations
+## 6) Computations, Tiles & Frontend
 
-### 6.1 T\_hex (`src/03_compute_minutes_per_state.py`)
-
-* **Inputs:** OSM graph, anchor sites.
-* **Algorithm:** Multi‑source bucketed SSSP composed into K‑best per node (Rust native), aggregated to H3 hexes at requested resolutions.
-* **Output (long per hex row):** `(h3_id:uint64, anchor_int_id:int32, time_s:uint16, res:int32)`.
-* **Memory tactics:** CSR graph, uint16 edge weights, ZSTD parquet.
-
-Example long row schema: `h3_id, anchor_int_id, time_s, res`
-
-### 6.2 D\_anchor (required for categories; brand variant for brands)
-
-* **Inputs:** Anchor sites + POIs (category/brand aware). Airports are injected from CSV during normalization.
-* **Algorithm:** Multi‑source search composed per class:
-  - Category: compute anchor→nearest POI in the category, store seconds per anchor.
-  - Brand: compute anchor→nearest site containing the brand, store seconds per anchor.
-* **Layout:**
-  - Categories: `data/d_anchor_category/mode={0,2}/category_id={...}/part-*.parquet`
-  - Brands: `data/d_anchor_brand/mode={0,2}/brand_id={...}/part-*.parquet`
-* **Status:** Loaded by the API. Category ids listed by `/api/categories`; full catalog at `/api/catalog`.
-
-
-
-## 7) Tiles & Serving
-
-**GeoJSON Conversion** (`src/05_h3_to_geojson.py`): T\_hex summary parquet → NDJSON (H3 polygons). Use `.itertuples()` to preserve uint64 H3 IDs.
-
-**PMTiles Build** (`src/06_build_tiles.py`): tippecanoe → MBTiles → PMTiles. Two layers: r7 (\<z8) and r8 (≥z8). Layer names must match frontend source IDs.
-
-**Static Serving (FastAPI):**
-
-```python
-# Web assets (HTML/JS/CSS)
-app.mount("/static", StaticFiles(directory="tiles/web"), name="static")
-app.mount("/tiles/web", StaticFiles(directory="tiles/web"), name="tiles-web")
-
-# PMTiles are served via a custom route with HTTP Range support at /tiles/{name}.pmtiles
-```
+Implementation details for T_hex/D_anchor generation, tile assembly, and the Next.js client now live in `docs/ARCHITECTURE_OVERVIEW.md`. Use that document for module-level references and file paths; this README treats those systems as black boxes and focuses on contracts, governance, and operator guidance.
 
 ---
-
-## 8) Frontend (MapLibre + Next.js)
-
-The web UI ships as a Next.js App Router project in `tiles/web`. Client components (e.g. `MapCanvas`, `SearchBox`, `FiltersPanel`) stay thin and offload imperative work to `lib/` just like the original demo. Development loop:
-
-```bash
-cd tiles/web
-npm install
-npm run dev
-```
-
-Run the FastAPI backend alongside `npm run dev`. By default we expect it on `http://127.0.0.1:5173`; override that with `NEXT_PUBLIC_TOWNSCOUT_API_BASE_URL` (or `NEXT_PUBLIC_API_BASE_URL`) when your backend runs elsewhere. `lib/services/api.ts` resolves every relative `/api/...` call via that helper, falling back to the browser origin in production deployments.
-
-`/app/api/catalog/route.ts` proxies catalog requests to the FastAPI service so the frontend gets real data; only when the upstream call fails do we return the empty fallback payload.
-
-**PMTiles protocol:** local import, no CDN. The map controller registers the `pmtiles` protocol before instantiating MapLibre so tiles continue to stream from `pmtiles:///tiles/t_hex_r7_drive.pmtiles` and `pmtiles:///tiles/t_hex_r8_drive.pmtiles`.
-
-**GPU Filter Expression (anchor‑mode):**
-
-```js
-function buildFilterExpression(criteria, dAnchorData) {
-  const UNREACHABLE = 65535;
-  const expressions = [];
-  for (const [category, thresholdSecs] of Object.entries(criteria)) {
-    const categoryData = dAnchorData[category];
-    const travelTimeOptions = [];
-    for (let i = 0; i < K_ANCHORS; i++) {
-      travelTimeOptions.push([
-        "+",
-        ["coalesce", ["get", `a${i}_s`], UNREACHABLE],
-        ["coalesce",
-          ["get", ["to-string", ["get", `a${i}_id`]], ["literal", categoryData]],
-          UNREACHABLE
-        ]
-      ]);
-    }
-    const minTravelTime = ["min", ...travelTimeOptions];
-    expressions.push(["<=", minTravelTime, thresholdSecs]);
-  }
-  return ["case", ["all", ...expressions], 0.8, 0.0];
-}
-```
-
-**Performance levers:** client‑side only after initial load; r7/r8 swap; 250ms debounce; cache D\_anchor per criterion; reuse one‑off custom D_anchor.
-
----
-
 ## 9) Data Contracts (hard requirements)
 
 **T\_hex tiles (contract):**
@@ -508,3 +427,42 @@ API:
 - Custom point (escape hatch): `GET /api/d_anchor_custom?lon=<lon>&lat=<lat>&mode=drive`
  
 Prerequisites for Overture clipping: install the DuckDB CLI (`duckdb`) and ensure it is on your PATH. The downloader (`src/01_download_extracts.py`) invokes the DuckDB command.
+
+
+# Townscout Data Contracts
+
+## Climate Data Fields
+
+PRISM-derived climate metrics are stored as quantized integers to keep parquet and tile payloads compact. Any column ending with `_q` follows these rules:
+
+- `*_f_q`: Temperatures in tenths of degrees Fahrenheit. Decode with `value / 10`.
+- `*_mm_q`: Precipitation totals in tenths of millimetres. Decode with `value / 10`.
+- `*_in_q`: Precipitation totals in tenths of inches. Decode with `value / 10`.
+
+The scale factors are also recorded in the `out/climate/hex_climate.parquet` metadata under the `townscout_prism` key for downstream analytics.
+
+### Climate Data Validation
+
+Before using climate data in tiles, verify these key properties:
+
+1. **Seasonal Pattern**: Monthly temperatures should follow natural progression:
+   - Winter (Dec-Feb): Coldest months
+   - Spring (Mar-May): Warming trend
+   - Summer (Jun-Aug): Peak temperatures
+   - Fall (Sep-Nov): Cooling trend
+
+2. **Expected Ranges** (Massachusetts example):
+   - January mean: ~25-35°F (coastal warmer)
+   - July mean: ~68-74°F
+   - Annual mean: ~45-52°F
+   - Annual precipitation: ~42-50 inches
+
+3. **File Mapping**: Ensure PRISM files map to correct months:
+   - Use exact patterns like `*_202001_*.tif` for January
+   - Avoid ambiguous patterns that could match wrong months
+   - Sort matches for deterministic selection
+
+4. **Data Integrity**:
+   - No null values in climate columns
+   - Temperatures and precipitation within realistic ranges
+   - Consistent units across all hexes

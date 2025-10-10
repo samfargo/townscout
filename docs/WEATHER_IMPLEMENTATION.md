@@ -37,6 +37,13 @@ src/
 
 Keep the fetcher deterministic so it can be re-run without side effects. Dependencies: `requests`, `tqdm` (optional progress), and room for retries.
 
+**Important: PRISM File Patterns**
+The PRISM normals follow a strict naming pattern: `prism_{var}_us_25m_2020{month:02d}_avg_30y.tif`. When matching files:
+- Use exact patterns like `*_202001_*.tif` for January, `*_202002_*.tif` for February, etc.
+- Avoid ambiguous patterns like `*01*.tif` which could match October (202010) or November (202011)
+- Always sort matches for deterministic selection
+- Validate that each month maps to its correct file to avoid seasonal pattern issues
+
 ```python
 # src/climate/prism_normals_fetch.py
 from __future__ import annotations
@@ -377,3 +384,77 @@ We now expose `temp_*` and `ppt_*` fields in the hover payload and when building
 	•	Ensure r7 tiles also include climate columns (spot-check via `tippecanoe-json` or `pmtiles show`).
 	•	Verify that missing-data hexes show up as NaN/undefined rather than zeroed.
 	•	Run the hover panel in dev after integrating UI work to confirm the new fields surface without breaking travel-time logic.
+
+
+
+Give users a quick entry point into “what kind of weather do I want to live in?” without needing numeric sliders.
+
+🧭 TownScout Climate Typology
+
+Structure
+
+Each climate type comes from three measurable dimensions you already have:
+
+Dimension	Derived from columns	What it represents
+Heat Index	temp_mean_summer_f_q / 10	How hot summers get
+Cold Index	temp_mean_winter_f_q / 10	How cold winters get
+Moisture Index	ppt_ann_in_q / 10	How wet or dry overall
+
+
+🌤️ Final Set of 9 Climate Labels
+
+Label	Criteria (approx.)	Intuitive Meaning	Example Regions
+Arctic Cold	summer < 60°F and winter < 30°F	Long, frigid winters; short cool summers	Alaska interior, N Rockies peaks
+Cold Seasonal	summer ≥ 65°F and winter < 32°F and ppt > 20"	Hot summers, snowy winters	Upper Midwest, northern New England
+Mild Continental	summer 70–80°F, winter 32–45°F, ppt 25–50"	Warm summers, chilly winters, distinct seasons	Midwest, Northeast
+Cool Maritime	summer < 70°F, winter > 35°F, ppt > 35"	Mild year-round, gray and damp	Pacific Northwest coast
+Warm Humid	summer > 80°F, winter > 45°F, ppt > 40"	Hot, sticky summers and mild winters	Deep South, Southeast
+Hot Dry (Desert)	summer > 80°F, ppt < 10"	Extremely hot, parched	Arizona, Nevada, SE California
+Warm Semi-Arid (Steppe)	summer 75–85°F, ppt 10–20"	Hot, dry but with short wet season	Texas Panhandle, inland California
+Mediterranean Mild	summer > 75°F, ppt < 30" and ppt_winter > ppt_summer	Dry, sunny summers, wet mild winters	Coastal California
+Mountain Mixed	summer 60–75°F, winter < 35°F, ppt variable	Wide seasonal swings, cooler year-round	Rockies, Appalachians highlands
+
+
+Computation Sketch (Polars or Python)
+
+def classify_townscout_climate(row):
+    summer = row["temp_mean_summer_f_q"] / 10
+    winter = row["temp_mean_winter_f_q"] / 10
+    ppt = row["ppt_ann_in_q"] / 10
+    ppt_summer = row["ppt_jul_in_q"] / 10
+    ppt_winter = row["ppt_dec_in_q"] / 10
+
+    if summer < 60 and winter < 30:
+        return "Arctic Cold"
+    if summer >= 65 and winter < 32 and ppt > 20:
+        return "Cold Seasonal"
+    if 70 <= summer <= 80 and 32 <= winter <= 45 and 25 <= ppt <= 50:
+        return "Mild Continental"
+    if summer < 70 and winter > 35 and ppt > 35:
+        return "Cool Maritime"
+    if summer > 80 and winter > 45 and ppt > 40:
+        return "Warm Humid"
+    if ppt < 10 and summer > 80:
+        return "Hot Dry (Desert)"
+    if 10 <= ppt < 20 and 75 <= summer <= 85:
+        return "Warm Semi-Arid"
+    if ppt < 30 and ppt_winter > ppt_summer and summer > 75:
+        return "Mediterranean Mild"
+    if 60 <= summer <= 75 and winter < 35:
+        return "Mountain Mixed"
+    return "Unclassified"
+
+Climate Sparkline (Hover Details Section)
+
+Purpose:
+Let users see seasonality at a glance.
+
+Data Source:
+	•	PRISM 1991–2020 normals, aggregated to H3 R8.
+	•	Columns: temp_month_mean_f_q[1–12], precip_month_in_q[1–12].
+
+Rendering in Hover Details section:
+	•	On hover over a hex, load 12 monthly means for both temperature and precipitation.
+	•	Display as compact dual mini-sparklines (≈100 px wide, 12 points):
+	•	Top line: Temperature (°F), smooth line or bars.
+	•	Bottom line: Precipitation (inches), bars or filled area (whatever looks best and is most intuitive).

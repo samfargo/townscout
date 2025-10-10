@@ -97,6 +97,25 @@ def main():
     # Read in one shot for now; for US scale switch to pyarrow.dataset and row-group streaming.
     df = pd.read_parquet(args.input)
 
+    # Attach climate attributes if they aren't already present in the input parquet.
+    if "climate_label" not in df.columns:
+        climate_path = os.environ.get("CLIMATE_PARQUET", "out/climate/hex_climate.parquet")
+        if os.path.exists(climate_path):
+            climate_df = pd.read_parquet(climate_path)
+            join_keys = [k for k in (args.h3_col, "res") if k in df.columns and k in climate_df.columns]
+            if not join_keys and args.h3_col in climate_df.columns:
+                join_keys = [args.h3_col]
+            if join_keys:
+                dup_cols = [c for c in climate_df.columns if c in df.columns and c not in join_keys]
+                climate_df = climate_df.drop(columns=dup_cols)
+                before_cols = set(df.columns)
+                df = pd.merge(df, climate_df, on=join_keys, how="left")
+                added = [c for c in df.columns if c not in before_cols]
+                if added:
+                    print(f"[climate] merged {len(added)} columns from {climate_path}")
+            else:
+                print(f"[warn] Unable to merge climate data from {climate_path}; missing join keys")
+
     # Optionally merge in additional properties from other parquet files
     for mpath in (args.merge or []):
         if not mpath:
