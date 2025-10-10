@@ -187,13 +187,16 @@ def discover_rasters(prism_dir: pathlib.Path, variables: Sequence[str]) -> Mappi
                 f"*{month}_*.tif",
                 f"*{month.upper()}*.tif",
                 f"*{month.capitalize()}*.tif",
-                f"*{idx+1:02d}*.tif",
+                f"*_2020{idx+1:02d}_*.tif",  # Match PRISM format: *_202001_*, *_202002_*, etc.
+                f"*{idx+1:02d}_*.tif",        # More general: *01_*, *02_*, etc.
+                f"*{idx+1:02d}.tif",          # Ends with month number
             ]
             match_path: pathlib.Path | None = None
             for pattern in patterns:
                 matches = list(var_dir.glob(pattern))
                 if matches:
-                    match_path = matches[0]
+                    # Sort matches to ensure deterministic selection
+                    match_path = sorted(matches)[0]
                     break
             if match_path:
                 band_count = get_band_count(match_path, band_cache)
@@ -291,6 +294,21 @@ def quantize_column(expr: pl.Expr, scale: float, dtype: pl.datatypes.DataType) -
 def mm_to_inches(expr: pl.Expr) -> pl.Expr:
     """Convert millimetres to inches."""
     return expr / MM_PER_INCH
+
+
+def clip_min_expr(expr: pl.Expr, minimum: float) -> pl.Expr:
+    """Clip an expression to a lower bound with backwards-compatible Polars APIs."""
+    if hasattr(expr, "clip_min"):
+        return expr.clip_min(minimum)
+    if hasattr(expr, "clip"):
+        try:
+            return expr.clip(minimum, None)
+        except TypeError:
+            try:
+                return expr.clip(lower_bound=minimum)
+            except TypeError:
+                pass
+    return pl.when(expr < minimum).then(minimum).otherwise(expr)
 
 
 def process(
@@ -399,7 +417,7 @@ def process(
         if ppt_mm_cols:
             df = df.with_columns(
                 [
-                    quantize_column(pl.col(col).clip_min(0.0), PPT_MM_SCALE, pl.UInt16).alias(f"{col}_q")
+                    quantize_column(clip_min_expr(pl.col(col), 0.0), PPT_MM_SCALE, pl.UInt16).alias(f"{col}_q")
                     for col in ppt_mm_cols
                 ]
             )
@@ -408,7 +426,7 @@ def process(
         if ppt_in_cols:
             df = df.with_columns(
                 [
-                    quantize_column(pl.col(col).clip_min(0.0), PPT_IN_SCALE, pl.UInt16).alias(f"{col}_q")
+                    quantize_column(clip_min_expr(pl.col(col), 0.0), PPT_IN_SCALE, pl.UInt16).alias(f"{col}_q")
                     for col in ppt_in_cols
                 ]
             )

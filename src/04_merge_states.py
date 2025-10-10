@@ -90,10 +90,20 @@ def main():
         for col in climate.columns:
             if col.endswith("_f_q"):
                 cast_map[col] = "int16"
-            elif col.endswith("_mm_q"):
+            elif col.endswith("_mm_q") or col.endswith("_in_q"):
                 cast_map[col] = "uint16"
         if cast_map:
             climate = climate.astype(cast_map, copy=False)
+        if "h3_id" in climate.columns:
+            try:
+                climate["h3_id"] = climate["h3_id"].astype("uint64", copy=False)
+            except TypeError:
+                climate["h3_id"] = climate["h3_id"].astype("uint64[pyarrow]", copy=False)
+        if "res" in climate.columns:
+            try:
+                climate["res"] = climate["res"].astype("int32", copy=False)
+            except TypeError:
+                climate["res"] = climate["res"].astype("int32[pyarrow]", copy=False)
         final_wide = final_wide.merge(climate, on=["h3_id", "res"], how="left")
     else:
         print("[warn] climate parquet missing; skipping weather merge")
