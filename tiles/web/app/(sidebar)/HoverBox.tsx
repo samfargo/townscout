@@ -14,6 +14,18 @@ export default function HoverBox() {
   const poiModes = useStore((state) => state.poiModes);
   const defaultMode = useStore((state) => state.mode);
 
+  const climateSummary = React.useMemo(() => {
+    if (!hover) return null;
+    const label = typeof hover.climate_label === 'string' ? hover.climate_label : null;
+    const summer = decodeQuantized(hover.temp_mean_summer_f_q, 0.1);
+    const winter = decodeQuantized(hover.temp_mean_winter_f_q, 0.1);
+    const precip = decodeQuantized(hover.ppt_ann_in_q, 0.1);
+    if (!label && summer == null && winter == null && precip == null) {
+      return null;
+    }
+    return { label, summer, winter, precip };
+  }, [hover]);
+
   const travelTimes = React.useMemo(() => {
     if (!hover) return [];
     
@@ -40,7 +52,35 @@ export default function HoverBox() {
         {!hover && (
           <p className="text-sm text-stone-500">Hover over the map to view details.</p>
         )}
-        {hover && travelTimes.length === 0 && (
+        {hover && climateSummary && (
+          <div className="space-y-1 rounded-xl border border-stone-200 bg-[#fbf7ec] px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-stone-500">Climate typology</p>
+            <p className="text-sm font-semibold text-stone-800">
+              {climateSummary.label ?? 'Unclassified'}
+            </p>
+            <dl className="mt-1 grid grid-cols-3 gap-2 text-[11px] text-stone-600">
+              <div className="space-y-0.5">
+                <dt className="uppercase tracking-wide text-stone-400">Summer avg</dt>
+                <dd className="text-sm font-medium text-stone-800">
+                  {formatTemperature(climateSummary.summer)}
+                </dd>
+              </div>
+              <div className="space-y-0.5">
+                <dt className="uppercase tracking-wide text-stone-400">Winter avg</dt>
+                <dd className="text-sm font-medium text-stone-800">
+                  {formatTemperature(climateSummary.winter)}
+                </dd>
+              </div>
+              <div className="space-y-0.5">
+                <dt className="uppercase tracking-wide text-stone-400">Annual precip</dt>
+                <dd className="text-sm font-medium text-stone-800">
+                  {formatPrecip(climateSummary.precip)}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        )}
+        {hover && travelTimes.length === 0 && !climateSummary && (
           <p className="text-sm text-stone-500">
             Add filters to see travel times from this hex.
           </p>
@@ -94,4 +134,27 @@ function computeMinTravelTime(
 
 function resolveMode(id: string, poiModes: Record<string, Mode>, fallback: Mode): Mode {
   return poiModes[id] ?? fallback;
+}
+
+function decodeQuantized(value: unknown, scale: number): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value * scale;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) {
+      return parsed * scale;
+    }
+  }
+  return null;
+}
+
+function formatTemperature(value: number | null): string {
+  if (value == null) return '—';
+  return `${Math.round(value)}°F`;
+}
+
+function formatPrecip(value: number | null): string {
+  if (value == null) return '—';
+  return `${value.toFixed(0)}″`;
 }

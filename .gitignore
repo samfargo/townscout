@@ -24,6 +24,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+!tiles/web/lib/
+!tiles/web/lib/**
 
 # IDE
 .idea/

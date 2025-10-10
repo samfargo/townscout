@@ -1,25 +1,20 @@
-// Proxies the catalog API and falls back to an empty payload.
+// Proxies the d_anchor_brand API for brand travel times.
 import { NextResponse } from "next/server";
 
 import { resolveApiUrl } from "@/lib/services/api";
 
 export const runtime = "nodejs";
 
-const EMPTY = {
-  categories: [],
-  brands: [],
-  catToBrands: {},
-  loaded: true
-};
+const EMPTY: Record<string, number> = {};
 
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
-  const upstreamUrl = resolveApiUrl(`/api/catalog${requestUrl.search}`);
+  const upstreamUrl = resolveApiUrl(`/api/d_anchor_brand${requestUrl.search}`);
 
   try {
     const upstream = new URL(upstreamUrl);
     if (upstream.origin === requestUrl.origin && upstream.pathname === requestUrl.pathname) {
-      throw new Error("Upstream catalog URL resolves to this Next.js route; aborting to avoid loop.");
+      throw new Error("Upstream d_anchor_brand URL resolves to this Next.js route; aborting to avoid loop.");
     }
 
     const response = await fetch(upstreamUrl, {
@@ -31,24 +26,17 @@ export async function GET(request: Request) {
 
     if (!response.ok) {
       const body = await safeReadBody(response);
-      throw new Error(`Upstream catalog request failed: ${response.status} ${response.statusText}: ${body}`);
+      throw new Error(`Upstream d_anchor_brand request failed: ${response.status} ${response.statusText}: ${body}`);
     }
 
     const payload = await response.json();
-    // Normalize the response to match the Catalog interface
-    const normalized = {
-      categories: payload.categories || [],
-      brands: payload.brands || [],
-      catToBrands: payload.catToBrands || payload.cat_to_brands || {},
-      loaded: true
-    };
-    return NextResponse.json(normalized, {
+    return NextResponse.json(payload ?? EMPTY, {
       headers: {
         "cache-control": "no-store"
       }
     });
   } catch (error) {
-    console.error("[api/catalog] Falling back to empty catalog", error);
+    console.error("[api/d_anchor_brand] Falling back to empty payload", error);
     return NextResponse.json(EMPTY, {
       headers: {
         "cache-control": "no-store"
