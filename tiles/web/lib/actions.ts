@@ -4,8 +4,7 @@ import { useStore, type Mode } from './state/store';
 import type { Catalog } from './services/catalog';
 import { fetchCatalog } from './services/catalog';
 import { fetchDAnchor } from './services/dAnchor';
-import { getMapController } from './map/controllerRegistry';
-import { buildMinutesExpression } from './map/expressions';
+import { getMapWorker } from './map/workerRegistry';
 
 // Set to true for verbose debugging
 const DEBUG = false;
@@ -125,6 +124,37 @@ export function updateSlider(id: string, value: number): void {
   void applyCurrentFilter();
 }
 
+// Pending slider preview updates
+let pendingSliderValues: Record<string, number> = {};
+let animationFrameId: number | null = null;
+
+// Apply slider preview updates on the next animation frame
+const applyPreviewUpdate = () => {
+  animationFrameId = null;
+  const worker = getMapWorker();
+  worker.postMessage({
+    type: 'update-preview',
+    tempValues: { ...pendingSliderValues }
+  });
+  pendingSliderValues = {};
+};
+
+// Scheduler to apply preview updates without blocking the UI on every tick
+const schedulePreviewApply = () => {
+  if (animationFrameId) {
+    cancelAnimationFrame(animationFrameId);
+  }
+  animationFrameId = requestAnimationFrame(applyPreviewUpdate);
+};
+
+// Update slider and apply filter without persisting to store (for smooth dragging)
+export function updateSliderPreview(id: string, value: number): void {
+  // Accumulate the latest pending value for the given slider id
+  pendingSliderValues[id] = value;
+  // Schedule apply to keep UI responsive during drags
+  schedulePreviewApply();
+}
+
 // Mode management
 export async function changePoiMode(id: string, mode: Mode): Promise<void> {
   const store = useStore.getState();
@@ -151,58 +181,19 @@ export async function applyCurrentFilter(
   options: ApplyFilterOptions = {}
 ): Promise<void> {
   const store = useStore.getState();
-  const controller = getMapController();
-  
-  if (!controller) {
-    if (DEBUG) console.warn('⚠️ [applyCurrentFilter] No map controller available yet');
-    return;
-  }
-  
-  const filters: Record<Mode, { filter: any | null; active: boolean }> = {
-    drive: { filter: null, active: false },
-    walk: { filter: null, active: false }
-  };
-  const perModeExpressions: Record<Mode, any[]> = {
-    drive: [],
-    walk: []
-  };
-  const climateFilter = buildClimateFilterExpression(store.climateSelections);
-  
-  // Build filters for each mode
-  for (const poi of store.pois) {
-    const mode = store.poiModes[poi.id] || store.mode;
-    const maxMinutes = store.sliders[poi.id] || 30;
-    const anchorMap = store.dAnchorCache[poi.id]?.[mode];
-    
-    if (!anchorMap || Object.keys(anchorMap).length === 0) {
-      if (DEBUG) console.warn(`⚠️ [applyCurrentFilter] Skipping POI ${poi.id} - no anchor data`);
-      continue;
-    }
-    
-    const expression = buildMinutesExpression(anchorMap, maxMinutes);
-    perModeExpressions[mode].push(expression);
-  }
+  const worker = getMapWorker();
 
-  (Object.keys(perModeExpressions) as Mode[]).forEach((mode) => {
-    const combined = combineWithAll(...perModeExpressions[mode]);
-    if (!combined) return;
-    filters[mode].active = true;
-    filters[mode].filter = combined;
+  // The worker needs the full state to recalculate expressions from scratch.
+  worker.postMessage({
+    type: 'update-state',
+    state: {
+      pois: store.pois,
+      sliders: store.sliders,
+      dAnchorCache: store.dAnchorCache,
+      poiModes: store.poiModes,
+      mode: store.mode
+    }
   });
-
-  if (climateFilter) {
-    const fallbackMode = store.mode;
-    (Object.keys(filters) as Mode[]).forEach((mode) => {
-      if (filters[mode].active) {
-        filters[mode].filter = combineWithAll(climateFilter, filters[mode].filter);
-      }
-    });
-    if (!filters[fallbackMode].active) {
-      filters[fallbackMode] = { filter: climateFilter, active: true };
-    }
-  }
-  
-  controller.setModeFilters(filters, store.mode);
 }
 
 export async function restorePersistedFilters(): Promise<void> {
@@ -273,23 +264,4 @@ function sequenceEquals(a: readonly string[], b: readonly string[]): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
-}
-
-function combineWithAll(...conditions: Array<any | null | undefined>): any | null {
-  const flattened: any[] = [];
-  for (const condition of conditions) {
-    if (!condition) continue;
-    if (Array.isArray(condition) && condition[0] === 'all') {
-      flattened.push(...condition.slice(1));
-    } else {
-      flattened.push(condition);
-    }
-  }
-  if (!flattened.length) {
-    return null;
-  }
-  if (flattened.length === 1) {
-    return flattened[0];
-  }
-  return ['all', ...flattened];
 }
