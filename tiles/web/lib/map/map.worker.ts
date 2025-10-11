@@ -67,6 +67,7 @@ export type WorkerState = {
   sliders: Record<string, number>;
   poiModes: Record<string, Mode>;
   mode: Mode;
+  climateSelections: string[];
 };
 
 export type WorkerMessage = {
@@ -115,10 +116,18 @@ function getCacheKey(poiId: string, currentMode: Mode): string {
   return `${poiId}:${currentMode}`;
 }
 
+function buildClimateFilterExpression(labels: string[]): any | null {
+  if (!labels.length) return null;
+  if (labels.length === 1) {
+    return ['==', ['get', 'climate_label'], labels[0]];
+  }
+  return ['match', ['get', 'climate_label'], labels, true, false];
+}
+
 function calculateExpressions(tempValues?: Record<string, number>) {
   if (!state) return;
 
-  const { pois, sliders, poiModes, mode } = state;
+  const { pois, sliders, poiModes, mode, climateSelections } = state;
 
   const expressions: Record<
     Mode,
@@ -168,6 +177,22 @@ function calculateExpressions(tempValues?: Record<string, number>) {
     if (!combined) return;
     expressions[m].active = true;
     expressions[m].expression = combined;
+  });
+
+  // Add climate filter
+  const climateFilter = buildClimateFilterExpression(climateSelections || []);
+  
+  // Apply climate filter to both modes by wrapping with 'all' if POI expressions exist
+  (Object.keys(expressions) as Mode[]).forEach((m) => {
+    if (climateFilter && expressions[m].expression) {
+      // Both POI and climate filters: combine with 'all'
+      expressions[m].expression = ['all', expressions[m].expression, climateFilter];
+    } else if (climateFilter) {
+      // Only climate filter
+      expressions[m].expression = climateFilter;
+      expressions[m].active = true;
+    }
+    // If only POI expressions, leave as-is (already set above)
   });
 
   // Only post if expressions changed

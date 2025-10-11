@@ -148,13 +148,13 @@ state_tiles/us_r8.parquet: state_tiles/.merge.stamp
 
 tiles/us_r7.geojson: state_tiles/us_r7.parquet
 	@mkdir -p tiles
-	$(PY) src/05_h3_to_geojson.py \
+	CLIMATE_DECODE_AT_EXPORT=false $(PY) src/05_h3_to_geojson.py \
 		--input state_tiles/us_r7.parquet \
 		--output $@
 
 tiles/us_r8.geojson: state_tiles/us_r8.parquet
 	@mkdir -p tiles
-	$(PY) src/05_h3_to_geojson.py \
+	CLIMATE_DECODE_AT_EXPORT=false $(PY) src/05_h3_to_geojson.py \
 		--input state_tiles/us_r8.parquet \
 		--output $@
 

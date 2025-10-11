@@ -186,7 +186,7 @@ export async function applyCurrentFilter(
   const store = useStore.getState();
   const worker = getMapWorker();
   
-  if (DEBUG) console.log('[actions] Sending state to worker, pois:', store.pois.length);
+  if (DEBUG) console.log('[actions] Sending state to worker, pois:', store.pois.length, 'climate:', store.climateSelections);
   // Send lightweight state update to worker
   worker.postMessage({
     type: 'update-state',
@@ -194,7 +194,8 @@ export async function applyCurrentFilter(
       pois: store.pois,
       sliders: store.sliders,
       poiModes: store.poiModes,
-      mode: store.mode
+      mode: store.mode,
+      climateSelections: store.climateSelections
     }
   });
 }
