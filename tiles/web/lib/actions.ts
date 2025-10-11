@@ -1,10 +1,9 @@
 // Client-side actions for managing POIs, filters, and map interactions
 'use client';
 import { useStore, type Mode } from './state/store';
-import type { Catalog } from './services/catalog';
-import { fetchCatalog } from './services/catalog';
-import { fetchDAnchor } from './services/dAnchor';
-import { getMapWorker } from './map/workerRegistry';
+import type { Catalog } from './services';
+import { fetchCatalog, fetchDAnchor } from './services';
+import { getMapWorker } from './map/MapController';
 
 // Set to true for verbose debugging
 const DEBUG = false;
@@ -131,12 +130,16 @@ let animationFrameId: number | null = null;
 // Apply slider preview updates on the next animation frame
 const applyPreviewUpdate = () => {
   animationFrameId = null;
+  const tempValues = { ...pendingSliderValues };
+  pendingSliderValues = {};
+  
+  if (DEBUG) console.log('[actions] Sending preview to worker:', tempValues);
   const worker = getMapWorker();
+  // Send preview values to worker - it will rebuild expressions with temp values
   worker.postMessage({
     type: 'update-preview',
-    tempValues: { ...pendingSliderValues }
+    tempValues
   });
-  pendingSliderValues = {};
 };
 
 // Scheduler to apply preview updates without blocking the UI on every tick
@@ -182,14 +185,14 @@ export async function applyCurrentFilter(
 ): Promise<void> {
   const store = useStore.getState();
   const worker = getMapWorker();
-
-  // The worker needs the full state to recalculate expressions from scratch.
+  
+  if (DEBUG) console.log('[actions] Sending state to worker, pois:', store.pois.length);
+  // Send lightweight state update to worker
   worker.postMessage({
     type: 'update-state',
     state: {
       pois: store.pois,
       sliders: store.sliders,
-      dAnchorCache: store.dAnchorCache,
       poiModes: store.poiModes,
       mode: store.mode
     }
@@ -201,6 +204,16 @@ export async function restorePersistedFilters(): Promise<void> {
   
   // Load catalog
   await ensureCatalogLoaded();
+  
+  // Sync any existing dAnchorCache data to worker (from localStorage)
+  for (const poiId of Object.keys(store.dAnchorCache)) {
+    for (const mode of Object.keys(store.dAnchorCache[poiId]) as Mode[]) {
+      const data = store.dAnchorCache[poiId][mode];
+      if (data) {
+        syncDAnchorToWorker(poiId, mode, data);
+      }
+    }
+  }
   
   // Load dAnchor data for all POIs
   for (const poi of store.pois) {
@@ -219,6 +232,17 @@ export async function restorePersistedFilters(): Promise<void> {
   await applyCurrentFilter();
 }
 
+// Helper function to send dAnchor data to worker
+function syncDAnchorToWorker(id: string, mode: Mode, data: any): void {
+  const worker = getMapWorker();
+  worker.postMessage({
+    type: 'update-dAnchor',
+    id,
+    mode,
+    data
+  });
+}
+
 // Helper function to load dAnchor data
 async function loadDAnchor(id: string, mode: Mode): Promise<void> {
   // Ensure catalog is loaded before fetching dAnchor data
@@ -234,6 +258,8 @@ async function loadDAnchor(id: string, mode: Mode): Promise<void> {
   try {
     const data = await fetchDAnchor(id, mode, catalog);
     store.setDAnchorCache(id, mode, data);
+    // Send dAnchor data to worker separately
+    syncDAnchorToWorker(id, mode, data);
     if (DEBUG) {
       const anchorCount = Object.keys(data).length;
       console.log('✅ [loadDAnchor] Loaded', anchorCount, 'anchors for', id, mode);

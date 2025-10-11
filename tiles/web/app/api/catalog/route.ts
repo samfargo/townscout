@@ -1,7 +1,7 @@
 // Proxies the catalog API and falls back to an empty payload.
 import { NextResponse } from "next/server";
 
-import { resolveApiUrl } from "@/lib/services/api";
+import { resolveApiUrl } from "@/lib/services";
 
 export const runtime = "nodejs";
 

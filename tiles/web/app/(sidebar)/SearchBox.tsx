@@ -20,10 +20,9 @@ import {
   toggleClimateSelection
 } from '@/lib/actions';
 import { CLIMATE_TYPOLOGY } from '@/lib/data/climate';
-import { buildCategoryGroups } from '@/lib/services/catalog';
-import { fetchPlaceDetails, fetchPlaceSuggestions, type PlaceSuggestion } from '@/lib/services/places';
+import { buildCategoryGroups, fetchPlaceDetails, fetchPlaceSuggestions, type PlaceSuggestion } from '@/lib/services';
 import { useStore } from '@/lib/state/store';
-import { debounce } from '@/lib/utils/debounce';
+import { debounce } from '@/lib/utils';
 
 function createPlacesSession() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {

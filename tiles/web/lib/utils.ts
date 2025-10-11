@@ -1,4 +1,13 @@
-// Debounce utility function
+// Utility functions for the TownScout application
+
+// ==================== CLASS NAME UTILITIES ====================
+
+export function cn(...inputs: (string | undefined | null | boolean)[]): string {
+  return inputs.filter(Boolean).join(' ');
+}
+
+// ==================== DEBOUNCE ====================
+
 export function debounce<T extends (...args: any[]) => any>(
   func: T,
   wait: number
@@ -21,3 +30,4 @@ export function debounce<T extends (...args: any[]) => any>(
 
   return debounced;
 }
+

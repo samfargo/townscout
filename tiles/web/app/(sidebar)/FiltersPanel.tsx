@@ -13,12 +13,11 @@ import {
   MAX_MINUTES,
   MINUTE_STEP,
   removePOI,
-  updateSlider
+  updateSlider,
+  updateSliderPreview
 } from '@/lib/actions';
-import { debounce } from '@/lib/utils/debounce';
+import { getMapController } from '@/lib/map/MapController';
 import { useStore, type Mode } from '@/lib/state/store';
-
-const SLIDER_DEBOUNCE_MS = 120;
 
 const antiqueCardClass =
   'border-stone-300 bg-[#fbf7ec] p-0 shadow-[0_18px_32px_-28px_rgba(76,54,33,0.25)]';
@@ -41,15 +40,7 @@ export default function FiltersPanel() {
 
   const [local, setLocal] = React.useState<Record<string, number>>({});
   const [modePending, setModePending] = React.useState<Record<string, boolean>>({});
-  const debouncedUpdate = React.useMemo(
-    () =>
-      debounce((id: string, value: number) => {
-        updateSlider(id, value);
-      }, SLIDER_DEBOUNCE_MS),
-    []
-  );
-
-  React.useEffect(() => () => debouncedUpdate.cancel(), [debouncedUpdate]);
+  const [isDragging, setIsDragging] = React.useState<Record<string, boolean>>({});
 
   React.useEffect(() => {
     setLocal((prev) => {
@@ -119,17 +110,32 @@ export default function FiltersPanel() {
                 value={[sliderValue]}
                 onValueChange={(values) => {
                   const next = values[0] ?? MIN_MINUTES;
+                  // Signal map controller that dragging started (only once per drag)
+                  if (!isDragging[poi.id]) {
+                    getMapController()?.setDragging(true);
+                    setIsDragging((prev) => ({ ...prev, [poi.id]: true }));
+                  }
+                  // Update local state immediately for instant UI feedback
                   setLocal((prev) => ({ ...prev, [poi.id]: next }));
-                  debouncedUpdate(poi.id, next);
+                  // Update map via RAF (no localStorage write)
+                  updateSliderPreview(poi.id, next);
                 }}
                 onValueCommit={(values) => {
                   const next = values[0] ?? MIN_MINUTES;
-                  debouncedUpdate.cancel();
+                  // Signal map controller that dragging stopped
+                  getMapController()?.setDragging(false);
+                  setIsDragging((prev) => {
+                    const copy = { ...prev };
+                    delete copy[poi.id];
+                    return copy;
+                  });
+                  // Clear local state
                   setLocal((prev) => {
                     const copy = { ...prev };
                     delete copy[poi.id];
                     return copy;
                   });
+                  // Persist to store and update map
                   updateSlider(poi.id, next);
                 }}
               />

@@ -2,7 +2,7 @@
 'use client';
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import type { Catalog } from '@/lib/services/catalog';
+import type { Catalog } from '@/lib/services';
 
 export type Mode = 'drive' | 'walk';
 

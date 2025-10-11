@@ -6,8 +6,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { useEffect, useRef, useState } from 'react';
 
 import { applyCurrentFilter } from '@/lib/actions';
-import { MapController } from '@/lib/map/MapController';
-import { registerMapController } from '@/lib/map/controllerRegistry';
+import { MapController, registerMapController } from '@/lib/map/MapController';
 import { useStore } from '@/lib/state/store';
 
 export default function MapCanvas() {
