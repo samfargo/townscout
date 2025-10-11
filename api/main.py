@@ -730,7 +730,7 @@ def _places_error_detail(payload: Optional[dict]) -> Optional[str]:
 
 @app.get("/api/places/autocomplete")
 def places_autocomplete(
-    q: str = Query(..., min_length=1, alias="q", description="Search text"),
+    q: str = Query(..., min_length=1, alias="input", description="Search text"),
     session: str = Query(..., min_length=1, description="Google Places session token"),
     location_bias: Optional[str] = Query(None, alias="locationBias", description="Bias as lon,lat or west,south,east,north"),
     limit: int = Query(8, ge=1, le=10, description="Maximum number of suggestions to return"),
@@ -817,7 +817,7 @@ def places_autocomplete(
 
 @app.get("/api/places/details")
 def places_details(
-    place_id: str = Query(..., alias="id", description="Place identifier"),
+    place_id: str = Query(..., alias="place_id", description="Place identifier"),
     session: str = Query(..., min_length=1, description="Google Places session token"),
 ):
     _ensure_places_key()

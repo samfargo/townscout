@@ -2,7 +2,7 @@
 'use client';
 import { useStore, type Mode } from './state/store';
 import type { Catalog } from './services';
-import { fetchCatalog, fetchDAnchor } from './services';
+import { fetchCatalog, fetchDAnchor, fetchCustomDAnchor } from './services';
 import { getMapWorker } from './map/MapController';
 
 // Set to true for verbose debugging
@@ -79,8 +79,8 @@ export async function addCustom(
   store.addPoi({ id, label, type: 'custom', lat, lon });
   store.setSlider(id, minutes);
   
-  // For custom locations, we'd need to compute dAnchor on the fly or via API
-  // For now, skip the dAnchor fetch
+  // Fetch dAnchor data for custom location
+  await loadDAnchorCustom(id, lon, lat, store.mode);
   await applyCurrentFilter();
 }
 
@@ -165,7 +165,12 @@ export async function changePoiMode(id: string, mode: Mode): Promise<void> {
   
   // Reload dAnchor data for new mode if needed
   if (!store.dAnchorCache[id]?.[mode]) {
-    await loadDAnchor(id, mode);
+    const poi = store.pois.find((p) => p.id === id);
+    if (poi?.type === 'custom' && poi.lon != null && poi.lat != null) {
+      await loadDAnchorCustom(id, poi.lon, poi.lat, mode);
+    } else {
+      await loadDAnchor(id, mode);
+    }
   }
   
   await applyCurrentFilter();
@@ -218,13 +223,15 @@ export async function restorePersistedFilters(): Promise<void> {
   
   // Load dAnchor data for all POIs
   for (const poi of store.pois) {
-    if (poi.type === 'custom') continue;
-    
     const modes: Mode[] = ['drive', 'walk'];
     for (const mode of modes) {
       const hasData = store.dAnchorCache[poi.id]?.[mode];
       if (!hasData) {
-        await loadDAnchor(poi.id, mode);
+        if (poi.type === 'custom' && poi.lon != null && poi.lat != null) {
+          await loadDAnchorCustom(poi.id, poi.lon, poi.lat, mode);
+        } else {
+          await loadDAnchor(poi.id, mode);
+        }
       }
     }
   }
@@ -267,6 +274,24 @@ async function loadDAnchor(id: string, mode: Mode): Promise<void> {
     }
   } catch (error) {
     console.error(`❌ [loadDAnchor] Failed to load dAnchor for ${id} (${mode}):`, error);
+  }
+}
+
+// Helper function to load dAnchor data for custom locations
+async function loadDAnchorCustom(id: string, lon: number, lat: number, mode: Mode): Promise<void> {
+  const store = useStore.getState();
+
+  try {
+    const data = await fetchCustomDAnchor(lon, lat, mode);
+    store.setDAnchorCache(id, mode, data);
+    // Send dAnchor data to worker separately
+    syncDAnchorToWorker(id, mode, data);
+    if (DEBUG) {
+      const anchorCount = Object.keys(data).length;
+      console.log('✅ [loadDAnchorCustom] Loaded', anchorCount, 'anchors for custom location', id, mode);
+    }
+  } catch (error) {
+    console.error(`❌ [loadDAnchorCustom] Failed to load dAnchor for custom ${id} (${mode}):`, error);
   }
 }
 

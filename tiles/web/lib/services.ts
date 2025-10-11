@@ -133,6 +133,29 @@ export async function fetchDAnchor(
   }
 }
 
+export async function fetchCustomDAnchor(
+  lon: number,
+  lat: number,
+  mode: 'drive' | 'walk',
+  cutoff: number = 30,
+  overflowCutoff: number = 90
+): Promise<DAnchorMap> {
+  try {
+    const params = new URLSearchParams({
+      lon: String(lon),
+      lat: String(lat),
+      mode,
+      cutoff: String(cutoff),
+      overflow_cutoff: String(overflowCutoff)
+    });
+    
+    return await fetchApi<DAnchorMap>(`/api/d_anchor_custom?${params.toString()}`);
+  } catch (error) {
+    console.error(`❌ [fetchCustomDAnchor] Failed to fetch custom dAnchor for (${lon}, ${lat}) (${mode}):`, error);
+    return {};
+  }
+}
+
 // ==================== PLACES SERVICE ====================
 
 export interface PlaceSuggestion {
@@ -193,7 +216,8 @@ export async function fetchPlaceDetails(
       params.append('session', sessionToken);
     }
     
-    return await fetchApi<PlaceDetails>(`/api/places/details?${params}`);
+    const response = await fetchApi<{ result: PlaceDetails }>(`/api/places/details?${params}`);
+    return response.result;
   } catch (error) {
     console.error('Failed to fetch place details:', error);
     return null;
