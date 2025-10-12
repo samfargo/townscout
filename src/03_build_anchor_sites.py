@@ -37,6 +37,7 @@ def build_anchor_sites_from_nodes(
     node_lats: np.ndarray,
     node_lons: np.ndarray,
     mode: str,
+    indptr: np.ndarray = None,
 ) -> pd.DataFrame:
     print(f"--- Building anchor sites for {mode} mode ---")
     if canonical_pois.empty or node_ids.size == 0:
@@ -80,16 +81,83 @@ def build_anchor_sites_from_nodes(
     X = np.c_[ (node_lons.astype(np.float64) * np.cos(lat0)) * m_per_deg, node_lats.astype(np.float64) * m_per_deg ]
     tree = cKDTree(X)
 
-    print(f"[info] Snapping {len(canonical_pois)} POIs to nearest graph nodes...")
+    print(f"[info] Snapping {len(canonical_pois)} POIs to nearest graph nodes (connectivity-aware)...")
     poi_coords = np.c_[
         (canonical_pois.geometry.x.to_numpy() * np.cos(lat0)) * m_per_deg,
         canonical_pois.geometry.y.to_numpy() * m_per_deg,
     ]
-    dists, indices = tree.query(poi_coords, k=1)
-
+    
+    # Compute node connectivity (number of outgoing edges per node)
+    # indptr is loaded via load_or_build_csr, but we need it here
+    # For now, we'll use a heuristic: query k nearest neighbors and pick the best-connected one
+    # that's within a reasonable distance factor (e.g., 2x the nearest)
+    K_CANDIDATES = 10  # Consider up to 10 nearest nodes
+    MAX_DISTANCE_FACTOR = 2.0  # Accept nodes up to 2x the nearest distance
+    MIN_ACCEPTABLE_EDGES = 2  # Prefer nodes with at least 2 edges
+    
+    # Query k nearest neighbors for each POI
+    dists_k, indices_k = tree.query(poi_coords, k=K_CANDIDATES)
+    
+    # For each POI, select the best node among candidates
+    selected_indices = np.zeros(len(canonical_pois), dtype=np.int64)
+    selected_dists = np.zeros(len(canonical_pois), dtype=np.float64)
+    
+    # Compute node connectivity if indptr is available
+    if indptr is not None:
+        node_edge_counts = np.diff(indptr).astype(np.int32)
+    else:
+        node_edge_counts = None
+    
+    improved_snaps = 0  # Track how many POIs got better-connected nodes
+    
+    for i in range(len(canonical_pois)):
+        candidates_dists = dists_k[i] if dists_k.ndim > 1 else np.array([dists_k[i]])
+        candidates_indices = indices_k[i] if indices_k.ndim > 1 else np.array([indices_k[i]])
+        
+        # Filter candidates within acceptable distance
+        nearest_dist = candidates_dists[0]
+        max_acceptable_dist = nearest_dist * MAX_DISTANCE_FACTOR
+        valid_mask = candidates_dists <= max_acceptable_dist
+        
+        valid_dists = candidates_dists[valid_mask]
+        valid_indices = candidates_indices[valid_mask]
+        
+        if node_edge_counts is not None and len(valid_indices) > 1:
+            # Connectivity-aware selection: prefer nodes with more edges
+            # Get edge counts for all valid candidates
+            valid_edge_counts = node_edge_counts[valid_indices]
+            nearest_edge_count = valid_edge_counts[0]
+            
+            # If the nearest node has only 1 edge, try to find a better-connected alternative
+            if nearest_edge_count == 1 and np.max(valid_edge_counts) >= MIN_ACCEPTABLE_EDGES:
+                # Find the best-connected node among candidates with at least MIN_ACCEPTABLE_EDGES
+                better_mask = valid_edge_counts >= MIN_ACCEPTABLE_EDGES
+                if np.any(better_mask):
+                    better_indices = np.where(better_mask)[0]
+                    # Among better-connected nodes, pick the one with most edges (breaking ties by distance)
+                    best_idx = better_indices[np.argmax(valid_edge_counts[better_mask])]
+                    selected_indices[i] = valid_indices[best_idx]
+                    selected_dists[i] = valid_dists[best_idx]
+                    improved_snaps += 1
+                else:
+                    # No better options, use nearest
+                    selected_indices[i] = valid_indices[0]
+                    selected_dists[i] = valid_dists[0]
+            else:
+                # Nearest is acceptable, use it
+                selected_indices[i] = valid_indices[0]
+                selected_dists[i] = valid_dists[0]
+        else:
+            # No connectivity info or only one candidate, use nearest
+            selected_indices[i] = valid_indices[0]
+            selected_dists[i] = valid_dists[0]
+    
+    if improved_snaps > 0:
+        print(f"[info] Improved connectivity for {improved_snaps} POIs by selecting better-connected nodes")
+    
     pois_with_nodes = canonical_pois.copy()
-    pois_with_nodes['node_id'] = node_ids[indices]
-    pois_with_nodes['snap_dist_m'] = dists
+    pois_with_nodes['node_id'] = node_ids[selected_indices]
+    pois_with_nodes['snap_dist_m'] = selected_dists
 
     MAX_SNAP_DISTANCE_M = config.SNAP_RADIUS_M_DRIVE if mode == 'drive' else config.SNAP_RADIUS_M_WALK
     pois_with_nodes = pois_with_nodes[pois_with_nodes['snap_dist_m'] <= MAX_SNAP_DISTANCE_M]
@@ -156,8 +224,8 @@ def main():
         args.pbf, args.mode, [7, 8], False
     )
 
-    # Build sites
-    sites = build_anchor_sites_from_nodes(gdf, node_ids, node_lats, node_lons, args.mode)
+    # Build sites (with connectivity-aware snapping)
+    sites = build_anchor_sites_from_nodes(gdf, node_ids, node_lats, node_lons, args.mode, indptr)
     if sites.empty:
         raise SystemExit("No anchor sites built. Check inputs.")
 

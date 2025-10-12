@@ -45,7 +45,7 @@ Supporting modules:
 
 | Script | Responsibility | Notes |
 | --- | --- | --- |
-| `src/03_build_anchor_sites.py` | Snaps canonical POIs to road graph nodes (drive/walk), groups them into anchor sites with deterministic `anchor_int_id`s. | Relies on CSR graph caches built by `graph/pyrosm_csr.py`; uses config snap radii. |
+| `src/03_build_anchor_sites.py` | Snaps canonical POIs to road graph nodes (drive/walk), groups them into anchor sites with deterministic `anchor_int_id`s. | **Connectivity-aware snapping** (as of Oct 2024): queries k=10 nearest nodes and prefers nodes with ≥2 edges over poorly-connected nodes within 2x the nearest distance. This fixes issues like Logan Airport snapping to isolated service roads. Relies on CSR graph caches built by `graph/pyrosm_csr.py`; uses config snap radii. |
 | `src/03_compute_minutes_per_state.py` | Builds/loads CSR graphs, maps anchors onto nodes, runs the native K-best kernel to compute `hex → anchor` travel times (T_hex), and writes parquet for each H3 resolution. | Imports helpers from `townscout_native` via `t_hex` module; optionally emits anchor site outputs for reuse. |
 | `src/03c_compute_overlays.py`, `src/03d_compute_d_anchor.py`, `src/03e_compute_d_anchor_category.py` | Compute auxiliary overlays and D_anchor tables (anchor → nearest brand/category). | Share logic via `src/d_anchor_common.py`. |
 

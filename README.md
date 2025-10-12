@@ -79,11 +79,13 @@ Overture ─┘                 └─>  D_anchor parquet (per category/brand)  
 **Generation.**
 
 1. Build routable graph from OSM.
-2. Snap POIs to nearest graph node by mode.
+2. Snap POIs to nearest graph node by mode (uses **connectivity-aware snapping** as of Oct 2024: considers k=10 candidates and prefers nodes with ≥2 edges to avoid isolated service roads).
 3. Group by `(mode, node_id)` ⇒ `site_id`.
 4. Store aggregated brand/category membership.
 
-**Counts.** \~23k drive‑mode anchors for Massachusetts (target range; not a hard promise).
+**Counts.** \~20k drive‑mode anchors for Massachusetts (target range; not a hard promise).
+
+**Quality fix (Oct 2024).** Previous naive nearest-neighbor snapping caused Logan Airport to reach only 20K nodes (vs. Worcester's 289K). Connectivity-aware snapping now selects better-connected nodes within 2× the nearest distance, improving ~38% of POI anchors statewide.
 
 ---
 

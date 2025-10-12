@@ -37,6 +37,7 @@ export default function FiltersPanel() {
   const sliders = useStore((state) => state.sliders);
   const poiModes = useStore((state) => state.poiModes);
   const defaultMode = useStore((state) => state.mode);
+  const loadingPois = useStore((state) => state.loadingPois);
 
   const [local, setLocal] = React.useState<Record<string, number>>({});
   const [modePending, setModePending] = React.useState<Record<string, boolean>>({});
@@ -78,12 +79,40 @@ export default function FiltersPanel() {
         const sliderValue = makeValue(poi.id);
         const currentMode = poiModes[poi.id] ?? defaultMode;
         const pendingModeChange = modePending[poi.id] ?? false;
+        const isLoading = loadingPois.has(poi.id);
         return (
           <Card key={poi.id} className={antiqueCardClass}>
             <CardHeader className={antiqueHeaderClass}>
-              <div>
-                <CardTitle className="font-serif text-stone-900">{poi.label}</CardTitle>
-                <p className="text-xs capitalize text-stone-500">{poi.type}</p>
+              <div className="flex items-center gap-2">
+                <div>
+                  <CardTitle className="font-serif text-stone-900">{poi.label}</CardTitle>
+                  <p className="text-xs capitalize text-stone-500">{poi.type}</p>
+                </div>
+                {isLoading && (
+                  <div className="flex items-center gap-1.5 text-amber-800">
+                    <svg
+                      className="h-4 w-4 animate-spin"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      ></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    <span className="text-xs font-medium">Computing...</span>
+                  </div>
+                )}
               </div>
               <Button
                 variant="ghost"
@@ -97,6 +126,12 @@ export default function FiltersPanel() {
               </Button>
             </CardHeader>
             <CardContent className={antiqueContentClass}>
+              {isLoading && (
+                <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 opacity-100">
+                  Computing travel times from custom location. This may take up to 15 seconds...
+                </div>
+              )}
+              <div className={`space-y-4 ${isLoading ? 'opacity-50 pointer-events-none' : ''}`}>
               <div className="flex items-center justify-between">
                 <span className={antiqueLabelClass}>Max travel time</span>
                 <Badge variant="muted" className={antiqueBadgeClass}>
@@ -108,6 +143,7 @@ export default function FiltersPanel() {
                 max={MAX_MINUTES}
                 step={MINUTE_STEP}
                 value={[sliderValue]}
+                disabled={isLoading}
                 onValueChange={(values) => {
                   const next = values[0] ?? MIN_MINUTES;
                   // Signal map controller that dragging started (only once per drag)
@@ -143,12 +179,13 @@ export default function FiltersPanel() {
                 <span className={antiqueLabelClass}>Travel mode</span>
                 <ModeToggle
                   value={currentMode}
-                  disabled={pendingModeChange}
+                  disabled={pendingModeChange || isLoading}
                   onChange={(mode) => {
                     if (mode === currentMode) return;
                     void handleModeChange(poi.id, mode);
                   }}
                 />
+              </div>
               </div>
             </CardContent>
           </Card>

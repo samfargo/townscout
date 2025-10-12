@@ -112,7 +112,7 @@ def main():
         anchors_df = pd.read_parquet(args.anchors)
     else:
         print("[info] Building anchors inline (consider precomputing via anchors step)...")
-        anchors_df = build_anchor_sites_from_nodes(canonical_pois_gdf, node_ids, node_lats, node_lons, args.mode)
+        anchors_df = build_anchor_sites_from_nodes(canonical_pois_gdf, node_ids, node_lats, node_lons, args.mode, indptr)
         if anchors_df.empty:
             raise SystemExit("No anchor sites could be built. Aborting.")
         if args.out_sites:

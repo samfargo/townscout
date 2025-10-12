@@ -280,6 +280,9 @@ async function loadDAnchor(id: string, mode: Mode): Promise<void> {
 // Helper function to load dAnchor data for custom locations
 async function loadDAnchorCustom(id: string, lon: number, lat: number, mode: Mode): Promise<void> {
   const store = useStore.getState();
+  
+  // Set loading state
+  store.setPoiLoading(id, true);
 
   try {
     const data = await fetchCustomDAnchor(lon, lat, mode);
@@ -292,6 +295,9 @@ async function loadDAnchorCustom(id: string, lon: number, lat: number, mode: Mod
     }
   } catch (error) {
     console.error(`❌ [loadDAnchorCustom] Failed to load dAnchor for custom ${id} (${mode}):`, error);
+  } finally {
+    // Clear loading state
+    store.setPoiLoading(id, false);
   }
 }
 

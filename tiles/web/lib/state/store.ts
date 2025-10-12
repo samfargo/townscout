@@ -44,6 +44,10 @@ export interface StoreState {
   dAnchorCache: Record<string, Record<Mode, Record<string, number>>>;
   setDAnchorCache: (id: string, mode: Mode, data: Record<string, number>) => void;
 
+  // Loading state for POIs
+  loadingPois: Set<string>;
+  setPoiLoading: (id: string, loading: boolean) => void;
+
   // Catalog
   catalog: Catalog | null;
   setCatalog: (catalog: Catalog) => void;
@@ -100,6 +104,18 @@ export const useStore = create<StoreState>()(
           }
         }
       })),
+
+      // Loading state
+      loadingPois: new Set(),
+      setPoiLoading: (id, loading) => set((state) => {
+        const next = new Set(state.loadingPois);
+        if (loading) {
+          next.add(id);
+        } else {
+          next.delete(id);
+        }
+        return { loadingPois: next };
+      }),
 
       // Catalog
       catalog: null,

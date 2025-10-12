@@ -371,6 +371,32 @@ def _finalize_category_df(df: pd.DataFrame, mode_code: int) -> pd.DataFrame:
     out["seconds_clamped"] = out["seconds_u16"].to_numpy(dtype=np.uint16, na_value=UNREACH_U16)
     return out[list(_DANCHOR_CATEGORY_DTYPES.keys())]
 
+def load_D_anchor_category(mode: str, category_id: int) -> pd.DataFrame:
+    """
+    Load seconds-based anchor→category table for a specific category.
+    Layout: data/d_anchor_category/mode={0|2}/category_id=<id>/part-*.parquet
+    Columns: anchor_id:uint32, category_id:uint32, mode:uint8, seconds_u16:uint16(nullable), snapshot_ts:date
+    """
+    mode_code = _mode_to_partition(mode)
+    base = os.path.join(_DANCHOR_CATEGORY_DIR, f"mode={mode_code}", f"category_id={category_id}")
+    print(f"[DEBUG] Loading category from: {base}")
+    df = _read_hive_dataset(
+        base,
+        [
+            "anchor_id",
+            "anchor_int_id",
+            "category_id",
+            "mode",
+            "seconds_u16",
+            "seconds",
+            "snapshot_ts",
+        ],
+    )
+    if df is None:
+        raise RuntimeError(f"Category D_anchor parquet missing at {base}")
+    print(f"[DEBUG] Loaded {len(df)} rows for category {category_id}")
+    return _finalize_category_df(df, mode_code)
+
 # ---------- Brand D_anchor loading ----------
 
 def load_D_anchor_brand(mode: str, brand_id: str) -> pd.DataFrame:
@@ -1177,17 +1203,17 @@ def get_d_anchor_slice(
     cid = resolve_category_id(category, mode)
 
     try:
-        D = load_D_anchor(mode)
-        sub = D[D["category_id"] == cid]
+        # Load only the specific category instead of all categories
+        D = load_D_anchor_category(mode, cid)
 
-        if sub.empty:
+        if D.empty:
             return {}
 
         # Convert to a dictionary: { anchor_id: seconds }
         # The client will use this to map anchor IDs from the T_hex tiles
         # to the travel times for the selected category.
-        anchor_ids = sub["anchor_id"].to_numpy(dtype=np.uint32, na_value=0)
-        seconds = sub["seconds_clamped"].to_numpy(dtype=np.uint16, na_value=UNREACH_U16)
+        anchor_ids = D["anchor_id"].to_numpy(dtype=np.uint32, na_value=0)
+        seconds = D["seconds_clamped"].to_numpy(dtype=np.uint16, na_value=UNREACH_U16)
         return {str(int(a)): int(s) for a, s in zip(anchor_ids, seconds)}
 
     except RuntimeError as e:
@@ -1327,4 +1353,5 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5174)) # Default to 5174 to avoid conflict with frontend
     print(f"Starting TownScout D_anchor server on http://0.0.0.0:{port}")
     print(f"Using STATE={STATE}")
-    uvicorn.run("api.main:app", host="0.0.0.0", port=port, reload=True)
+    # Pass app directly instead of module path to avoid import issues
+    uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
