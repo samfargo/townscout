@@ -123,18 +123,17 @@ The web client is a Next.js 13+ App Router project that renders a full-height ma
 
 ### State & Actions
 
-- Global state lives in `lib/state/store.ts` (Zustand + localStorage persistence) tracking active POIs, per-filter sliders, mode selections, cached D_anchor maps, and climate selections.
+- Global state lives in `lib/state/store.ts` (Zustand) tracking active POIs, per-filter sliders, mode selections, cached D_anchor maps, and climate selections. State is ephemeral and resets on page refresh to ensure clean initialization.
 - `lib/actions/index.ts` holds the imperative bridge between UI state and the map:
   - Fetches catalog metadata and ensures caches are hydrated (`ensureCatalogLoaded`).
   - Adds/removes POIs (`addCategory`, `addBrand`, `addCustom`, `removePOI`) and keeps D_anchor caches in sync.
-  - Applies GPU filters by pushing MapLibre expressions built in `lib/map/expressions.ts` to the correct layers through the `MapController`.
-  - Restores persisted filters from storage and coordinates custom coverage recomputes (`fetchCustom` via `lib/services/dAnchor.ts`).
+  - Applies GPU filters by coordinating with the map worker to build GPU expressions that are then applied to the MapLibre layers through the `MapController`.
 
 ### Map Integration
 
-- `lib/map/MapController.ts` instantiates MapLibre, registers the PMTiles protocol, tracks active mode filters, and exposes hover callbacks. Layer IDs come from `lib/map/layers.ts`, which defines the base style and source references for r7/r8 PMTiles.
-- `lib/map/map.worker.ts` builds GPU expressions in a Web Worker to combine multiple POI criteria. When multiple filters are active (e.g., airport + Costco), the worker uses **intersection logic** (MapLibre `'all'` expressions) so only hexes meeting ALL criteria are shown. This ensures that adding more criteria progressively narrows the livable area, as intended.
-- `lib/map/controllerRegistry.ts` (not listed earlier) stores the singleton controller instance so action creators can mutate map state outside React components.
+- `lib/map/MapController.ts` instantiates MapLibre, registers the PMTiles protocol, tracks active mode filters, and exposes hover callbacks. The base style defines r7/r8 PMTiles sources with default visibility and 0.4 opacity, ensuring that when no filters are active, all hexes are shaded (showing the full coverage area).
+- `lib/map/map.worker.ts` builds GPU expressions in a Web Worker to combine multiple POI criteria. When multiple filters are active (e.g., airport + Costco), the worker uses **intersection logic** (MapLibre `'all'` expressions) so only hexes meeting ALL criteria are shown. This ensures that adding more criteria progressively narrows the livable area, as intended. Climate filters are combined with POI filters using AND logic when both are present.
+- The MapController maintains a singleton worker instance and applies expression updates via RAF-coalesced batches to minimize render thrashing during slider interactions.
 
 ### Sidebar & UI Components
 

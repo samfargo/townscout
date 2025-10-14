@@ -188,7 +188,7 @@ export default function SearchBox() {
       </CardHeader>
       <CardContent className="space-y-4 px-5 pb-5 pt-4 text-sm text-stone-700">
         <div className="space-y-2">
-          <DropdownSection label="Places of Interest (Categories)">
+          <DropdownSection label="Points of Interest">
             {!catalog?.loaded && (
               <p className="px-1 text-xs text-stone-500">Loading catalog…</p>
             )}
@@ -218,12 +218,12 @@ export default function SearchBox() {
               </div>
             )}
           </DropdownSection>
-          <DropdownSection label="Places of Interest">
+          <DropdownSection label="Popular Businesses">
             {!catalog?.loaded && (
               <p className="px-1 text-xs text-stone-500">Loading POIs…</p>
             )}
             {catalog?.loaded && precomputedBrands.length === 0 && (
-              <p className="px-1 text-xs text-stone-500">No precomputed POIs available.</p>
+              <p className="px-1 text-xs text-stone-500">No businesses available.</p>
             )}
             {catalog?.loaded && precomputedBrands.length > 0 && (
               <div className="space-y-2">

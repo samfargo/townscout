@@ -205,40 +205,6 @@ export async function applyCurrentFilter(
   });
 }
 
-export async function restorePersistedFilters(): Promise<void> {
-  const store = useStore.getState();
-  
-  // Load catalog
-  await ensureCatalogLoaded();
-  
-  // Sync any existing dAnchorCache data to worker (from localStorage)
-  for (const poiId of Object.keys(store.dAnchorCache)) {
-    for (const mode of Object.keys(store.dAnchorCache[poiId]) as Mode[]) {
-      const data = store.dAnchorCache[poiId][mode];
-      if (data) {
-        syncDAnchorToWorker(poiId, mode, data);
-      }
-    }
-  }
-  
-  // Load dAnchor data for all POIs
-  for (const poi of store.pois) {
-    const modes: Mode[] = ['drive', 'walk'];
-    for (const mode of modes) {
-      const hasData = store.dAnchorCache[poi.id]?.[mode];
-      if (!hasData) {
-        if (poi.type === 'custom' && poi.lon != null && poi.lat != null) {
-          await loadDAnchorCustom(poi.id, poi.lon, poi.lat, mode);
-        } else {
-          await loadDAnchor(poi.id, mode);
-        }
-      }
-    }
-  }
-  
-  // Apply filters
-  await applyCurrentFilter();
-}
 
 // Helper function to send dAnchor data to worker
 function syncDAnchorToWorker(id: string, mode: Mode, data: any): void {
