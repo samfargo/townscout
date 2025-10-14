@@ -15,6 +15,11 @@ NATURAL_WATER_TAGS = {
 }
 
 def load_osm_beach_layers(state: str) -> dict[str, gpd.GeoDataFrame]:
+    """Load beach-related features from OSM PBF.
+    
+    Returns separate GeoDataFrames for beaches, coastlines, water bodies, and riverbanks.
+    Uses separate Pyrosm queries to avoid geometry type conflicts.
+    """
     pbf_path = f"data/osm/{state}.osm.pbf"
     empty = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
     if not os.path.exists(pbf_path):
@@ -22,21 +27,65 @@ def load_osm_beach_layers(state: str) -> dict[str, gpd.GeoDataFrame]:
         return {"beach": empty, "coastline": empty, "water": empty, "riverbank": empty}
 
     osm = OSM(pbf_path)
-    gdf = osm.get_data_by_custom_criteria(
-        custom_filter=NATURAL_WATER_TAGS,
-        tags_as_columns=["name", "natural", "water", "waterway"],
-        keep_nodes=True, keep_ways=True, keep_relations=True,  # relations ON
-    )
-    if gdf is None or gdf.empty:
-        return {"beach": empty, "coastline": empty, "water": empty, "riverbank": empty}
+    out = {}
 
-    gdf = gdf.to_crs("EPSG:4326")
-    return {
-        "beach":     gdf[gdf["natural"] == "beach"].copy(),
-        "coastline": gdf[gdf["natural"] == "coastline"].copy(),
-        "water":     gdf[gdf["natural"] == "water"].copy(),
-        "riverbank": gdf[gdf["waterway"] == "riverbank"].copy(),
-    }
+    # Load beaches (polygons)
+    try:
+        beach_gdf = osm.get_data_by_custom_criteria(
+            custom_filter={"natural": ["beach"]},
+            tags_as_columns=["name", "natural"],
+            keep_nodes=False,  # polygons only
+            keep_ways=True,
+            keep_relations=True,
+        )
+        out["beach"] = beach_gdf.to_crs("EPSG:4326") if beach_gdf is not None else empty
+    except Exception as e:
+        print(f"[warn] Failed to load beaches: {e}")
+        out["beach"] = empty
+
+    # Load coastlines (lines)
+    try:
+        coast_gdf = osm.get_data_by_custom_criteria(
+            custom_filter={"natural": ["coastline"]},
+            tags_as_columns=["name", "natural"],
+            keep_nodes=False,
+            keep_ways=True,
+            keep_relations=False,  # coastlines are ways
+        )
+        out["coastline"] = coast_gdf.to_crs("EPSG:4326") if coast_gdf is not None else empty
+    except Exception as e:
+        print(f"[warn] Failed to load coastlines: {e}")
+        out["coastline"] = empty
+
+    # Load water bodies (polygons)
+    try:
+        water_gdf = osm.get_data_by_custom_criteria(
+            custom_filter={"natural": ["water"]},
+            tags_as_columns=["name", "natural", "water"],
+            keep_nodes=False,  # polygons only
+            keep_ways=True,
+            keep_relations=True,
+        )
+        out["water"] = water_gdf.to_crs("EPSG:4326") if water_gdf is not None else empty
+    except Exception as e:
+        print(f"[warn] Failed to load water bodies: {e}")
+        out["water"] = empty
+
+    # Load riverbanks (polygons)
+    try:
+        river_gdf = osm.get_data_by_custom_criteria(
+            custom_filter={"waterway": ["riverbank"]},
+            tags_as_columns=["name", "waterway"],
+            keep_nodes=False,  # polygons only
+            keep_ways=True,
+            keep_relations=True,
+        )
+        out["riverbank"] = river_gdf.to_crs("EPSG:4326") if river_gdf is not None else empty
+    except Exception as e:
+        print(f"[warn] Failed to load riverbanks: {e}")
+        out["riverbank"] = empty
+
+    return out
 
 def classify_beaches_gpd(beach_gdf: gpd.GeoDataFrame,
                          coastline_gdf: gpd.GeoDataFrame,

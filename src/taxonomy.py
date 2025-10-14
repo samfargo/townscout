@@ -271,8 +271,8 @@ OSM_TAG_MAP = {
     ("natural", "beach"): ("natural", "beach_other", "other"),
 
     # Natural / Recreation (overture) - beaches from Overture (if any)
-    "beach": ("natural", "beach_other", "other"),
-    "beach_access": ("natural", "beach_other", "other"),
+    ("amenity", "beach"): ("natural", "beach_other", "other"),
+    ("amenity", "beach_access"): ("natural", "beach_other", "other"),
     }
 
 # --- Optional external config overrides ---
