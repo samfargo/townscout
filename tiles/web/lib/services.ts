@@ -20,6 +20,74 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
   return response.json() as Promise<T>;
 }
 
+// ==================== API PROXY UTILITIES ====================
+
+import { NextResponse } from "next/server";
+
+export interface ApiProxyOptions<T> {
+  /** The API endpoint path (e.g., '/api/d_anchor') */
+  endpoint: string;
+  /** Fallback value to return when the upstream API fails */
+  fallback: T;
+  /** Optional transform function to normalize the response */
+  transform?: (payload: any) => T;
+  /** Log label for error messages */
+  logLabel: string;
+}
+
+export async function safeReadBody(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch {
+    return "<no-body>";
+  }
+}
+
+export async function createApiProxy<T>(
+  request: Request,
+  options: ApiProxyOptions<T>
+): Promise<NextResponse<T>> {
+  const requestUrl = new URL(request.url);
+  const upstreamUrl = resolveApiUrl(`${options.endpoint}${requestUrl.search}`);
+
+  try {
+    const upstream = new URL(upstreamUrl);
+    if (upstream.origin === requestUrl.origin && upstream.pathname === requestUrl.pathname) {
+      throw new Error(`Upstream ${options.endpoint} URL resolves to this Next.js route; aborting to avoid loop.`);
+    }
+
+    const response = await fetch(upstreamUrl, {
+      headers: {
+        Accept: "application/json"
+      },
+      cache: "no-store"
+    });
+
+    if (!response.ok) {
+      const body = await safeReadBody(response);
+      throw new Error(`Upstream ${options.endpoint} request failed: ${response.status} ${response.statusText}: ${body}`);
+    }
+
+    const rawPayload = await response.json();
+    const finalPayload = options.transform 
+      ? options.transform(rawPayload)
+      : (rawPayload ?? options.fallback);
+
+    return NextResponse.json(finalPayload, {
+      headers: {
+        "cache-control": "no-store"
+      }
+    });
+  } catch (error) {
+    console.error(`[${options.logLabel}] Falling back to empty payload`, error);
+    return NextResponse.json(options.fallback, {
+      headers: {
+        "cache-control": "no-store"
+      }
+    });
+  }
+}
+
 // ==================== CATALOG SERVICE ====================
 
 export interface Brand {
