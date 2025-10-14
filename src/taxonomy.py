@@ -81,7 +81,7 @@ TAXONOMY = {
         "fuel": ["fuel", "charging_station"],
     },
     "natural": {
-        "beach": ["beach"],
+        "beach": ["ocean", "lake", "river", "other"],
         "trailhead": ["trailhead"],
         "nature_reserve": ["nature_reserve"],
     },
@@ -259,7 +259,14 @@ OSM_TAG_MAP = {
     ("amenity", "ferry_terminal"): ("transport", "ferry_terminal", "ferry_terminal"),
     ("amenity", "fuel"): ("transport", "fuel", "fuel"),
     ("amenity", "charging_station"): ("transport", "fuel", "charging_station"),
-}
+
+    # Natural features
+    ("natural", "beach"): ("natural", "beach", None),
+
+    # Natural / Recreation (overture)
+    "beach": ("natural", "beach", None),
+    "beach_access": ("natural", "beach", None),  # if present in your Overture sample
+    }
 
 # --- Optional external config overrides ---
 _BRANDS_CSV = os.path.join("data", "brands", "registry.csv")

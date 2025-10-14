@@ -18,6 +18,7 @@ from config import STATES
 from taxonomy import BRAND_REGISTRY, OVERTURE_CATEGORY_MAP, OSM_TAG_MAP
 import h3
 from shapely.geometry import Point
+from osm_beaches import build_beach_pois_for_state
 
 # Invert brand registry for quick lookup of aliases
 _brand_alias_to_id = {}
@@ -392,12 +393,19 @@ def main():
         # 2. Normalize each source to the canonical schema
         overture_normalized = normalize_overture_pois(overture_pois)
         osm_normalized = normalize_osm_pois(osm_pois)
-        
-        # 3. Conflate the normalized datasets (+ injected airports)
+
+        # 2b. Build beach POIs (ocean/lake/river/other) from OSM
+        beach_pois = build_beach_pois_for_state(state)
+
+        # 3. Conflate the normalized datasets (+ beaches + airports)
         canonical_pois = conflate_pois(overture_normalized, osm_normalized)
+        parts = [canonical_pois]
+        if not beach_pois.empty:
+            parts.append(beach_pois)
         airports_normalized = load_airports_csv()
         if not airports_normalized.empty:
-            canonical_pois = pd.concat([canonical_pois, airports_normalized], ignore_index=True)
+            parts.append(airports_normalized)
+        canonical_pois = pd.concat(parts, ignore_index=True) if len(parts) > 1 else canonical_pois
         
         # 4. Save the result
         output_path = f"data/poi/{state}_canonical.parquet"
