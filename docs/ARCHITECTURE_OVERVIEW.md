@@ -39,6 +39,7 @@ Pipeline scripts are designed to be run sequentially; each stage emits artefacts
 Supporting modules:
 
 - `src/taxonomy.py` defines the canonical class → category → subcategory hierarchy, brand registry, and source tag mappings. Optional CSV/YAML files in `data/` override defaults.
+- `src/osm_beaches.py` provides specialized beach classification that identifies ocean vs. lake beaches using spatial analysis. Beaches are classified into separate categories (`beach_ocean`, `beach_lake`, `beach_river`, `beach_other`) based on proximity to coastlines (150m) and inland water bodies (100m for lakes, 80m for rivers). This enables distinct frontend filter options for "Any Beach (Ocean)" and "Any Beach (Lake)".
 - `src/util_osm.py` wraps Geofabrik downloads used by step 01.
 
 ### 2. Anchor Generation & Graph Preparation

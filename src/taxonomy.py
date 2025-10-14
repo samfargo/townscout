@@ -81,7 +81,10 @@ TAXONOMY = {
         "fuel": ["fuel", "charging_station"],
     },
     "natural": {
-        "beach": ["ocean", "lake", "river", "other"],
+        "beach_ocean": ["ocean"],
+        "beach_lake": ["lake"],
+        "beach_river": ["river"],
+        "beach_other": ["other"],
         "trailhead": ["trailhead"],
         "nature_reserve": ["nature_reserve"],
     },
@@ -261,11 +264,15 @@ OSM_TAG_MAP = {
     ("amenity", "charging_station"): ("transport", "fuel", "charging_station"),
 
     # Natural features
-    ("natural", "beach"): ("natural", "beach", None),
+    # Note: Beaches are handled specially via osm_beaches.py build_beach_pois_for_state()
+    # which classifies them into beach_ocean, beach_lake, beach_river, beach_other
+    # based on proximity to coastlines and water bodies. The mappings below are
+    # fallbacks if the classification system is bypassed.
+    ("natural", "beach"): ("natural", "beach_other", "other"),
 
-    # Natural / Recreation (overture)
-    "beach": ("natural", "beach", None),
-    "beach_access": ("natural", "beach", None),  # if present in your Overture sample
+    # Natural / Recreation (overture) - beaches from Overture (if any)
+    "beach": ("natural", "beach_other", "other"),
+    "beach_access": ("natural", "beach_other", "other"),
     }
 
 # --- Optional external config overrides ---

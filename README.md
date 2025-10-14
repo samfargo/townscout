@@ -130,6 +130,8 @@ Implementation details for T_hex/D_anchor generation, tile assembly, and the Nex
 
 **Key insight.** Use Overture for the brand/commercial spine and OSM for civic/natural/local detail. Normalize both into a TownScout taxonomy with a brand registry. Airports are handled via a curated CSV to avoid noisy/missing source tags.
 
+**Beach Classification.** Beaches receive specialized treatment via `src/osm_beaches.py`, which uses spatial analysis to classify them into separate categories (`beach_ocean`, `beach_lake`, `beach_river`, `beach_other`) based on proximity to coastlines and water bodies. This enables distinct frontend filter options for "Any Beach (Ocean)" and "Any Beach (Lake)" rather than a single generic beach filter.
+
 ---
 
 ## 11) Canonical Schemas

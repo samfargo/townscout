@@ -106,14 +106,20 @@ def build_beach_pois_for_state(state: str) -> gpd.GeoDataFrame:
         source_id = r.get("id") if "id" in r else None
         poi_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"osm|beach|{source_id}"))
         pt = r.geometry if isinstance(r.geometry, Point) else r.geometry.representative_point()
+        beach_type = r["beach_type"]  # ocean|lake|river|other
+        
+        # Create separate category for each beach type to enable distinct frontend filters
+        # "beach_ocean" and "beach_lake" will appear as separate POI filter options
+        category = f"beach_{beach_type}"
+        
         rows.append({
             "poi_id": poi_id,
             "name": name,
             "brand_id": None,
             "brand_name": None,
-            "class": "recreation",
-            "category": "beach",
-            "subcat": r["beach_type"],  # ocean|lake|river|other
+            "class": "natural",
+            "category": category,  # beach_ocean, beach_lake, beach_river, beach_other
+            "subcat": beach_type,
             "lon": pt.x, "lat": pt.y,
             "geometry": pt,
             "source": "osm",

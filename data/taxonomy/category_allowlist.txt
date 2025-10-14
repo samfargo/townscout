@@ -12,3 +12,5 @@ subway_station
 ferry_terminal
 railway_station
 airport
+beach_ocean
+beach_lake
