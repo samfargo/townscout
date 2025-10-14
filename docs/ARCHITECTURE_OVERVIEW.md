@@ -98,8 +98,10 @@ The service exposes data needed by the web client and can also serve tiles/stati
 | `/` | Redirects to configured frontend origin or returns API status JSON. |
 | `/health` | Simple readiness probe. |
 | `/api/categories` | Lists available category IDs (per mode) based on parquet partitions. |
-| `/api/catalog` | Consolidates category metadata, brand registry names, and category→brand relationships by inspecting canonical POIs. |
+| `/api/catalog` | Consolidates category metadata, brand registry names, and category→brand relationships by inspecting canonical POIs. Uses `data/taxonomy/category_label_to_id.json` to map POI category labels (e.g., "fast_food", "cafe") to category IDs, ensuring brands are properly associated with their parent categories in the `cat_to_brands` mapping. |
 | `/api/places/autocomplete`, `/api/places/details` | Proxy Google Places Autocomplete + Details using `GOOGLE_PLACES_API_KEY`, adding validation and structured responses. |
+
+**Graceful Mode Handling**: The API gracefully handles missing mode data (e.g., walk mode parquet files not yet computed). If walk mode data is unavailable, endpoints return empty results (`{}`) with warning logs rather than raising errors, allowing the application to continue functioning with available modes (typically drive mode).
 | `/api/d_anchor` | Loads parquet shards under `data/d_anchor_category/`, merges requested categories, and returns `{anchor_id: seconds}` maps. |
 | `/api/d_anchor_brand` | Same for brand partitions at `data/d_anchor_brand/`. |
 | `/api/d_anchor_custom` | Runs on-the-fly routing for arbitrary lon/lat points by seeding temporary anchors and invoking the native kernel. |
@@ -131,7 +133,7 @@ The web client is a Next.js 13+ App Router project that renders a full-height ma
 ### Map Integration
 
 - `lib/map/MapController.ts` instantiates MapLibre, registers the PMTiles protocol, tracks active mode filters, and exposes hover callbacks. Layer IDs come from `lib/map/layers.ts`, which defines the base style and source references for r7/r8 PMTiles.
-- `lib/map/expressions.ts` creates memoized MapLibre expressions combining tile-provided `a{i}_s` values with API-fetched D_anchor seconds to compute `<=' thresholds on the GPU. Expressions are versioned to bust memoization when cache data changes.
+- `lib/map/map.worker.ts` builds GPU expressions in a Web Worker to combine multiple POI criteria. When multiple filters are active (e.g., airport + Costco), the worker uses **intersection logic** (MapLibre `'all'` expressions) so only hexes meeting ALL criteria are shown. This ensures that adding more criteria progressively narrows the livable area, as intended.
 - `lib/map/controllerRegistry.ts` (not listed earlier) stores the singleton controller instance so action creators can mutate map state outside React components.
 
 ### Sidebar & UI Components

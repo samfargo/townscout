@@ -99,9 +99,9 @@ export default function HoverBox() {
               </div>
             </dl>
             {(climateSummary.monthlyTemp || climateSummary.monthlyPrecip) && (
-              <div className="mt-2 space-y-2 border-t border-stone-200 pt-2">
+              <div className="mt-2 space-y-1 border-t border-stone-200 pt-2">
                 {climateSummary.monthlyTemp && (
-                  <div className="space-y-1">
+                  <div className="space-y-0.5">
                     <p className="text-[10px] uppercase tracking-wide text-stone-400">
                       Monthly Temperature (°F)
                     </p>
@@ -116,7 +116,7 @@ export default function HoverBox() {
                   </div>
                 )}
                 {climateSummary.monthlyPrecip && (
-                  <div className="space-y-1">
+                  <div className="mt-1 space-y-0.5">
                     <p className="text-[10px] uppercase tracking-wide text-stone-400">
                       Monthly Precipitation (in)
                     </p>
@@ -127,6 +127,7 @@ export default function HoverBox() {
                       color="#2563eb"
                       fillColor="#93c5fd"
                       type="bar"
+                      showMonthLabels={true}
                     />
                   </div>
                 )}

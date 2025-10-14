@@ -109,6 +109,13 @@ function combineWithAny(...conditions: Array<any | null | undefined>): any | nul
   return ['any', ...flattened];
 }
 
+function combineWithAll(...conditions: Array<any | null | undefined>): any | null {
+  const flattened: any[] = conditions.filter(Boolean);
+  if (!flattened.length) return null;
+  if (flattened.length === 1) return flattened[0];
+  return ['all', ...flattened];
+}
+
 // Cache base travel time expressions per POI+mode to avoid rebuilding on preview
 const poiExpressionCache = new Map<string, any>();
 
@@ -173,7 +180,7 @@ function calculateExpressions(tempValues?: Record<string, number>) {
   }
 
   (Object.keys(perModeBooleanExpressions) as Mode[]).forEach((m) => {
-    const combined = combineWithAny(...perModeBooleanExpressions[m]);
+    const combined = combineWithAll(...perModeBooleanExpressions[m]);
     if (!combined) return;
     expressions[m].active = true;
     expressions[m].expression = combined;

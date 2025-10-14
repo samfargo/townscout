@@ -336,7 +336,9 @@ def load_D_anchor(mode: str) -> pd.DataFrame:
         df = pd.read_parquet(path)
         return _finalize_category_df(df, mode_code)
 
-    raise RuntimeError(f"Category D_anchor parquet not found under {_DANCHOR_CATEGORY_DIR} or legacy paths for mode={mode}")
+    # Gracefully handle missing data (e.g., walk mode not yet computed)
+    print(f"WARNING: Category D_anchor parquet not found for mode={mode}. Returning empty DataFrame.")
+    return _empty_df(_DANCHOR_CATEGORY_DTYPES)
 
 
 def _finalize_category_df(df: pd.DataFrame, mode_code: int) -> pd.DataFrame:
@@ -393,7 +395,8 @@ def load_D_anchor_category(mode: str, category_id: int) -> pd.DataFrame:
         ],
     )
     if df is None:
-        raise RuntimeError(f"Category D_anchor parquet missing at {base}")
+        print(f"WARNING: Category D_anchor parquet missing at {base} for mode={mode}. Returning empty DataFrame.")
+        return _empty_df(_DANCHOR_CATEGORY_DTYPES)
     print(f"[DEBUG] Loaded {len(df)} rows for category {category_id}")
     return _finalize_category_df(df, mode_code)
 
@@ -421,7 +424,8 @@ def load_D_anchor_brand(mode: str, brand_id: str) -> pd.DataFrame:
         ],
     )
     if df is None:
-        raise RuntimeError(f"Brand D_anchor parquet missing at {base}")
+        print(f"WARNING: Brand D_anchor parquet missing at {base} for mode={mode}. Returning empty DataFrame.")
+        return _empty_df(_DANCHOR_BRAND_DTYPES)
     print(f"[DEBUG] Loaded {len(df)} rows, sample anchor 13279: {df[df['anchor_id'] == 13279]['seconds_u16'].values if 'anchor_id' in df.columns and 13279 in df['anchor_id'].values else 'NOT FOUND'}")
     result = _finalize_brand_df(df, brand_id, mode_code)
     print(f"[DEBUG] After finalize, anchor 13279: {result[result['anchor_id'] == 13279]['seconds_clamped'].values if 13279 in result['anchor_id'].values else 'NOT FOUND'}")
@@ -492,6 +496,21 @@ def list_available_categories(mode: str) -> list[int]:
                 except Exception:
                     pass
     return sorted(set(ids))
+
+def _load_category_label_to_id() -> Dict[str, int]:
+    """Load category label -> id mapping from category_label_to_id.json.
+    Returns mapping from label strings (e.g. 'fast_food') to integer category IDs.
+    """
+    base = os.path.join("data", "taxonomy")
+    json_path = os.path.join(base, "category_label_to_id.json")
+    if os.path.isfile(json_path):
+        try:
+            with open(json_path, "r") as f:
+                obj = json.load(f)
+                return {str(k): int(v) for k, v in obj.items()}
+        except Exception:
+            pass
+    return {}
 
 def _load_category_labels() -> Dict[str, str]:
     """Load optional category id -> label mapping.
@@ -710,19 +729,19 @@ def catalog(mode: str = Query("drive", description="Travel mode, e.g. 'drive' or
         if os.path.exists(canon_path):
             cdf = pd.read_parquet(canon_path, columns=["brand_id", "category"])  # best-effort
             cdf = cdf.dropna(subset=["brand_id", "category"])
-            # Reverse label mapping to id by lowercase label
-            label_to_id = {v.lower(): k for k, v in labels_map.items()}
+            # Load the label -> id mapping (e.g., "fast_food" -> 5)
+            label_to_id = _load_category_label_to_id()
             # Accumulate mapping
             tmp: dict[str, set[str]] = {}
             for _, r in cdf.iterrows():
-                cat_label = str(r["category"]).lower()
+                cat_label = str(r["category"]).strip()
                 bid = str(r["brand_id"]).strip()
                 if bid not in present:
                     continue
                 cid = label_to_id.get(cat_label)
                 if cid is None:
                     continue
-                tmp.setdefault(cid, set()).add(bid)
+                tmp.setdefault(str(cid), set()).add(bid)
             # Convert to lists
             for cid, s in tmp.items():
                 cat_to_brands.setdefault(str(cid), [])
@@ -950,7 +969,17 @@ def _load_graph_and_anchors(mode: str):
         print(f"[_load_graph_and_anchors] Loading anchor sites for mode={mode}...")
         sites_path = _find_sites_parquet(mode)
         if not sites_path:
-            raise RuntimeError("No anchor sites parquet found")
+            print(f"WARNING: No anchor sites parquet found for mode={mode}. Creating empty anchor cache.")
+            # Create empty anchor cache to allow graceful degradation
+            _ANCHOR_CACHE[key] = {
+                "anchors_df": pd.DataFrame(),
+                "anchor_idx": np.array([], dtype=np.int32),
+                "anchor_nodes": np.array([], dtype=np.int32),
+                "anchor_ids": np.array([], dtype=np.int32),
+                "anchor_lats": np.array([], dtype=np.float32),
+                "anchor_lons": np.array([], dtype=np.float32),
+            }
+            return _GRAPH_CACHE[key], _ANCHOR_CACHE[key]
         anchors_df = pd.read_parquet(sites_path)
         if "anchor_int_id" not in anchors_df.columns:
             anchors_df = anchors_df.sort_values("site_id").reset_index(drop=True)
@@ -1042,6 +1071,12 @@ def get_d_anchor_custom(
     print(f"[d_anchor_custom] Request: lon={lon}, lat={lat}, mode={mode}, cutoff={cutoff}min")
     try:
         G, A = _load_graph_and_anchors(mode)
+        
+        # Check if anchor cache is empty (e.g., walk mode data missing)
+        anchor_nodes = A.get("anchor_nodes")
+        if anchor_nodes is None or len(anchor_nodes) == 0:
+            print(f"WARNING: No anchor data available for mode={mode}. Returning empty result.")
+            return {}
         node_ids = G["node_ids"]  # type: ignore
         lats = G["lats"]  # type: ignore
         lons = G["lons"]  # type: ignore
@@ -1207,6 +1242,8 @@ def get_d_anchor_slice(
         D = load_D_anchor_category(mode, cid)
 
         if D.empty:
+            # Gracefully return empty result if data is missing (e.g., walk mode not computed)
+            print(f"INFO: No D_anchor data available for category={category} mode={mode}. Returning empty result.")
             return {}
 
         # Convert to a dictionary: { anchor_id: seconds }
@@ -1216,10 +1253,6 @@ def get_d_anchor_slice(
         seconds = D["seconds_clamped"].to_numpy(dtype=np.uint16, na_value=UNREACH_U16)
         return {str(int(a)): int(s) for a, s in zip(anchor_ids, seconds)}
 
-    except RuntimeError as e:
-        # This occurs if the D_anchor file for the mode is missing.
-        print(f"ERROR in get_d_anchor_slice for category={category} mode={mode}: {e}")
-        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         import traceback
         print(f"ERROR in get_d_anchor_slice: {e}\n{traceback.format_exc()}")
@@ -1239,13 +1272,12 @@ def get_d_anchor_brand(
     try:
         D = load_D_anchor_brand(mode, bid)
         if D.empty:
+            # Gracefully return empty result if data is missing (e.g., walk mode not computed)
+            print(f"INFO: No D_anchor data available for brand={brand} mode={mode}. Returning empty result.")
             return {}
         anchor_ids = D["anchor_id"].to_numpy(dtype=np.uint32, na_value=0)
         seconds = D["seconds_clamped"].to_numpy(dtype=np.uint16, na_value=UNREACH_U16)
         return {str(int(a)): int(s) for a, s in zip(anchor_ids, seconds)}
-    except RuntimeError as e:
-        print(f"ERROR in get_d_anchor_brand for brand={brand} mode={mode}: {e}")
-        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         import traceback
         print(f"ERROR in get_d_anchor_brand: {e}\n{traceback.format_exc()}")

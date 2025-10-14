@@ -111,7 +111,7 @@ Implementation details for T_hex/D_anchor generation, tile assembly, and the Nex
 **Frontend assumptions:**
 
 * Uses anchor fields in tiles (`a{i}_id`, `a{i}_s`) and composes with API D_anchor (categories and brands) on the GPU.
-* Mode: `drive` (walk supported if walk tiles + D_anchor provided).
+* Mode: `drive` (walk supported if walk tiles + D_anchor provided). The system gracefully handles missing walk mode data by returning empty results, allowing drive mode to function normally.
 * Units: minutes in the UI.
 
 ---
