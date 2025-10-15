@@ -4,12 +4,10 @@ supermarket
 cafe
 fast_food
 hospital
-clinic
 pharmacy
 park
 bus_station
 subway_station
-ferry_terminal
 railway_station
 airport
 beach_ocean

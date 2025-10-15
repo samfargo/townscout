@@ -396,6 +396,7 @@ def main():
 
         # 2b. Build beach POIs (ocean/lake/river/other) from OSM
         beach_pois = build_beach_pois_for_state(state)
+        print(f"[ok] Built {len(beach_pois)} beach POIs for {state}")
 
         # 3. Conflate the normalized datasets (+ beaches + airports)
         canonical_pois = conflate_pois(overture_normalized, osm_normalized)

@@ -40,6 +40,7 @@ Supporting modules:
 
 - `src/taxonomy.py` defines the canonical class → category → subcategory hierarchy, brand registry, and source tag mappings. Optional CSV/YAML files in `data/` override defaults.
 - `src/osm_beaches.py` provides specialized beach classification that identifies ocean vs. lake beaches using spatial analysis. Beaches are classified into separate categories (`beach_ocean`, `beach_lake`, `beach_river`, `beach_other`) based on proximity to coastlines (150m) and inland water bodies (100m for lakes, 80m for rivers). This enables distinct frontend filter options for "Any Beach (Ocean)" and "Any Beach (Lake)".
+- `src/geometry_utils.py` provides geometry hygiene utilities to prevent Shapely 2.x `create_collection` errors when building GeometryCollection or Multi* objects from mixed/invalid geometries. The `clean_geoms()` function filters out null, empty, and non-geometry objects before unary_union operations.
 - `src/util_osm.py` wraps Geofabrik downloads used by step 01.
 
 ### 2. Anchor Generation & Graph Preparation
@@ -48,7 +49,7 @@ Supporting modules:
 | --- | --- | --- |
 | `src/03_build_anchor_sites.py` | Snaps canonical POIs to road graph nodes (drive/walk), groups them into anchor sites with deterministic `anchor_int_id`s. | **Connectivity-aware snapping** (as of Oct 2024): queries k=10 nearest nodes and prefers nodes with ≥2 edges over poorly-connected nodes within 2x the nearest distance. This fixes issues like Logan Airport snapping to isolated service roads. Relies on CSR graph caches built by `graph/pyrosm_csr.py`; uses config snap radii. |
 | `src/03_compute_minutes_per_state.py` | Builds/loads CSR graphs, maps anchors onto nodes, runs the native K-best kernel to compute `hex → anchor` travel times (T_hex), and writes parquet for each H3 resolution. | Imports helpers from `townscout_native` via `t_hex` module; optionally emits anchor site outputs for reuse. |
-| `src/03c_compute_overlays.py`, `src/03d_compute_d_anchor.py`, `src/03e_compute_d_anchor_category.py` | Compute auxiliary overlays and D_anchor tables (anchor → nearest brand/category). | Share logic via `src/d_anchor_common.py`. |
+| `src/03c_compute_overlays.py`, `src/03d_compute_d_anchor.py`, `src/03e_compute_d_anchor_category.py` | Compute auxiliary overlays and D_anchor tables (anchor → nearest brand/category). | Share logic via `src/d_anchor_common.py`. Runtime limits (max_minutes, top_k) are loaded from `data/taxonomy/d_anchor_limits.json` to control SSSP cutoffs and result filtering per entity. |
 
 Core graph helpers live in `src/graph/`:
 
@@ -56,6 +57,12 @@ Core graph helpers live in `src/graph/`:
 - `graph/csr_utils.py` offers CSR transforms (transpose, connected components, etc.).
 - `graph/anchors.py` ensures stable `anchor_int_id` assignment and node mappings.
 - `graph/ch_cache.py` stores/loads contraction hierarchy caches (used when available).
+
+D_anchor computation utilities in `src/d_anchor_common.py`:
+
+- `load_d_anchor_limits()` loads runtime configuration from `data/taxonomy/d_anchor_limits.json` with entity-specific max_minutes and top_k values.
+- `get_entity_limits()` retrieves limits for a specific brand or category, falling back to defaults.
+- `write_shard()` implements top_k filtering and max_seconds cutoff when writing D_anchor parquet outputs, keeping only the nearest k sources per anchor within the time threshold.
 
 The Rust extension in `townscout_native/` exposes:
 

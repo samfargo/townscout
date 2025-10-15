@@ -1,12 +1,13 @@
 """Shared utilities for computing D_anchor tables for brands and categories."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import polars as pl
@@ -17,6 +18,68 @@ from graph.anchors import build_anchor_mappings
 from t_hex import kbest_multisource_bucket_csr, weakly_connected_components
 
 _G: Dict[str, Any] = {}
+_LIMITS: Optional[Dict[str, Any]] = None
+
+
+def load_d_anchor_limits(path: str = "data/taxonomy/d_anchor_limits.json") -> Dict[str, Any]:
+    """Load D_anchor runtime limits from JSON configuration file."""
+    global _LIMITS
+    if _LIMITS is not None:
+        return _LIMITS
+    
+    if not os.path.isfile(path):
+        print(f"[warn] D_anchor limits file not found at {path}; using defaults.")
+        _LIMITS = {
+            "category": {},
+            "brand": {},
+            "_defaults": {
+                "category": {"max_minutes": 60, "top_k": 12},
+                "brand": {"max_minutes": 60, "top_k": 12}
+            }
+        }
+        return _LIMITS
+    
+    try:
+        with open(path, "r") as f:
+            _LIMITS = json.load(f)
+        return _LIMITS
+    except Exception as e:
+        print(f"[error] Failed to load D_anchor limits from {path}: {e}")
+        _LIMITS = {
+            "category": {},
+            "brand": {},
+            "_defaults": {
+                "category": {"max_minutes": 60, "top_k": 12},
+                "brand": {"max_minutes": 60, "top_k": 12}
+            }
+        }
+        return _LIMITS
+
+
+def get_entity_limits(entity_type: str, entity_id: str) -> Dict[str, int]:
+    """
+    Get max_minutes and top_k for a specific brand or category.
+    
+    Args:
+        entity_type: "brand" or "category"
+        entity_id: The brand_id or category label
+    
+    Returns:
+        Dict with "max_minutes" and "top_k" keys
+    """
+    limits = load_d_anchor_limits()
+    
+    # Look up specific entity limits
+    entity_limits = limits.get(entity_type, {}).get(entity_id)
+    if entity_limits:
+        return entity_limits
+    
+    # Fall back to defaults
+    defaults = limits.get("_defaults", {}).get(entity_type, {})
+    return {
+        "max_minutes": defaults.get("max_minutes", 60),
+        "top_k": defaults.get("top_k", 12)
+    }
 
 
 @dataclass
@@ -144,7 +207,25 @@ def write_shard(
     schema: Dict[str, pl.DataType],
     dedupe_keys: Iterable[str],
     extra_builder: Callable[[int], Dict[str, Any]],
+    top_k: Optional[int] = None,
+    max_seconds: Optional[int] = None,
 ) -> int:
+    """
+    Write D_anchor shard with optional top_k and max_seconds filtering.
+    
+    Args:
+        out_path: Output parquet file path
+        time_s: Time array from SSSP (may be multi-column for k-best)
+        snapshot_ts: Timestamp string for snapshot_ts column
+        schema: Expected schema for output DataFrame
+        dedupe_keys: Keys to deduplicate on
+        extra_builder: Function to build extra columns
+        top_k: If set, keep only top_k nearest sources per anchor (default: None = no limit)
+        max_seconds: If set, filter out distances > max_seconds (default: None = no limit)
+    
+    Returns:
+        Number of rows written
+    """
     target_node_idx, anchor_ids = _anchor_projection()
     if time_s.size == 0 or target_node_idx.size == 0:
         return write_empty_shard(out_path, schema)
@@ -152,14 +233,48 @@ def write_shard(
     ts = np.asarray(time_s)
     if ts.ndim == 1:
         ts = ts.reshape(-1, 1)
-    seconds_raw = ts[target_node_idx, 0].astype(np.int32, copy=False)
-
-    anchor_series = pl.Series("anchor_id", anchor_ids.astype(np.uint32, copy=False), dtype=pl.UInt32)
-    size = anchor_series.len()
+    
+    # For k-best results, we have multiple columns (one per k)
+    # We want to keep only valid (non-negative) distances
+    k_cols = ts.shape[1]
+    
+    # Build rows: for each anchor, include up to top_k valid distances
+    rows_anchor_id = []
+    rows_seconds = []
+    
+    for i, (node_idx, anchor_id) in enumerate(zip(target_node_idx, anchor_ids)):
+        distances = ts[node_idx, :].astype(np.int32, copy=False)
+        
+        # Filter valid distances (>= 0)
+        valid_distances = distances[distances >= 0]
+        
+        # Apply max_seconds filter if specified
+        if max_seconds is not None:
+            valid_distances = valid_distances[valid_distances <= max_seconds]
+        
+        # Sort and keep top_k
+        if len(valid_distances) > 0:
+            valid_distances = np.sort(valid_distances)
+            if top_k is not None and len(valid_distances) > top_k:
+                valid_distances = valid_distances[:top_k]
+            
+            # For now, we only keep the minimum (top-1) distance per anchor
+            # This matches the existing behavior where we store one distance per anchor
+            # Future: could extend schema to support multiple distances
+            min_dist = valid_distances[0]
+            rows_anchor_id.append(anchor_id)
+            rows_seconds.append(min_dist)
+    
+    if len(rows_anchor_id) == 0:
+        return write_empty_shard(out_path, schema)
+    
+    size = len(rows_anchor_id)
+    anchor_series = pl.Series("anchor_id", np.array(rows_anchor_id, dtype=np.uint32), dtype=pl.UInt32)
+    seconds_raw_series = pl.Series("_seconds_raw", np.array(rows_seconds, dtype=np.int32), dtype=pl.Int32)
 
     columns: Dict[str, Any] = {
         "anchor_id": anchor_series,
-        "_seconds_raw": pl.Series("_seconds_raw", seconds_raw, dtype=pl.Int32),
+        "_seconds_raw": seconds_raw_series,
         "snapshot_ts": pl.Series([snapshot_ts] * size, dtype=pl.Utf8).str.to_date(),
     }
     extra_cols = extra_builder(size)

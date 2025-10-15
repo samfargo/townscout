@@ -44,6 +44,7 @@ from d_anchor_common import (
     execute_tasks,
     write_empty_shard,
     write_shard,
+    get_entity_limits,
 )
 def _normalize_label(s: str) -> str:
     # Minimal prettifier for labels
@@ -62,10 +63,16 @@ _CATEGORY_SCHEMA: Dict[str, pl.DataType] = {
 def _vectorized_write(
     out_path: str,
     category_id: int,
+    category_label: str,
     mode_code: int,
     time_s: np.ndarray,
     snapshot_ts: str,
 ) -> int:
+    # Get limits for this category
+    limits = get_entity_limits("category", category_label)
+    max_seconds = limits["max_minutes"] * 60
+    top_k = limits["top_k"]
+    
     return write_shard(
         out_path=out_path,
         time_s=time_s,
@@ -76,6 +83,8 @@ def _vectorized_write(
             "category_id": np.full(size, category_id, dtype=np.uint32),
             "mode": np.full(size, mode_code, dtype=np.uint8),
         },
+        top_k=top_k,
+        max_seconds=max_seconds,
     )
 
 
@@ -84,13 +93,19 @@ def _write_empty_category_shard(out_path: str) -> None:
 
 
 def _compute_one_category(
-    task: Tuple[int, str, int, np.ndarray, np.ndarray, int, int, str]
+    task: Tuple[int, str, int, np.ndarray, np.ndarray, str]
 ) -> Tuple[int, str]:
     """Worker entrypoint for one category.
-    Args tuple = (cid, label, mode_code, src, targets_idx, cutoff_primary_s, cutoff_overflow_s, out_path)
+    Args tuple = (cid, label, mode_code, src, targets_idx, out_path)
     Returns (cid, out_path)
     """
-    cid, label, mode_code, src, targets_idx, cutoff_primary_s, cutoff_overflow_s, out_path = task
+    cid, label, mode_code, src, targets_idx, out_path = task
+
+    # Get limits for this category
+    limits = get_entity_limits("category", label)
+    cutoff_primary_s = limits["max_minutes"] * 60
+    # Use same cutoff for overflow (no two-pass strategy yet)
+    cutoff_overflow_s = cutoff_primary_s
 
     task_start = time.perf_counter()
     # Compute SSSP for this category's sources
@@ -99,12 +114,13 @@ def _compute_one_category(
     sssp_elapsed = time.perf_counter() - sssp_start
     # Write parquet using vectorized path
     write_start = time.perf_counter()
-    rows = _vectorized_write(out_path, cid, mode_code, time_s, SNAPSHOT_TS)
+    rows = _vectorized_write(out_path, cid, label, mode_code, time_s, SNAPSHOT_TS)
     write_elapsed = time.perf_counter() - write_start
     total_elapsed = time.perf_counter() - task_start
     print(
         f"[ok] Wrote D_anchor category id={cid}: {out_path} rows={rows} "
-        f"sssp={sssp_elapsed:.2f}s write={write_elapsed:.2f}s total={total_elapsed:.2f}s"
+        f"sssp={sssp_elapsed:.2f}s write={write_elapsed:.2f}s total={total_elapsed:.2f}s "
+        f"max_minutes={limits['max_minutes']} top_k={limits['top_k']}"
     )
     return cid, out_path
 
@@ -260,8 +276,6 @@ def main():
 
     comp_id = graph_ctx.comp_id
     comp_to_anchor_nodes = graph_ctx.comp_to_anchor_nodes
-    cutoff_primary_s = int(args.cutoff) * 60
-    cutoff_overflow_s = int(args.overflow_cutoff) * 60
 
     mode_code = 0 if args.mode == "drive" else 2
     out_base = os.path.join(args.out_dir, f"mode={mode_code}")
@@ -286,12 +300,16 @@ def main():
             print(f"[warn] prune step failed: {e}")
 
     # Queue work items, but handle up-to-date and empty-src in parent
-    work: List[Tuple[int, str, int, np.ndarray, np.ndarray, int, int, str]] = []
+    work: List[Tuple[int, str, int, np.ndarray, np.ndarray, str]] = []
     for label in targets:
         cid = label_to_id[label]
         src = cat_to_source_idxs.get(label, np.array([], dtype=np.int32))
         anchors_cnt = cat_counts.get(label, 0)
-        print(f"[info] Category '{label}': id={cid}, anchors={anchors_cnt}, source_nodes={src.size}")
+        
+        # Get limits for this category for display
+        limits = get_entity_limits("category", label)
+        print(f"[info] Category '{label}': id={cid}, anchors={anchors_cnt}, source_nodes={src.size}, "
+              f"max_minutes={limits['max_minutes']}, top_k={limits['top_k']}")
 
         out_dir = os.path.join(out_base, f"category_id={cid}")
         ensure_dir(out_dir)
@@ -328,7 +346,7 @@ def main():
             _write_empty_category_shard(out_path)
             continue
 
-        work.append((cid, label, mode_code, src, targets_idx, cutoff_primary_s, cutoff_overflow_s, out_path))
+        work.append((cid, label, mode_code, src, targets_idx, out_path))
 
     execute_tasks(
         work,

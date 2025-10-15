@@ -44,6 +44,7 @@ from d_anchor_common import (
     execute_tasks,
     write_empty_shard,
     write_shard,
+    get_entity_limits,
 )
 
 SNAPSHOT_TS = time.strftime("%Y-%m-%d")
@@ -64,6 +65,11 @@ def _vectorized_write(
     time_s: np.ndarray,
     snapshot_ts: str,
 ) -> int:
+    # Get limits for this brand
+    limits = get_entity_limits("brand", brand_id)
+    max_seconds = limits["max_minutes"] * 60
+    top_k = limits["top_k"]
+    
     return write_shard(
         out_path=out_path,
         time_s=time_s,
@@ -74,6 +80,8 @@ def _vectorized_write(
             "brand_id": [brand_id] * size,
             "mode": np.full(size, mode_code, dtype=np.uint8),
         },
+        top_k=top_k,
+        max_seconds=max_seconds,
     )
 
 
@@ -81,8 +89,14 @@ def _write_empty_brand_shard(out_path: str) -> None:
     write_empty_shard(out_path, _BRAND_SCHEMA)
 
 
-def _compute_one_brand(task: Tuple[str, int, np.ndarray, np.ndarray, int, int, str]) -> Tuple[str, str]:
-    brand_id, mode_code, src, targets_idx, cutoff_primary_s, cutoff_overflow_s, out_path = task
+def _compute_one_brand(task: Tuple[str, int, np.ndarray, np.ndarray, str]) -> Tuple[str, str]:
+    brand_id, mode_code, src, targets_idx, out_path = task
+
+    # Get limits for this brand
+    limits = get_entity_limits("brand", brand_id)
+    cutoff_primary_s = limits["max_minutes"] * 60
+    # Use same cutoff for overflow (no two-pass strategy yet)
+    cutoff_overflow_s = cutoff_primary_s
 
     task_start = time.perf_counter()
     sssp_start = time.perf_counter()
@@ -94,7 +108,8 @@ def _compute_one_brand(task: Tuple[str, int, np.ndarray, np.ndarray, int, int, s
     total_elapsed = time.perf_counter() - task_start
     print(
         f"[ok] Wrote D_anchor brand '{brand_id}': {out_path} rows={rows} "
-        f"sssp={sssp_elapsed:.2f}s write={write_elapsed:.2f}s total={total_elapsed:.2f}s"
+        f"sssp={sssp_elapsed:.2f}s write={write_elapsed:.2f}s total={total_elapsed:.2f}s "
+        f"max_minutes={limits['max_minutes']} top_k={limits['top_k']}"
     )
     return brand_id, out_path
 
@@ -206,19 +221,22 @@ def main():
 
     comp_id = graph_ctx.comp_id
     comp_to_anchor_nodes = graph_ctx.comp_to_anchor_nodes
-    cutoff_primary_s = int(args.cutoff) * 60
-    cutoff_overflow_s = int(args.overflow_cutoff) * 60
 
     mode_code = 0 if args.mode == "drive" else 2
     out_base = os.path.join(args.out_dir, f"mode={mode_code}")
     ensure_dir(out_base)
 
-    work: List[Tuple[str, int, np.ndarray, np.ndarray, int, int, str]] = []
+    work: List[Tuple[str, int, np.ndarray, np.ndarray, str]] = []
     for raw in targets:
         canon = str(raw)
         src = brand_to_source_idxs.get(canon, np.array([], dtype=np.int32))
         anchors_cnt = brand_counts.get(canon, 0)
-        print(f"[info] Brand '{raw}' → '{canon}': anchors={anchors_cnt}, source_nodes={src.size}")
+        
+        # Get limits for this brand for display
+        limits = get_entity_limits("brand", canon)
+        print(f"[info] Brand '{raw}' → '{canon}': anchors={anchors_cnt}, source_nodes={src.size}, "
+              f"max_minutes={limits['max_minutes']}, top_k={limits['top_k']}")
+        
         out_dir = os.path.join(out_base, f"brand_id={canon}")
         ensure_dir(out_dir)
         out_path = os.path.join(out_dir, "part-000.parquet")
@@ -252,7 +270,7 @@ def main():
         except Exception:
             pass
 
-        work.append((canon, mode_code, src, targets_idx, cutoff_primary_s, cutoff_overflow_s, out_path))
+        work.append((canon, mode_code, src, targets_idx, out_path))
 
     execute_tasks(
         work,
