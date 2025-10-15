@@ -12,3 +12,8 @@ railway_station
 airport
 beach_ocean
 beach_lake
+library
+place_of_worship_church
+place_of_worship_synagogue
+place_of_worship_temple
+place_of_worship_mosque

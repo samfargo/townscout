@@ -89,10 +89,15 @@ def load_osm_pois(state: str) -> gpd.GeoDataFrame:
         wanted.setdefault(k, set()).add(v)
     # Fallback to broad filter if mapping is empty
     custom_filter = {k: sorted(list(vals)) for k, vals in wanted.items()} if wanted else {"amenity": True, "shop": True, "leisure": True, "tourism": True}
+    
+    # Also request religion tag for place_of_worship classification
+    if "amenity" in custom_filter and ("place_of_worship" in custom_filter["amenity"] or True in custom_filter.get("amenity", [])):
+        wanted.setdefault("religion", set())
+        custom_filter["religion"] = True
 
     # Avoid Shapely relation assembly issues by skipping relations on first pass.
     # Keep common tag columns used by normalization.
-    tag_cols = ["name", "brand", "operator", "amenity", "shop", "leisure", "tourism"]
+    tag_cols = ["name", "brand", "operator", "amenity", "shop", "leisure", "tourism", "religion"]
     try:
         gdf = osm.get_data_by_custom_criteria(
             custom_filter=custom_filter,
@@ -138,6 +143,26 @@ def normalize_overture_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         # Category mapping
         primary_cat = row['categories']['primary'] if row['categories'] and 'primary' in row['categories'] else None
         ts_class, ts_cat, ts_subcat = OVERTURE_CATEGORY_MAP.get(primary_cat, (None, None, None))
+        
+        # Handle place_of_worship religion mapping for Overture as well (if present)
+        if primary_cat and 'place_of_worship' in str(primary_cat).lower():
+            # Try to extract religion from the row data (if available in Overture)
+            religion = None
+            if 'tags' in row and isinstance(row['tags'], dict):
+                religion = row['tags'].get('religion')
+            if religion:
+                religion_lower = str(religion).lower()
+                if religion_lower == 'christian':
+                    ts_class, ts_cat, ts_subcat = ('religious', 'place_of_worship_church', 'church')
+                elif religion_lower == 'muslim':
+                    ts_class, ts_cat, ts_subcat = ('religious', 'place_of_worship_mosque', 'mosque')
+                elif religion_lower == 'jewish':
+                    ts_class, ts_cat, ts_subcat = ('religious', 'place_of_worship_synagogue', 'synagogue')
+                elif religion_lower in ('hindu', 'buddhist', 'jain', 'sikh'):
+                    ts_class, ts_cat, ts_subcat = ('religious', 'place_of_worship_temple', 'temple')
+                else:
+                    # Skip if religion not in mapped set
+                    continue
 
         # Exclude airports from Overture; we will inject airports from CSV only
         if ts_cat == 'airport':
@@ -212,6 +237,28 @@ def normalize_osm_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             tag_value = row.get(tag_key)
             if tag_value and (tag_key, tag_value) in OSM_TAG_MAP:
                 ts_class, ts_cat, ts_subcat = OSM_TAG_MAP[(tag_key, tag_value)]
+                
+                # Special handling for place_of_worship: map religion to worship type
+                if tag_value == 'place_of_worship':
+                    religion = row.get('religion')
+                    if religion:
+                        religion_lower = str(religion).lower()
+                        if religion_lower == 'christian':
+                            ts_cat = 'place_of_worship_church'
+                            ts_subcat = 'church'
+                        elif religion_lower == 'muslim':
+                            ts_cat = 'place_of_worship_mosque'
+                            ts_subcat = 'mosque'
+                        elif religion_lower == 'jewish':
+                            ts_cat = 'place_of_worship_synagogue'
+                            ts_subcat = 'synagogue'
+                        elif religion_lower in ('hindu', 'buddhist', 'jain', 'sikh'):
+                            ts_cat = 'place_of_worship_temple'
+                            ts_subcat = 'temple'
+                        # If religion is not in the mapped set, skip this POI
+                        elif religion_lower not in ('christian', 'muslim', 'jewish', 'hindu', 'buddhist', 'jain', 'sikh'):
+                            ts_class, ts_cat, ts_subcat = None, None, None
+                            break
                 break
         # Exclude airports from OSM; we will inject airports from CSV only
         if ts_cat == 'airport':

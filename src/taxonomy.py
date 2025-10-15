@@ -59,6 +59,12 @@ TAXONOMY = {
         "police": ["police"],
         "fire_station": ["fire_station"],
     },
+    "religious": {
+        "place_of_worship_church": ["church", "christian"],
+        "place_of_worship_synagogue": ["synagogue", "jewish"],
+        "place_of_worship_temple": ["temple", "hindu", "buddhist", "jain", "sikh"],
+        "place_of_worship_mosque": ["mosque", "muslim"],
+    },
     "recreation": {
         "park": ["park"],
         "playground": ["playground"],
@@ -180,6 +186,12 @@ OVERTURE_CATEGORY_MAP = {
     "post_office": ("civic", "post_office", "post_office"),
     "town_hall": ("civic", "town_hall", "town_hall"),
     "courthouse": ("civic", "courthouse", "courthouse"),
+    # Religious / Places of Worship
+    "place_of_worship": ("religious", "place_of_worship_church", "church"),  # fallback if no religion specified
+    "church": ("religious", "place_of_worship_church", "church"),
+    "synagogue": ("religious", "place_of_worship_synagogue", "synagogue"),
+    "temple": ("religious", "place_of_worship_temple", "temple"),
+    "mosque": ("religious", "place_of_worship_mosque", "mosque"),
     # Recreation
     "park": ("recreation", "park", "park"),
     "playground": ("recreation", "playground", "playground"),
@@ -262,6 +274,11 @@ OSM_TAG_MAP = {
     ("amenity", "ferry_terminal"): ("transport", "ferry_terminal", "ferry_terminal"),
     ("amenity", "fuel"): ("transport", "fuel", "fuel"),
     ("amenity", "charging_station"): ("transport", "fuel", "charging_station"),
+
+    # Religious / Places of Worship
+    # Note: The classification by religion type is handled in the normalization script
+    # based on the "religion" tag in OSM
+    ("amenity", "place_of_worship"): ("religious", "place_of_worship_church", "church"),  # fallback
 
     # Natural features
     # Note: Beaches are handled specially via osm_beaches.py build_beach_pois_for_state()

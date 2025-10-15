@@ -38,7 +38,9 @@ Pipeline scripts are designed to be run sequentially; each stage emits artefacts
 
 Supporting modules:
 
-- `src/taxonomy.py` defines the canonical class → category → subcategory hierarchy, brand registry, and source tag mappings. Optional CSV/YAML files in `data/` override defaults.
+- `src/taxonomy.py` defines the canonical class → category → subcategory hierarchy, brand registry, and source tag mappings. Optional CSV/YAML files in `data/` override defaults. The taxonomy includes special handling for:
+  - **Places of Worship**: OSM `amenity=place_of_worship` POIs are classified by their `religion` tag into separate categories: `place_of_worship_church` (Christian), `place_of_worship_synagogue` (Jewish), `place_of_worship_temple` (Hindu/Buddhist/Jain/Sikh), and `place_of_worship_mosque` (Muslim). This allows users to filter by specific worship types while OSM only provides the generic `place_of_worship` amenity tag.
+  - **Libraries**: Mapped from OSM `amenity=library` and Overture `library` category.
 - `src/osm_beaches.py` provides specialized beach classification that identifies ocean vs. lake beaches using spatial analysis. Beaches are classified into separate categories (`beach_ocean`, `beach_lake`, `beach_river`, `beach_other`) based on proximity to coastlines (150m) and inland water bodies (100m for lakes, 80m for rivers). This enables distinct frontend filter options for "Any Beach (Ocean)" and "Any Beach (Lake)".
 - `src/geometry_utils.py` provides geometry hygiene utilities to prevent Shapely 2.x `create_collection` errors when building GeometryCollection or Multi* objects from mixed/invalid geometries. The `clean_geoms()` function filters out null, empty, and non-geometry objects before unary_union operations.
 - `src/util_osm.py` wraps Geofabrik downloads used by step 01.
