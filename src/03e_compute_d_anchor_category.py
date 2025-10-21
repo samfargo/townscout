@@ -315,16 +315,10 @@ def main():
         ensure_dir(out_dir)
         out_path = os.path.join(out_dir, "part-000.parquet")
 
-        # Skip if up-to-date unless forced
-        try:
-            if (not args.force) and os.path.exists(out_path):
-                out_m = os.path.getmtime(out_path)
-                dep_m = max(os.path.getmtime(args.anchors), os.path.getmtime(args.pbf))
-                if out_m >= dep_m:
-                    print(f"[skip] Up-to-date D_anchor category for id={cid}: {out_path}")
-                    continue
-        except Exception:
-            pass
+        # Skip if exists unless forced (simple existence check, no timestamp comparison)
+        if (not args.force) and os.path.exists(out_path):
+            print(f"[skip] D_anchor category for id={cid} already exists: {out_path}")
+            continue
 
         if src.size == 0:
             print(f"[warn] No source nodes for category id={cid}; writing empty.")

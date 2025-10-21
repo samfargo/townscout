@@ -41,6 +41,11 @@ except Exception:
 
 APP_NAME = "TownScout D_anchor API"
 
+_TRAUMA_CATEGORY_LABELS = {
+    "Level 1 Trauma (Adults)",
+    "Level 1 Trauma (Pediatric)",
+}
+
 # ---------- Config ----------
 # Paths
 # Unify d_anchor locations under data/d_anchor_{category|brand}
@@ -702,7 +707,18 @@ def catalog(mode: str = Query("drive", description="Travel mode, e.g. 'drive' or
     # Categories
     ids = list_available_categories(mode)
     labels_map = _load_category_labels()
-    categories = [{"id": cid, "label": labels_map.get(str(cid), f"Category {cid}")} for cid in ids]
+    categories: list[dict[str, object]] = []
+    for cid in ids:
+        label = labels_map.get(str(cid), f"Category {cid}")
+        group = None
+        if label == "Hospital":
+            group = "hospital"
+        elif label in _TRAUMA_CATEGORY_LABELS:
+            group = "hospital_trauma"
+        payload = {"id": cid, "label": label}
+        if group:
+            payload["group"] = group
+        categories.append(payload)
 
     # Brands: list all canonical brand_ids present in canonical POIs/anchors
     brands: list[dict[str, str]] = []

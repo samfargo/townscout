@@ -4,6 +4,8 @@ supermarket
 cafe
 fast_food
 hospital
+trauma_level_1_adult
+trauma_level_1_pediatric
 pharmacy
 park
 bus_station

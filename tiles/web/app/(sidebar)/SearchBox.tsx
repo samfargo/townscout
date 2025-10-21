@@ -15,6 +15,7 @@ import {
   clearClimateSelections,
   customCacheKey,
   ensureCatalogLoaded,
+  removePOI,
   normalizeMinutes,
   setClimateSelections,
   toggleClimateSelection
@@ -69,6 +70,44 @@ export default function SearchBox() {
       catToBrands: catalog.catToBrands
     });
   }, [catalog]);
+
+  const traumaCategoryIds = React.useMemo(() => {
+    if (!catalog?.loaded) return new Set<string>();
+    return new Set(
+      catalog.categories
+        .filter((category) => category.group === 'hospital_trauma')
+        .map((category) => String(category.id))
+    );
+  }, [catalog]);
+
+  const hospitalCategoryId = React.useMemo(() => {
+    if (!catalog?.loaded) return null;
+    const match = catalog.categories.find(
+      (category) => category.group === 'hospital' || category.label?.toLowerCase() === 'hospital'
+    );
+    return match ? String(match.id) : null;
+  }, [catalog]);
+
+  const hospitalCategoryGroup = React.useMemo(
+    () =>
+      categoryGroups.find((group) =>
+        hospitalCategoryId ? group.id === hospitalCategoryId : group.label.toLowerCase() === 'hospital'
+      ),
+    [categoryGroups, hospitalCategoryId]
+  );
+
+  const traumaCategoryGroups = React.useMemo(
+    () => categoryGroups.filter((group) => traumaCategoryIds.has(group.id)),
+    [categoryGroups, traumaCategoryIds]
+  );
+
+  const displayCategoryGroups = React.useMemo(
+    () =>
+      categoryGroups.filter(
+        (group) => group.id !== hospitalCategoryGroup?.id && !traumaCategoryIds.has(group.id)
+      ),
+    [categoryGroups, hospitalCategoryGroup?.id, traumaCategoryIds]
+  );
 
   const precomputedBrands = React.useMemo(() => {
     if (!catalog?.loaded) return [];
@@ -140,6 +179,44 @@ export default function SearchBox() {
     }
   };
 
+  const handleAddHospital = async () => {
+    if (!hospitalCategoryGroup) {
+      return;
+    }
+    // Drop any specialty trauma filters before adding the broader hospital bucket.
+    traumaCategoryGroups.forEach((group) => {
+      if (isPoiActive(group.id)) {
+        removePOI(group.id);
+      }
+    });
+    await handleAddCategory(hospitalCategoryGroup);
+  };
+
+  const handleToggleTraumaCategory = async (
+    group: (typeof categoryGroups)[number],
+    nextChecked: boolean
+  ) => {
+    if (nextChecked) {
+      if (hospitalCategoryGroup && isPoiActive(hospitalCategoryGroup.id)) {
+        removePOI(hospitalCategoryGroup.id);
+      }
+      await handleAddCategory(group);
+      return;
+    }
+
+    setPending(`category:${group.id}`);
+    try {
+      removePOI(group.id);
+    } catch (err) {
+      console.error('Failed to remove trauma category', err);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const hospitalActive = hospitalCategoryGroup ? isPoiActive(hospitalCategoryGroup.id) : false;
+  const hospitalLoading = hospitalCategoryGroup ? pending === `category:${hospitalCategoryGroup.id}` : false;
+
   const handleAddBrand = async (brand: { id: string; label: string }) => {
     setPending(`brand:${brand.id}`);
     try {
@@ -197,7 +274,53 @@ export default function SearchBox() {
             )}
             {catalog?.loaded && categoryGroups.length > 0 && (
               <div className="space-y-2">
-                {categoryGroups.map((group) => {
+                {hospitalCategoryGroup && (
+                  <div className="rounded-xl border border-stone-300 bg-[#f7f0de] px-3 py-2 shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-stone-900">
+                          {hospitalCategoryGroup.label}
+                        </span>
+                        <span className="text-[11px] uppercase tracking-wide text-stone-500">
+                          Any hospital
+                        </span>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className={hospitalActive ? brassActiveButtonClass : brassPrimaryButtonClass}
+                        disabled={hospitalActive || hospitalLoading}
+                        onClick={handleAddHospital}
+                      >
+                        {hospitalActive ? 'Added' : hospitalLoading ? 'Adding…' : 'Add'}
+                      </Button>
+                    </div>
+                    {traumaCategoryGroups.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {traumaCategoryGroups.map((group) => {
+                          const active = isPoiActive(group.id);
+                          const loading = pending === `category:${group.id}`;
+                          return (
+                            <label
+                              key={group.id}
+                              className="flex items-center gap-2 rounded-lg border border-stone-300 bg-[#fbf7ec] px-2 py-1 text-[11px] text-stone-600 shadow-sm"
+                            >
+                              <input
+                                type="checkbox"
+                                className="h-3 w-3 accent-amber-700"
+                                checked={active}
+                                disabled={loading}
+                                onChange={(event) => handleToggleTraumaCategory(group, event.target.checked)}
+                              />
+                              <span>Only {group.label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {displayCategoryGroups.map((group) => {
                   const id = group.id;
                   const active = isPoiActive(id);
                   const loading = pending === `category:${id}`;

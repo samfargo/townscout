@@ -91,31 +91,23 @@ data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_
 
 
 # Compute D_anchor brand tables for brand-level anchor-mode filtering
-# Uses stamp file to avoid recomputing when up-to-date
-# Note: We don't add data/anchors as a dependency here because the Python script
-# has its own smart incremental logic that checks timestamps. Adding it as a Make
-# dependency would cause unnecessary rebuilds when upstream files change.
-D_ANCHOR_BRAND_STAMPS := $(patsubst %,build/d_anchor_brand_%.stamp,$(STATES))
-
-build/d_anchor_brand_%.stamp: | build/native.stamp
-	@mkdir -p build
-	@echo "--- Computing D_anchor brand for $* (drive) ---"
-	@$(PY) src/03d_compute_d_anchor.py \
-	  --pbf data/osm/$*.osm.pbf \
-	  --anchors data/anchors/$*_drive_sites.parquet \
-	  --mode drive \
-	  --threads $(THREADS) \
-	  --cutoff $(CUTOFF) \
-	  --overflow-cutoff $(OVERFLOW) \
-	  --out-dir data/d_anchor_brand
-	@touch $@
-
+# The Python script handles all incremental logic - it checks if each brand's
+# parquet exists and only computes missing ones. This is fast when up-to-date.
 .PHONY: d_anchor_brand
-d_anchor_brand: anchors $(D_ANCHOR_BRAND_STAMPS) ## 3.6 Compute anchor->brand seconds (incremental)
+d_anchor_brand: anchors | build/native.stamp ## 3.6 Compute anchor->brand seconds (incremental, delta only)
+	@for S in $(STATES); do \
+	  $(PY) src/03d_compute_d_anchor.py \
+	    --pbf data/osm/$$S.osm.pbf \
+	    --anchors data/anchors/$$S\_drive_sites.parquet \
+	    --mode drive \
+	    --threads $(THREADS) \
+	    --cutoff $(CUTOFF) \
+	    --overflow-cutoff $(OVERFLOW) \
+	    --out-dir data/d_anchor_brand ; \
+	done
 
 .PHONY: d_anchor_brand_force
 d_anchor_brand_force: ## 3.6 Force recompute all D_anchor brand data
-	@rm -f $(D_ANCHOR_BRAND_STAMPS)
 	@for S in $(STATES); do \
 	  echo "--- Force computing D_anchor brand for $$S (drive) ---"; \
 	  $(PY) src/03d_compute_d_anchor.py \
@@ -128,35 +120,26 @@ d_anchor_brand_force: ## 3.6 Force recompute all D_anchor brand data
 	    --force \
 	    --out-dir data/d_anchor_brand ; \
 	done
-	@for S in $(STATES); do touch build/d_anchor_brand_$$S.stamp; done
 
 # Compute D_anchor category tables (anchor->category seconds) for categories present in anchors
-# Uses stamp file to avoid recomputing when up-to-date
-# Note: We don't add data/anchors as a dependency here because the Python script
-# has its own smart incremental logic that checks timestamps. Adding it as a Make
-# dependency would cause unnecessary rebuilds when upstream files change.
-D_ANCHOR_CATEGORY_STAMPS := $(patsubst %,build/d_anchor_category_%.stamp,$(STATES))
-
-build/d_anchor_category_%.stamp: | build/native.stamp
-	@mkdir -p build
-	@echo "--- Computing D_anchor category for $* (drive) ---"
-	@$(PY) src/03e_compute_d_anchor_category.py \
-	  --pbf data/osm/$*.osm.pbf \
-	  --anchors data/anchors/$*_drive_sites.parquet \
-	  --mode drive \
-	  --threads $(THREADS) \
-	  --cutoff $(CUTOFF) \
-	  --overflow-cutoff $(OVERFLOW) \
-	  --prune \
-	  --out-dir data/d_anchor_category
-	@touch $@
-
+# The Python script handles all incremental logic - it checks if each category's
+# parquet exists and only computes missing ones. This is fast when up-to-date.
 .PHONY: d_anchor_category
-d_anchor_category: anchors $(D_ANCHOR_CATEGORY_STAMPS) ## 3.6b Compute anchor->category seconds (incremental)
+d_anchor_category: anchors | build/native.stamp ## 3.6b Compute anchor->category seconds (incremental, delta only)
+	@for S in $(STATES); do \
+	  $(PY) src/03e_compute_d_anchor_category.py \
+	    --pbf data/osm/$$S.osm.pbf \
+	    --anchors data/anchors/$$S\_drive_sites.parquet \
+	    --mode drive \
+	    --threads $(THREADS) \
+	    --cutoff $(CUTOFF) \
+	    --overflow-cutoff $(OVERFLOW) \
+	    --prune \
+	    --out-dir data/d_anchor_category ; \
+	done
 
 .PHONY: d_anchor_category_force
 d_anchor_category_force: ## 3.6b Force recompute all D_anchor category data
-	@rm -f $(D_ANCHOR_CATEGORY_STAMPS)
 	@for S in $(STATES); do \
 	  echo "--- Force computing D_anchor category for $$S (drive) ---"; \
 	  $(PY) src/03e_compute_d_anchor_category.py \
@@ -170,7 +153,6 @@ d_anchor_category_force: ## 3.6b Force recompute all D_anchor category data
 	    --force \
 	    --out-dir data/d_anchor_category ; \
 	done
-	@for S in $(STATES); do touch build/d_anchor_category_$$S.stamp; done
 
 CLIMATE_PARQUET := out/climate/hex_climate.parquet
 

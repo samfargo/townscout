@@ -23,6 +23,44 @@ from scipy.spatial import cKDTree
 from graph.pyrosm_csr import load_or_build_csr
 import config
 
+_TRAUMA_CATEGORY_ALIASES = {
+    "trauma_level_1_adult": "trauma_level_1_adult",
+    "trauma_level_1_pediatric": "trauma_level_1_pediatric",
+    "adult": "trauma_level_1_adult",
+    "pediatric": "trauma_level_1_pediatric",
+    "peds": "trauma_level_1_pediatric",
+}
+
+
+def _expand_categories(row: pd.Series) -> list[str]:
+    """
+    Expand a POI's categories to include specialty buckets.
+    Ensures Level 1 trauma centers stay accessible under both the general
+    'hospital' label and their trauma-specific filters.
+    """
+    categories: set[str] = set()
+    cat = row.get("category")
+    if isinstance(cat, str) and cat.strip():
+        categories.add(cat.strip())
+
+    # Subcategory string may already include "trauma_level_1_*"
+    subcat = row.get("subcat")
+    if isinstance(subcat, str) and subcat.strip():
+        alias = _TRAUMA_CATEGORY_ALIASES.get(subcat.strip().lower())
+        if alias:
+            categories.add("hospital")
+            categories.add(alias)
+
+    # Trauma level field can be "adult"/"pediatric"
+    trauma_level = row.get("trauma_level")
+    if isinstance(trauma_level, str) and trauma_level.strip():
+        alias = _TRAUMA_CATEGORY_ALIASES.get(trauma_level.strip().lower())
+        if alias:
+            categories.add("hospital")
+            categories.add(alias)
+
+    return sorted(categories)
+
 
 def assign_anchor_int_ids(sites_df: pd.DataFrame) -> pd.DataFrame:
     # Deterministic stable ordering by site_id (uuid string)
@@ -163,11 +201,20 @@ def build_anchor_sites_from_nodes(
     pois_with_nodes = pois_with_nodes[pois_with_nodes['snap_dist_m'] <= MAX_SNAP_DISTANCE_M]
     print(f"[info] {len(pois_with_nodes)} POIs snapped within {MAX_SNAP_DISTANCE_M}m of the graph.")
 
+    # Expand per-POI categories to include trauma specialties alongside hospitals.
+    pois_with_nodes["anchor_categories"] = pois_with_nodes.apply(_expand_categories, axis=1)
+
     print("[info] Grouping POIs into anchor sites...")
     aggs = {
-        'poi_id': lambda x: list(x),
+        'poi_id': lambda x: list(dict.fromkeys([val for val in x.tolist() if pd.notna(val)])),
         'brand_id': lambda x: list(x.dropna().unique()),
-        'category': lambda x: list(x.dropna().unique()),
+        'anchor_categories': lambda series: sorted({
+            cat
+            for cats in series
+            if isinstance(cats, (list, tuple, set))
+            for cat in cats
+            if isinstance(cat, str) and cat
+        }),
     }
     sites = pois_with_nodes.groupby('node_id').agg(aggs).reset_index()
 
@@ -187,7 +234,7 @@ def build_anchor_sites_from_nodes(
     sites = sites.rename(columns={
         'poi_id': 'poi_ids',
         'brand_id': 'brands',
-        'category': 'categories',
+        'anchor_categories': 'categories',
     })
 
     final_cols = ['site_id', 'node_id', 'lon', 'lat', 'poi_ids', 'brands', 'categories']

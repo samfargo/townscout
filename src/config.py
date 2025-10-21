@@ -6,6 +6,18 @@ STATES = [
 ]
 GEOFABRIK_BASE = "https://download.geofabrik.de/north-america/us"
 
+# Bounding boxes (lon/lat) for states we currently support. Used to filter
+# national datasets (e.g., ACS trauma centers) down to the local study area.
+STATE_BOUNDING_BOXES = {
+    # Massachusetts extent chosen to match beach ingestion utilities.
+    "massachusetts": {
+        "west": -73.508142,
+        "east": -69.928393,
+        "south": 41.186328,
+        "north": 42.886589,
+    },
+}
+
 # Dataset version
 DATASET_VERSION = "v2024.07.1"
 

@@ -14,7 +14,7 @@ import uuid
 import pandas as pd
 import geopandas as gpd
 from pyrosm import OSM
-from config import STATES
+from config import STATES, STATE_BOUNDING_BOXES
 from taxonomy import BRAND_REGISTRY, OVERTURE_CATEGORY_MAP, OSM_TAG_MAP
 import h3
 from shapely.geometry import Point
@@ -37,6 +37,7 @@ CANONICAL_POI_SCHEMA = {
     "class": "str",
     "category": "str",
     "subcat": "str",
+    "trauma_level": "str",
     "lon": "float32",
     "lat": "float32",
     "geometry": "geometry",
@@ -125,6 +126,68 @@ def load_osm_pois(state: str) -> gpd.GeoDataFrame:
     return gdf
 
 
+def load_level1_trauma_pois(state: str) -> gpd.GeoDataFrame:
+    """
+    Load ACS Level 1 trauma centers and filter them to the requested state.
+    The ACS export is nationwide; we clip to a coarse bounding box per state.
+    """
+    path = os.path.join("out", "level1_trauma", "acs_trauma.parquet")
+    if not os.path.exists(path):
+        print(f"[warn] ACS trauma parquet not found at {path}; skipping.")
+        return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry="geometry", crs="EPSG:4326")
+
+    try:
+        df = pd.read_parquet(path)
+    except Exception as exc:
+        print(f"[warn] Failed to read ACS trauma parquet: {exc}")
+        return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry="geometry", crs="EPSG:4326")
+
+    if df.empty:
+        print("[info] ACS trauma parquet is empty.")
+        return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry="geometry", crs="EPSG:4326")
+
+    bbox = STATE_BOUNDING_BOXES.get(state, {})
+    west = bbox.get("west", -180.0)
+    east = bbox.get("east", 180.0)
+    south = bbox.get("south", -90.0)
+    north = bbox.get("north", 90.0)
+    before = len(df)
+    df = df[(df["lon"] >= west) & (df["lon"] <= east) & (df["lat"] >= south) & (df["lat"] <= north)].copy()
+    after = len(df)
+    print(f"[info] ACS trauma centers clipped to {state}: {after} / {before}")
+
+    if df.empty:
+        return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry="geometry", crs="EPSG:4326")
+
+    try:
+        geometry = gpd.points_from_xy(df["lon"], df["lat"])
+    except Exception as exc:
+        print(f"[warn] Failed to create geometry for ACS trauma centers: {exc}")
+        return gpd.GeoDataFrame(columns=list(CANONICAL_POI_SCHEMA.keys()), geometry="geometry", crs="EPSG:4326")
+
+    gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
+
+    # Ensure all canonical columns exist
+    for col in CANONICAL_POI_SCHEMA.keys():
+        if col not in gdf.columns:
+            gdf[col] = None
+
+    # Normalize provenance to list-of-str
+    if "provenance" in gdf.columns:
+        gdf["provenance"] = gdf["provenance"].apply(
+            lambda v: list(v) if isinstance(v, (list, tuple)) else ([v] if pd.notna(v) else [])
+        )
+
+    gdf = gdf[list(CANONICAL_POI_SCHEMA.keys())]
+    trauma_counts = gdf["subcat"].value_counts().to_dict() if "subcat" in gdf.columns else {}
+    if trauma_counts:
+        summary = ", ".join(f"{k}={v}" for k, v in sorted(trauma_counts.items()))
+        print(f"[ok] Loaded {len(gdf)} ACS Level 1 trauma centers for {state}: {summary}")
+    else:
+        print(f"[ok] Loaded {len(gdf)} ACS Level 1 trauma centers for {state}")
+    return gdf
+
+
 def normalize_overture_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Normalizes Overture POIs to the canonical schema."""
     print("--- Normalizing Overture POIs ---")
@@ -196,6 +259,7 @@ def normalize_overture_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             "class": ts_class,
             "category": ts_cat,
             "subcat": ts_subcat,
+            "trauma_level": None,
             "lon": row.geometry.x,
             "lat": row.geometry.y,
             "geometry": row.geometry,
@@ -290,6 +354,7 @@ def normalize_osm_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             "class": ts_class,
             "category": ts_cat,
             "subcat": ts_subcat,
+            "trauma_level": None,
             "lon": point.x,
             "lat": point.y,
             "geometry": point, # Store the representative point
@@ -311,8 +376,8 @@ def normalize_osm_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return out_gdf
 
 
-def conflate_pois(overture_gdf: gpd.GeoDataFrame, osm_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Conflates and deduplicates POIs from Overture and OSM.
+def conflate_pois(*sources: tuple[str, gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
+    """Conflates and deduplicates POIs from heterogeneous sources.
 
     Simple heuristics:
     - Compute H3 r9 cell for each point
@@ -321,7 +386,7 @@ def conflate_pois(overture_gdf: gpd.GeoDataFrame, osm_gdf: gpd.GeoDataFrame) -> 
     """
     print("--- Conflating POIs from all sources ---")
     frames = []
-    for tag, gdf in (("overture", overture_gdf), ("osm", osm_gdf)):
+    for tag, gdf in sources:
         if gdf is None or gdf.empty:
             continue
         df = gdf.copy()
@@ -414,6 +479,7 @@ def load_airports_csv() -> gpd.GeoDataFrame:
             'class': 'transport',
             'category': 'airport',
             'subcat': 'airport',
+            'trauma_level': None,
             'lon': lon,
             'lat': lat,
             'geometry': Point(lon, lat),
@@ -436,6 +502,7 @@ def main():
         # 1. Load data from sources
         overture_pois = load_overture_pois(state)
         osm_pois = load_osm_pois(state)
+        trauma_pois = load_level1_trauma_pois(state)
 
         # 2. Normalize each source to the canonical schema
         overture_normalized = normalize_overture_pois(overture_pois)
@@ -446,7 +513,11 @@ def main():
         print(f"[ok] Built {len(beach_pois)} beach POIs for {state}")
 
         # 3. Conflate the normalized datasets (+ beaches + airports)
-        canonical_pois = conflate_pois(overture_normalized, osm_normalized)
+        canonical_pois = conflate_pois(
+            ("overture", overture_normalized),
+            ("osm", osm_normalized),
+            ("acs_trauma", trauma_pois),
+        )
         parts = [canonical_pois]
         if not beach_pois.empty:
             parts.append(beach_pois)

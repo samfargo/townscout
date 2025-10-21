@@ -291,7 +291,7 @@ def build_beach_pois_for_state(state: str) -> gpd.GeoDataFrame:
         print("[info] No beaches found for classification")
         return gpd.GeoDataFrame(
             columns=["poi_id", "name", "brand_id", "brand_name", "class", "category", 
-                     "subcat", "lon", "lat", "geometry", "source", "ext_id", "provenance"],
+                     "subcat", "trauma_level", "lon", "lat", "geometry", "source", "ext_id", "provenance"],
             geometry="geometry", 
             crs="EPSG:4326"
         )
@@ -322,6 +322,7 @@ def build_beach_pois_for_state(state: str) -> gpd.GeoDataFrame:
                 "class": "natural",
                 "category": category,
                 "subcat": beach_type,
+                "trauma_level": None,
                 "lon": float(pt.x),
                 "lat": float(pt.y),
                 "geometry": pt,
@@ -336,7 +337,7 @@ def build_beach_pois_for_state(state: str) -> gpd.GeoDataFrame:
     if not rows:
         return gpd.GeoDataFrame(
             columns=["poi_id", "name", "brand_id", "brand_name", "class", "category", 
-                     "subcat", "lon", "lat", "geometry", "source", "ext_id", "provenance"],
+                     "subcat", "trauma_level", "lon", "lat", "geometry", "source", "ext_id", "provenance"],
             geometry="geometry", 
             crs="EPSG:4326"
         )
