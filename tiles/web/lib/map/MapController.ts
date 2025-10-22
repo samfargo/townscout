@@ -1,4 +1,7 @@
 // Controls the MapLibre map and manages drive/walk layer visibility and filters.
+import { fetchPoiPoints, type FetchPoiPointsOptions } from "../services";
+import type { HoverState, POI } from "../state/store";
+import type { FeatureCollection, Point } from "geojson";
 import type { LngLatBoundsLike, LngLatLike, Map as MLMap, StyleSpecification } from "maplibre-gl";
 
 export type Mode = "drive" | "walk";
@@ -10,6 +13,37 @@ const LAYER_IDS = {
   driveR7: 't_hex_r7_drive',
   walkR8: 't_hex_r8_walk'
 } as const;
+
+type PinFeatureProperties = {
+  brand_id?: string;
+  name?: string;
+  address?: string;
+  approx_address?: string;
+  poi_id?: string;
+  source_type?: string;
+};
+
+type PinFeatureCollection = FeatureCollection<Point, PinFeatureProperties>;
+
+type PinRecord = {
+  key: string;
+  poi: POI;
+  sourceId: string;
+  pointLayerId: string;
+  brands: string[];
+   categoryId?: string | null;
+  requestId: number;
+  cleanup: Array<() => void>;
+  isCustom: boolean;
+};
+
+function formatCoordinates([lon, lat]: [number, number]): string {
+  return `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+}
+
+function sanitizeLayerKey(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
 
 function createBaseStyle(): StyleSpecification {
   return {
@@ -151,6 +185,9 @@ export class MapController {
   private worker: Worker;
   private lastExpressions: Record<Mode, ModeExpressionState> | null = null;
   private isDragging = false;
+  private pinHoverLayerIds: string[] = [];
+  private pinRecords = new Map<string, PinRecord>();
+  private moveEndHandler: (() => void) | null = null;
 
   async init(container: HTMLDivElement) {
     if (this.map) return;
@@ -208,6 +245,11 @@ export class MapController {
     });
 
     console.log('[MapController] Map initialized and ready!');
+
+    this.moveEndHandler = () => {
+      void this.refreshPinsForActiveRecords();
+    };
+    map.on('moveend', this.moveEndHandler);
 
     // NOW set up the worker to listen for expression updates
     this.worker = getMapWorker();
@@ -306,7 +348,7 @@ export class MapController {
     });
   }
 
-  onHover(callback: (props: Record<string, any> | null) => void) {
+  onHover(callback: (info: HoverState | null) => void) {
     if (!this.map) {
       return () => {};
     }
@@ -323,10 +365,23 @@ export class MapController {
       if (now - lastQueryTime < THROTTLE_MS) return;
       lastQueryTime = now;
       
+      const pinHover = this.findPinHover(event.point);
+      if (pinHover) {
+        callback(pinHover);
+        return;
+      }
+
       const feature = this.map?.queryRenderedFeatures(event.point, {
         layers: HEX_LAYERS
       })?.[0];
-      callback(feature?.properties ?? null);
+      if (feature && feature.properties) {
+        callback({
+          kind: 'hex',
+          properties: feature.properties ?? {}
+        });
+      } else {
+        callback(null);
+      }
     };
     this.map.on("mousemove", handler);
     return () => {
@@ -387,8 +442,356 @@ export class MapController {
     }
   }
 
+  private setFallbackVisible(_visible: boolean) {
+    // Fallback overlay removed; keep method for backwards compatibility.
+  }
+
+  async showPinsForPoi(poi: POI): Promise<void> {
+    if (!this.map) return;
+    const key = this.getPinKey(poi);
+    const sanitized = sanitizeLayerKey(key);
+    let record = this.pinRecords.get(key);
+    if (!record) {
+      record = {
+        key,
+        poi,
+        sourceId: `pins-${sanitized}-source`,
+        pointLayerId: `pins-${sanitized}-points`,
+        brands: [],
+        categoryId: poi.type === 'category' ? poi.id : null,
+        requestId: 0,
+        cleanup: [],
+        isCustom: poi.type === 'custom'
+      };
+      this.pinRecords.set(key, record);
+    } else {
+      record.poi = poi;
+      record.isCustom = poi.type === 'custom';
+      record.categoryId = poi.type === 'category' ? poi.id : null;
+    }
+
+    if (poi.type === 'custom') {
+      this.renderCustomPin(record);
+      return;
+    }
+
+    if (poi.type === 'category') {
+      record.brands = this.getBrandsForPoi(poi);
+      await this.refreshPinsForRecord(record);
+      return;
+    }
+
+    const brands = this.getBrandsForPoi(poi);
+    if (!brands.length) {
+      this.hidePinsByKey(key);
+      return;
+    }
+
+    record.brands = brands;
+    record.categoryId = null;
+    await this.refreshPinsForRecord(record);
+  }
+
+  hidePinsForPoi(poi: POI): void {
+    this.hidePinsByKey(this.getPinKey(poi));
+  }
+
+  hidePinsById(poiId: string): void {
+    for (const [key, record] of this.pinRecords.entries()) {
+      if (record.poi.id === poiId) {
+        this.hidePinsByKey(key);
+      }
+    }
+  }
+
+  private getPinKey(poi: POI): string {
+    return `${poi.type}:${poi.id}`;
+  }
+
+  private getBrandsForPoi(poi: POI): string[] {
+    if (poi.type === 'brand') {
+      return [String(poi.id)];
+    }
+    if (poi.type === 'category') {
+      return (poi.brandIds ?? []).map((value) => String(value));
+    }
+    return [];
+  }
+
+  private hidePinsByKey(key: string): void {
+    const record = this.pinRecords.get(key);
+    if (!record) return;
+    this.removePinLayers(record);
+    this.pinRecords.delete(key);
+    this.updatePinHoverLayers();
+  }
+
+  private async refreshPinsForActiveRecords(): Promise<void> {
+    const tasks = Array.from(this.pinRecords.values()).filter((record) => {
+      if (record.isCustom) return false;
+      if (record.poi.type === "category") return true;
+      return record.brands.length > 0;
+    });
+    await Promise.all(tasks.map((record) => this.refreshPinsForRecord(record)));
+  }
+
+  private async refreshPinsForRecord(record: PinRecord): Promise<void> {
+    if (!this.map) return;
+    const bounds = this.getCurrentBounds();
+    const requestId = record.requestId + 1;
+    record.requestId = requestId;
+    const key = record.key;
+
+    const options: FetchPoiPointsOptions = {};
+
+    if (bounds) {
+      options.bounds = bounds;
+    }
+
+    if (record.poi.type === 'brand') {
+      if (!record.brands.length) {
+        this.hidePinsByKey(key);
+        return;
+      }
+      options.brands = record.brands;
+    } else if (record.poi.type === 'category') {
+      const categoryId = record.categoryId ?? record.poi.id;
+      if (!categoryId) {
+        this.hidePinsByKey(key);
+        return;
+      }
+      options.categoryId = String(categoryId);
+    }
+
+    if (!options.brands && !options.categoryId) {
+      this.hidePinsByKey(key);
+      return;
+    }
+
+    try {
+      const geojson = await fetchPoiPoints(options);
+      if (record.requestId !== requestId) {
+        return;
+      }
+      const decorated: PinFeatureCollection = {
+        type: 'FeatureCollection',
+        features: geojson.features.map((feature) => this.decoratePinFeature(feature, record.poi))
+      };
+      this.removePinLayers(record);
+      this.map.addSource(record.sourceId, {
+        type: 'geojson',
+        data: decorated
+      });
+      this.map.addLayer({
+        id: record.pointLayerId,
+        type: 'circle',
+        source: record.sourceId,
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 3, 10, 4.5, 14, 6],
+          'circle-color': '#7c3aed',
+          'circle-opacity': 0.85,
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 1
+        }
+      });
+      this.attachPinLayerEvents(record, record.pointLayerId);
+
+      this.updatePinHoverLayers();
+    } catch (error) {
+      console.error(`[MapController] Failed to load pins for ${record.poi.label}`, error);
+    }
+  }
+
+  private renderCustomPin(record: PinRecord): void {
+    if (!this.map) return;
+    const { poi } = record;
+    record.brands = [];
+    if (typeof poi.lon !== 'number' || typeof poi.lat !== 'number') {
+      console.warn('[MapController] Custom POI missing coordinates, skipping pin render.');
+      return;
+    }
+    const feature: PinFeatureCollection = {
+      type: 'FeatureCollection',
+      features: [
+        {
+          type: 'Feature',
+          geometry: {
+            type: 'Point',
+            coordinates: [poi.lon, poi.lat]
+          },
+          properties: {
+            name: poi.label,
+            address: poi.formattedAddress ?? formatCoordinates([poi.lon, poi.lat]),
+            poi_id: poi.id,
+            source_type: poi.type
+          }
+        }
+      ]
+    };
+    this.removePinLayers(record);
+    this.map.addSource(record.sourceId, {
+      type: 'geojson',
+      data: feature
+    });
+    this.map.addLayer({
+      id: record.pointLayerId,
+      type: 'circle',
+      source: record.sourceId,
+      paint: {
+        'circle-radius': 6,
+        'circle-color': '#ef4444',
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 1.2
+      }
+    });
+    this.attachPinLayerEvents(record, record.pointLayerId);
+    this.updatePinHoverLayers();
+  }
+
+  private decoratePinFeature(feature: any, poi: POI) {
+    const clone: any = {
+      ...feature,
+      properties: {
+        ...(feature.properties ?? {})
+      }
+    };
+    clone.properties.poi_id = poi.id;
+    clone.properties.source_type = poi.type;
+    if (!clone.properties.name || !String(clone.properties.name).trim()) {
+      clone.properties.name = poi.label;
+    }
+    if (feature.geometry?.type === 'Point') {
+      const coords = feature.geometry.coordinates as [number, number];
+      if (!clone.properties.address || !String(clone.properties.address).trim()) {
+        const approx = clone.properties.approx_address;
+        clone.properties.address =
+          typeof approx === 'string' && approx.trim().length
+            ? approx
+            : formatCoordinates(coords);
+      }
+    }
+    return clone;
+  }
+
+  private removePinLayers(record: PinRecord): void {
+    if (!this.map) return;
+    record.cleanup.forEach((dispose) => dispose());
+    record.cleanup = [];
+
+    if (this.map.getLayer(record.pointLayerId)) {
+      this.map.removeLayer(record.pointLayerId);
+    }
+    if (this.map.getSource(record.sourceId)) {
+      this.map.removeSource(record.sourceId);
+    }
+  }
+
+  private attachPinLayerEvents(record: PinRecord, layerId?: string) {
+    if (!this.map || !layerId) return;
+    const enter = () => {
+      if (this.map) {
+        this.map.getCanvas().style.cursor = 'pointer';
+      }
+    };
+    const leave = () => {
+      if (this.map) {
+        this.map.getCanvas().style.cursor = '';
+      }
+    };
+    this.map.on('mouseenter', layerId, enter);
+    this.map.on('mouseleave', layerId, leave);
+    record.cleanup.push(() => {
+      this.map?.off('mouseenter', layerId, enter);
+      this.map?.off('mouseleave', layerId, leave);
+    });
+  }
+
+  private updatePinHoverLayers() {
+    if (!this.map) {
+      this.pinHoverLayerIds = [];
+      return;
+    }
+    const ids: string[] = [];
+    for (const record of this.pinRecords.values()) {
+      if (this.map.getLayer(record.pointLayerId)) {
+        ids.push(record.pointLayerId);
+      }
+    }
+    this.pinHoverLayerIds = ids;
+  }
+
+  private findPinHover(point: { x: number; y: number }): HoverState | null {
+    if (!this.map || !this.pinHoverLayerIds.length) return null;
+    const features = this.map.queryRenderedFeatures([point.x, point.y], { layers: this.pinHoverLayerIds });
+    if (!features || !features.length) return null;
+    return this.buildPinHoverState(features[0]);
+  }
+
+  private buildPinHoverState(feature: any): HoverState | null {
+    if (!feature?.geometry || feature.geometry.type !== 'Point') return null;
+    const coordinates = feature.geometry.coordinates as [number, number];
+    const props = feature.properties ?? {};
+    const poiId = typeof props.poi_id === 'string' ? props.poi_id : '';
+    const name =
+      typeof props.name === 'string' && props.name.trim().length
+        ? props.name
+        : typeof props.brand_id === 'string'
+        ? props.brand_id
+        : 'Point of interest';
+    const address = this.resolvePinAddress(props, coordinates);
+    return {
+      kind: 'pin',
+      poiId,
+      name,
+      address,
+      coordinates,
+      brandId: typeof props.brand_id === 'string' ? props.brand_id : undefined
+    };
+  }
+
+  private resolvePinAddress(props: Record<string, unknown>, coordinates: [number, number]): string {
+    const candidates = ['address', 'approx_address'];
+    for (const key of candidates) {
+      const value = props[key];
+      if (typeof value === 'string' && value.trim().length) {
+        return value;
+      }
+    }
+    return formatCoordinates(coordinates);
+  }
+
+  private getCurrentBounds():
+    | { west: number; south: number; east: number; north: number }
+    | null {
+    if (!this.map) return null;
+    try {
+      const bounds = this.map.getBounds();
+      return {
+        west: bounds.getWest(),
+        south: bounds.getSouth(),
+        east: bounds.getEast(),
+        north: bounds.getNorth()
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private clearPins() {
+    for (const record of this.pinRecords.values()) {
+      this.removePinLayers(record);
+    }
+    this.pinRecords.clear();
+    this.updatePinHoverLayers();
+  }
+
   destroy() {
     if (this.map) {
+      if (this.moveEndHandler) {
+        this.map.off('moveend', this.moveEndHandler);
+        this.moveEndHandler = null;
+      }
+      this.clearPins();
       this.map.remove();
       this.map = undefined;
     }

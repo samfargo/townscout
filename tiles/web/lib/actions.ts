@@ -3,7 +3,7 @@
 import { useStore, type Mode } from './state/store';
 import type { Catalog } from './services';
 import { fetchCatalog, fetchDAnchor, fetchCustomDAnchor } from './services';
-import { getMapWorker } from './map/MapController';
+import { getMapController, getMapWorker, onMapControllerReady } from './map/MapController';
 
 // Set to true for verbose debugging
 const DEBUG = false;
@@ -39,7 +39,7 @@ export async function addBrand(brandId: string, label: string): Promise<void> {
     return;
   }
   
-  store.addPoi({ id: brandId, label, type: 'brand' });
+  store.addPoi({ id: brandId, label, type: 'brand', brandIds: [brandId] });
   store.setSlider(brandId, 30); // Default 30 minutes
   
   // Fetch dAnchor data
@@ -56,7 +56,7 @@ export async function addCategory(categoryId: string, label: string, ids: string
     return;
   }
   
-  store.addPoi({ id: categoryId, label, type: 'category' });
+  store.addPoi({ id: categoryId, label, type: 'category', brandIds: ids.map((value) => String(value)) });
   store.setSlider(categoryId, 30);
   
   await loadDAnchor(categoryId, store.mode);
@@ -67,7 +67,8 @@ export async function addCustom(
   lon: number,
   lat: number,
   label: string,
-  minutes: number
+  minutes: number,
+  formattedAddress?: string | null
 ): Promise<void> {
   const store = useStore.getState();
   const id = customCacheKey(lon, lat);
@@ -76,7 +77,7 @@ export async function addCustom(
     return;
   }
 
-  store.addPoi({ id, label, type: 'custom', lat, lon });
+  store.addPoi({ id, label, type: 'custom', lat, lon, formattedAddress: formattedAddress ?? null });
   store.setSlider(id, minutes);
   
   // Fetch dAnchor data for custom location
@@ -86,9 +87,54 @@ export async function addCustom(
 
 export function removePOI(id: string): void {
   const store = useStore.getState();
+  store.removeShowPins(id);
+  const controller = getMapController();
+  if (controller) {
+    controller.hidePinsById(id);
+  } else {
+    onMapControllerReady(() => {
+      getMapController()?.hidePinsById(id);
+    });
+  }
   store.removePoi(id);
   store.removeSlider(id);
   void applyCurrentFilter();
+}
+
+export function setPoiPins(id: string, show: boolean): void {
+  const store = useStore.getState();
+  const poi = store.pois.find((item) => item.id === id);
+  if (!poi) {
+    return;
+  }
+
+  store.setShowPins(id, show);
+
+  const applyToController = (controller: ReturnType<typeof getMapController>) => {
+    if (!controller) return;
+    if (show) {
+      void controller.showPinsForPoi(poi);
+    } else {
+      controller.hidePinsForPoi(poi);
+    }
+  };
+
+  const controller = getMapController();
+  if (controller) {
+    applyToController(controller);
+    return;
+  }
+
+  onMapControllerReady(() => {
+    const latestPoi = useStore.getState().pois.find((item) => item.id === id);
+    const currentController = getMapController();
+    if (!latestPoi || !currentController) return;
+    if (useStore.getState().showPins[id]) {
+      void currentController.showPinsForPoi(latestPoi);
+    } else {
+      currentController.hidePinsForPoi(latestPoi);
+    }
+  });
 }
 
 // Climate selections

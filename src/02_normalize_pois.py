@@ -524,14 +524,21 @@ def main():
         airports_normalized = load_airports_csv()
         if not airports_normalized.empty:
             parts.append(airports_normalized)
-        canonical_pois = pd.concat(parts, ignore_index=True) if len(parts) > 1 else canonical_pois
+        
+        # Concatenate all parts
+        if len(parts) > 1:
+            canonical_pois = pd.concat(parts, ignore_index=True)
+            # Ensure it's a GeoDataFrame after concatenation
+            canonical_pois = gpd.GeoDataFrame(canonical_pois, geometry="geometry", crs="EPSG:4326")
         
         # 4. Save the result
         output_path = f"data/poi/{state}_canonical.parquet"
         if not canonical_pois.empty:
+            # Drop provenance column before saving - PyArrow can't handle list columns
+            save_df = canonical_pois.drop(columns=["provenance"], errors="ignore")
             # Remove CRS metadata before saving to avoid read errors with pyproj
-            canonical_pois.crs = None
-            canonical_pois.to_parquet(output_path)
+            save_df.crs = None
+            save_df.to_parquet(output_path)
             print(f"[ok] Saved {len(canonical_pois)} canonical POIs to {output_path}")
         else:
             print("[warn] No canonical POIs were generated.")

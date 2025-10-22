@@ -11,18 +11,39 @@ export interface POI {
   type: 'brand' | 'category' | 'custom';
   lat?: number;
   lon?: number;
+  brandIds?: string[];
+  formattedAddress?: string | null;
 }
+
+export type HexHoverState = {
+  kind: 'hex';
+  properties: Record<string, any>;
+};
+
+export type PinHoverState = {
+  kind: 'pin';
+  poiId: string;
+  name: string;
+  address: string;
+  coordinates: [number, number];
+  brandId?: string;
+};
+
+export type HoverState = HexHoverState | PinHoverState;
 
 export interface StoreState {
   // Map state
-  hover: Record<string, any> | null;
-  setHover: (props: Record<string, any> | null) => void;
+  hover: HoverState | null;
+  setHover: (props: HoverState | null) => void;
 
   // POI filters
   pois: POI[];
   setPois: (pois: POI[]) => void;
   addPoi: (poi: POI) => void;
   removePoi: (id: string) => void;
+  showPins: Record<string, boolean>;
+  setShowPins: (id: string, value: boolean) => void;
+  removeShowPins: (id: string) => void;
 
   // Climate selections
   climateSelections: string[];
@@ -64,6 +85,26 @@ export const useStore = create<StoreState>((set) => ({
   removePoi: (id) => set((state) => ({
     pois: state.pois.filter((p) => p.id !== id)
   })),
+  showPins: {},
+  setShowPins: (id, value) =>
+    set((state) => {
+      if (value) {
+        return { showPins: { ...state.showPins, [id]: true } };
+      }
+      if (!(id in state.showPins)) {
+        return {};
+      }
+      const next = { ...state.showPins };
+      delete next[id];
+      return { showPins: next };
+    }),
+  removeShowPins: (id) =>
+    set((state) => {
+      if (!(id in state.showPins)) return {};
+      const next = { ...state.showPins };
+      delete next[id];
+      return { showPins: next };
+    }),
 
   // Climate selections
   climateSelections: [],

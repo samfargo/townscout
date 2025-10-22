@@ -16,21 +16,23 @@ export default function HoverBox() {
   const cache = useStore((state) => state.dAnchorCache);
   const poiModes = useStore((state) => state.poiModes);
   const defaultMode = useStore((state) => state.mode);
+  const hexProps = hover?.kind === 'hex' ? hover.properties : null;
+  const pinHover = hover?.kind === 'pin' ? hover : null;
 
   const climateSummary = React.useMemo(() => {
-    if (!hover) return null;
-    const label = typeof hover.climate_label === 'string' ? hover.climate_label : null;
-    const summer = decodeQuantized(hover.temp_mean_summer_f_q, 0.1);
-    const winter = decodeQuantized(hover.temp_mean_winter_f_q, 0.1);
-    const precip = decodeQuantized(hover.ppt_ann_in_q, 0.1);
+    if (!hexProps) return null;
+    const label = typeof hexProps.climate_label === 'string' ? hexProps.climate_label : null;
+    const summer = decodeQuantized(hexProps.temp_mean_summer_f_q, 0.1);
+    const winter = decodeQuantized(hexProps.temp_mean_winter_f_q, 0.1);
+    const precip = decodeQuantized(hexProps.ppt_ann_in_q, 0.1);
     
     // Extract monthly data for sparklines
     const monthlyTemp = MONTHS.map((month) => 
-      decodeQuantized(hover[`temp_mean_${month}_f_q`], 0.1)
+      decodeQuantized(hexProps[`temp_mean_${month}_f_q`], 0.1)
     ).filter((val): val is number => val !== null);
     
     const monthlyPrecip = MONTHS.map((month) => 
-      decodeQuantized(hover[`ppt_${month}_in_q`], 0.1)
+      decodeQuantized(hexProps[`ppt_${month}_in_q`], 0.1)
     ).filter((val): val is number => val !== null);
     
     if (!label && summer == null && winter == null && precip == null) {
@@ -44,10 +46,10 @@ export default function HoverBox() {
       monthlyTemp: monthlyTemp.length === 12 ? monthlyTemp : null,
       monthlyPrecip: monthlyPrecip.length === 12 ? monthlyPrecip : null
     };
-  }, [hover]);
+  }, [hexProps]);
 
   const travelTimes = React.useMemo(() => {
-    if (!hover) return [];
+    if (!hexProps) return [];
     
     return pois.map((poi) => {
       const mode = resolveMode(poi.id, poiModes, defaultMode);
@@ -57,11 +59,11 @@ export default function HoverBox() {
       }
 
       // Compute minimum travel time using the same logic as the filter expression
-      const minSeconds = computeMinTravelTime(hover, anchorMap);
+      const minSeconds = computeMinTravelTime(hexProps, anchorMap);
       const minutes = minSeconds !== null ? Math.round(minSeconds / 60) : null;
       return { label: poi.label, minutes, mode };
     });
-  }, [hover, pois, cache, poiModes, defaultMode]);
+  }, [hexProps, pois, cache, poiModes, defaultMode]);
 
   return (
     <Card className="border-stone-300 bg-[#fbf7ec] p-0 shadow-[0_18px_30px_-26px_rgba(76,54,33,0.22)]">
@@ -72,7 +74,17 @@ export default function HoverBox() {
         {!hover && (
           <p className="text-sm text-stone-500">Hover over the map to view details.</p>
         )}
-        {hover && climateSummary && (
+        {pinHover && (
+          <div className="space-y-1 rounded-xl border border-stone-200 bg-[#fbf7ec] px-3 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-stone-500">Location pin</p>
+            <p className="text-sm font-semibold text-stone-800">{pinHover.name}</p>
+            <p className="text-xs text-stone-600">{pinHover.address}</p>
+            <p className="text-[11px] text-stone-500">
+              {pinHover.coordinates[1].toFixed(4)}°, {pinHover.coordinates[0].toFixed(4)}°
+            </p>
+          </div>
+        )}
+        {hexProps && climateSummary && (
           <div className="space-y-2 rounded-xl border border-stone-200 bg-[#fbf7ec] px-3 py-2">
             <p className="text-[11px] uppercase tracking-wide text-stone-500">Climate typology</p>
             <p className="text-sm font-semibold text-stone-800">
@@ -135,12 +147,12 @@ export default function HoverBox() {
             )}
           </div>
         )}
-        {hover && travelTimes.length === 0 && !climateSummary && (
+        {hexProps && travelTimes.length === 0 && !climateSummary && (
           <p className="text-sm text-stone-500">
             Add filters to see travel times from this hex.
           </p>
         )}
-        {hover && travelTimes.length > 0 && (
+        {hexProps && travelTimes.length > 0 && (
           <dl className="space-y-2">
             {travelTimes.map(({ label, minutes, mode }) => (
               <div key={label} className="flex items-center justify-between gap-3">

@@ -1159,6 +1159,18 @@ def get_d_anchor_custom(
 
 # ---------- POI Pins (GeoJSON) ----------
 _CANON_POI_CACHE: Optional[pd.DataFrame] = None
+_CATEGORY_ID_TO_SLUG_CACHE: Optional[Dict[str, str]] = None
+
+
+def _load_category_id_to_slug() -> Dict[str, str]:
+    """Invert the label->id mapping to id->label slug."""
+    global _CATEGORY_ID_TO_SLUG_CACHE
+    if _CATEGORY_ID_TO_SLUG_CACHE is not None:
+        return _CATEGORY_ID_TO_SLUG_CACHE
+    label_to_id = _load_category_label_to_id()
+    inverted = {str(v): str(k) for k, v in label_to_id.items()}
+    _CATEGORY_ID_TO_SLUG_CACHE = inverted
+    return inverted
 
 def _load_canonical_pois() -> pd.DataFrame:
     global _CANON_POI_CACHE
@@ -1167,49 +1179,109 @@ def _load_canonical_pois() -> pd.DataFrame:
     path = os.path.join("data", "poi", f"{STATE}_canonical.parquet")
     if not os.path.exists(path):
         # Empty dataframe with expected columns
-        _CANON_POI_CACHE = pd.DataFrame(columns=["brand_id", "lon", "lat", "name"])  # type: ignore
+        _CANON_POI_CACHE = pd.DataFrame(
+            columns=["brand_id", "category", "lon", "lat", "name", "address", "approx_address"]
+        )  # type: ignore
         return _CANON_POI_CACHE
     try:
-        df = pd.read_parquet(path, columns=["brand_id", "lon", "lat", "name"])  # type: ignore
+        desired_columns = ["brand_id", "category", "lon", "lat", "name", "address", "approx_address"]
+        try:
+            df = pd.read_parquet(path, columns=desired_columns)  # type: ignore
+        except (KeyError, ValueError):
+            df = pd.read_parquet(path)  # type: ignore
+        # Restrict to desired columns if the file had extras
+        present_columns = [col for col in desired_columns if col in df.columns]
+        df = df[present_columns].copy()
         # Ensure correct dtypes
         if "brand_id" in df.columns:
-            df["brand_id"] = df["brand_id"].astype(str)
+            df["brand_id"] = df["brand_id"].astype(str).str.strip()
+            df["brand_id"] = df["brand_id"].replace(
+                {"": None, "nan": None, "None": None, "NaN": None, "null": None, "NULL": None}
+            )
+        if "category" in df.columns:
+            df["category"] = df["category"].astype(str).str.strip()
         if "lon" in df.columns:
             df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
         if "lat" in df.columns:
             df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
         # Drop invalid rows
-        df = df.dropna(subset=["lon", "lat", "brand_id"]).copy()
+        df = df.dropna(subset=["lon", "lat"]).copy()
         _CANON_POI_CACHE = df
         return df
     except Exception as e:
         print(f"[warn] Failed to read canonical POIs at {path}: {e}")
-        _CANON_POI_CACHE = pd.DataFrame(columns=["brand_id", "lon", "lat", "name"])  # type: ignore
+        _CANON_POI_CACHE = pd.DataFrame(
+            columns=["brand_id", "category", "lon", "lat", "name", "address", "approx_address"]
+        )  # type: ignore
         return _CANON_POI_CACHE
+
+
+def _normalize_category_query(value: Optional[str]) -> Optional[str]:
+    """Normalize a category query parameter to a canonical slug."""
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    id_to_slug = _load_category_id_to_slug()
+    # Direct ID match
+    if raw in id_to_slug:
+        return id_to_slug[raw]
+    lowered = raw.lower().strip()
+    if lowered in id_to_slug.values():
+        return lowered
+    # Try human-readable label (e.g., "Fast Food")
+    slug_candidate = lowered.replace(" ", "_")
+    labels = _load_category_labels()
+    for cid, label in labels.items():
+        if isinstance(label, str) and label.lower().strip() == lowered:
+            return id_to_slug.get(str(cid), slug_candidate)
+    return slug_candidate
 
 
 @app.get("/api/poi_points")
 def poi_points(
-    brands: str = Query(..., description="Comma-separated brand_ids to include"),
+    brands: Optional[str] = Query(None, description="Comma-separated brand_ids to include"),
+    category: Optional[str] = Query(None, description="Optional category id/slug/label to include"),
     bbox: Optional[str] = Query(None, description="Optional bbox lonmin,latmin,lonmax,latmax")
 ):
-    """Return GeoJSON FeatureCollection of POI points for the given brands.
+    """Return GeoJSON FeatureCollection of POI points filtered by brand and/or category."""
+    brand_list = []
+    if brands:
+        brand_list = [b.strip() for b in str(brands).split(",") if b.strip()]
+        # Deduplicate while preserving order
+        brand_list = list(dict.fromkeys(brand_list))
 
-    Example: /api/poi_points?brands=chipotle,costco
-    Optional bbox filters points server-side to reduce payload.
-    """
-    brand_list = [b.strip() for b in str(brands).split(",") if b.strip()]
-    if not brand_list:
+    category_slug = _normalize_category_query(category)
+
+    if not brand_list and not category_slug:
         return {"type": "FeatureCollection", "features": []}
 
     df = _load_canonical_pois()
     if df.empty:
         return {"type": "FeatureCollection", "features": []}
 
-    sub = df[df["brand_id"].isin(brand_list)][["lon", "lat", "brand_id", "name"]]
+    sub = df
+    if brand_list:
+        if "brand_id" not in sub.columns:
+            sub = sub.iloc[0:0]
+        else:
+            sub = sub[sub["brand_id"].isin(brand_list)]
+    if category_slug:
+        if "category" not in sub.columns:
+            sub = sub.iloc[0:0]
+        else:
+            sub = sub[sub["category"].astype(str).str.strip() == category_slug]
+
+    if sub.empty or "lon" not in sub.columns or "lat" not in sub.columns:
+        return {"type": "FeatureCollection", "features": []}
+
+    # Ensure we have the columns needed for feature construction
+    columns_needed = [col for col in ["lon", "lat", "brand_id", "name", "category", "address", "approx_address"] if col in sub.columns]
+    sub = sub[columns_needed].copy()
 
     # Optional bbox filter
-    if bbox:
+    if bbox and not sub.empty:
         try:
             parts = [float(x) for x in bbox.split(",")]
             if len(parts) == 4:
@@ -1220,19 +1292,35 @@ def poi_points(
         except Exception:
             pass
 
-    # Build GeoJSON
+    if sub.empty:
+        return {"type": "FeatureCollection", "features": []}
+
     feats = []
     for _, r in sub.iterrows():
         lon = float(r["lon"]) if pd.notna(r["lon"]) else None
         lat = float(r["lat"]) if pd.notna(r["lat"]) else None
         if lon is None or lat is None:
             continue
-        props: Dict[str, Any] = {
-            "brand_id": str(r["brand_id"]) if pd.notna(r["brand_id"]) else None,
-        }
+        props: Dict[str, Any] = {}
+        brand_id = r.get("brand_id")
+        if isinstance(brand_id, str) and brand_id.strip():
+            props["brand_id"] = brand_id.strip()
+        category_val = r.get("category")
+        if isinstance(category_val, str) and category_val.strip():
+            props["category"] = category_val.strip()
         name = r.get("name") if isinstance(r.get("name"), str) else None
         if name:
             props["name"] = name
+        address = r.get("address") if isinstance(r.get("address"), str) else None
+        approx = r.get("approx_address") if isinstance(r.get("approx_address"), str) else None
+        if address and address.strip():
+            props["address"] = address.strip()
+        elif approx and approx.strip():
+            props["approx_address"] = approx.strip()
+        else:
+            fallback = f"{lat:.4f}°, {lon:.4f}°"
+            props["address"] = fallback
+            props["approx_address"] = fallback
         feats.append({
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [lon, lat]},

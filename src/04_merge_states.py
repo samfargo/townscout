@@ -11,14 +11,76 @@ Pipeline (anchor-mode only):
 """
 import glob
 import os
-import pandas as pd
-from tqdm import tqdm
 import numpy as np
 import h3
+import pandas as pd
 import polars as pl
+from tqdm import tqdm
 
-from config import STATES, H3_RES_LOW, H3_RES_HIGH
 from climate.prism_to_hex import classify_climate_expr, TEMP_SCALE, PPT_MM_SCALE, PPT_IN_SCALE
+
+from config import STATES, H3_RES_LOW, H3_RES_HIGH, STATE_BOUNDING_BOXES
+
+
+def _h3_str_to_int(cell) -> int:
+    """Robustly convert an H3 address (string or int) to its uint64 integer form."""
+    if isinstance(cell, (int, np.integer)):
+        return int(cell)
+    converters = [
+        getattr(h3, "string_to_h3", None),
+        getattr(h3, "str_to_int", None),
+        getattr(h3, "string_to_int", None),
+    ]
+    for fn in converters:
+        if callable(fn):
+            return int(fn(cell))
+    return int(cell, 16)
+
+
+def _bbox_to_polygon(bbox: dict) -> dict:
+    """Return a GeoJSON polygon for the provided lon/lat bounding box."""
+    ring = [
+        [bbox["west"], bbox["south"]],
+        [bbox["east"], bbox["south"]],
+        [bbox["east"], bbox["north"]],
+        [bbox["west"], bbox["north"]],
+        [bbox["west"], bbox["south"]],
+    ]
+    return {"type": "Polygon", "coordinates": [ring]}
+
+
+def build_complete_hex_grid(states, resolutions):
+    """
+    Build an H3 grid that covers the requested states by polyfilling their
+    bounding boxes. This guarantees we have features for every hex even if
+    we never computed travel times there.
+    """
+    records = []
+    for state in states:
+        bbox = STATE_BOUNDING_BOXES.get(state)
+        if not bbox:
+            print(f"[warn] Missing bounding box for '{state}'; falling back to observed coverage.")
+            continue
+        polygon = _bbox_to_polygon(bbox)
+        for res in resolutions:
+            cells = h3.geo_to_cells(polygon, res)
+            if not cells:
+                print(f"[warn] polyfill produced 0 cells for {state} at res {res}")
+                continue
+            records.extend((_h3_str_to_int(cell), res) for cell in cells)
+
+    if not records:
+        return pd.DataFrame(
+            {
+                "h3_id": pd.Series(dtype="uint64"),
+                "res": pd.Series(dtype="int32"),
+            }
+        )
+
+    grid = pd.DataFrame(records, columns=["h3_id", "res"])
+    grid["h3_id"] = grid["h3_id"].astype("uint64", copy=False)
+    grid["res"] = grid["res"].astype("int32", copy=False)
+    return grid.drop_duplicates(ignore_index=True)
 
 def main():
     """Main function to merge state data and create summaries."""
@@ -40,10 +102,15 @@ def main():
     all_times = pd.concat([pd.read_parquet(f) for f in drive_time_files], ignore_index=True)
     all_sites = pd.concat([pd.read_parquet(f) for f in sites_files], ignore_index=True)
 
-    # Use the existing computed hexes as the base - don't expand beyond what was computed
-    # The travel time computation already covers all reachable areas
-    print("[info] Using computed hexes as base coverage...")
-    base_hexes = all_times[["h3_id", "res"]].drop_duplicates()
+    # Build a complete H3 grid so the frontend can shade every hex, even if we
+    # never computed anchor travel times there (e.g., large parks or rural areas).
+    print("[info] Building complete hex coverage from state bounding boxes...")
+    grid_hexes = build_complete_hex_grid(STATES, [H3_RES_LOW, H3_RES_HIGH])
+    observed_hexes = all_times[["h3_id", "res"]].drop_duplicates()
+    observed_hexes["h3_id"] = observed_hexes["h3_id"].astype("uint64", copy=False)
+    observed_hexes["res"] = observed_hexes["res"].astype("int32", copy=False)
+    base_hexes = pd.concat([grid_hexes, observed_hexes], ignore_index=True)
+    base_hexes = base_hexes.drop_duplicates(ignore_index=True)
     print(f"[info] Base coverage: {len(base_hexes)} hexes across all resolutions")
 
     # 2. Anchor arrays for frontend (a{i}_id / a{i}_s) — top-K already enforced upstream

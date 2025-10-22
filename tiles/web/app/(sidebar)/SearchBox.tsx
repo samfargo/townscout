@@ -234,18 +234,20 @@ export default function SearchBox() {
       let lon = suggestion.lon;
       let lat = suggestion.lat;
       let label = suggestion.label;
+      let formattedAddress: string | null = suggestion.description ?? null;
       if (lon == null || lat == null) {
         const details = await fetchPlaceDetails(suggestion.id, session);
         lon = details.lon;
         lat = details.lat;
         label = details.label;
+        formattedAddress = details.formatted_address ?? formattedAddress;
       }
       if (lon == null || lat == null) {
         throw new Error('Place has no coordinates');
       }
       const key = customCacheKey(lon, lat);
       detailsCacheRef.current[suggestion.id] = key;
-      await addCustom(lon, lat, label, normalizeMinutes(30));
+      await addCustom(lon, lat, label, normalizeMinutes(30), formattedAddress);
       setPlaceInput('');
       setPlacesQuery('');
     } catch (err) {
@@ -254,6 +256,30 @@ export default function SearchBox() {
       setPending(null);
     }
   };
+
+  const poiCategoryCount = React.useMemo(
+    () => pois.filter((poi) => poi.type === 'category').length,
+    [pois]
+  );
+  const poiBrandCount = React.useMemo(
+    () => pois.filter((poi) => poi.type === 'brand').length,
+    [pois]
+  );
+
+  const pointsLabel = React.useMemo(() => {
+    if (!poiCategoryCount) return 'Points of Interest';
+    return `Points of Interest (${poiCategoryCount})`;
+  }, [poiCategoryCount]);
+
+  const businessesLabel = React.useMemo(() => {
+    if (!poiBrandCount) return 'Popular Businesses';
+    return `Popular Businesses (${poiBrandCount})`;
+  }, [poiBrandCount]);
+
+  const climateLabel = React.useMemo(() => {
+    if (!climateSelections.length) return 'Climate';
+    return `Climate (${climateSelections.length})`;
+  }, [climateSelections.length]);
 
   return (
     <Card className="border-stone-300 bg-[#fbf7ec] p-0 shadow-[0_20px_36px_-30px_rgba(76,54,33,0.28)]">
@@ -265,7 +291,7 @@ export default function SearchBox() {
       </CardHeader>
       <CardContent className="space-y-4 px-5 pb-5 pt-4 text-sm text-stone-700">
         <div className="space-y-2">
-          <DropdownSection label="Points of Interest">
+          <DropdownSection label={pointsLabel}>
             {!catalog?.loaded && (
               <p className="px-1 text-xs text-stone-500">Loading catalog…</p>
             )}
@@ -341,7 +367,7 @@ export default function SearchBox() {
               </div>
             )}
           </DropdownSection>
-          <DropdownSection label="Popular Businesses">
+          <DropdownSection label={businessesLabel}>
             {!catalog?.loaded && (
               <p className="px-1 text-xs text-stone-500">Loading POIs…</p>
             )}
@@ -374,7 +400,7 @@ export default function SearchBox() {
               </div>
             )}
           </DropdownSection>
-          <DropdownSection label="Climate">
+          <DropdownSection label={climateLabel}>
             <div className="space-y-2">
               {CLIMATE_TYPOLOGY.map((entry) => {
                 const active = climateSelections.includes(entry.label);
@@ -498,7 +524,7 @@ export default function SearchBox() {
             })}
           </div>
           <p className="text-xs text-stone-500">
-            Think: friend's house, work address etc.
+            Think: friend&apos;s house, work address etc.
           </p>
         </div>
       </CardContent>

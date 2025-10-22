@@ -13,6 +13,7 @@ import {
   MAX_MINUTES,
   MINUTE_STEP,
   removePOI,
+  setPoiPins,
   updateSlider,
   updateSliderPreview
 } from '@/lib/actions';
@@ -38,6 +39,7 @@ export default function FiltersPanel() {
   const poiModes = useStore((state) => state.poiModes);
   const defaultMode = useStore((state) => state.mode);
   const loadingPois = useStore((state) => state.loadingPois);
+  const showPins = useStore((state) => state.showPins);
 
   const [local, setLocal] = React.useState<Record<string, number>>({});
   const [modePending, setModePending] = React.useState<Record<string, boolean>>({});
@@ -80,6 +82,7 @@ export default function FiltersPanel() {
         const currentMode = poiModes[poi.id] ?? defaultMode;
         const pendingModeChange = modePending[poi.id] ?? false;
         const isLoading = loadingPois.has(poi.id);
+        const pinsVisible = Boolean(showPins[poi.id]);
         return (
           <Card key={poi.id} className={antiqueCardClass}>
             <CardHeader className={antiqueHeaderClass}>
@@ -175,6 +178,19 @@ export default function FiltersPanel() {
                   updateSlider(poi.id, next);
                 }}
               />
+              <div className="flex items-center justify-between">
+                <span className={antiqueLabelClass}>Pins</span>
+                <label className="flex items-center gap-2 text-xs font-semibold text-stone-600">
+                  <input
+                    type="checkbox"
+                    className="h-3 w-3 accent-amber-700"
+                    checked={pinsVisible}
+                    onChange={(event) => setPoiPins(poi.id, event.target.checked)}
+                    disabled={isLoading}
+                  />
+                  <span>Show Pins</span>
+                </label>
+              </div>
               <div className="flex items-center justify-between">
                 <span className={antiqueLabelClass}>Travel mode</span>
                 <ModeToggle

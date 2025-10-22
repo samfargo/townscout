@@ -22,6 +22,7 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
 
 // ==================== API PROXY UTILITIES ====================
 
+import type { FeatureCollection, Point } from "geojson";
 import { NextResponse } from "next/server";
 
 export interface ApiProxyOptions<T> {
@@ -224,6 +225,70 @@ export async function fetchCustomDAnchor(
   }
 }
 
+// ==================== POI PINS SERVICE ====================
+
+export interface PoiPinProperties {
+  brand_id?: string;
+  name?: string;
+  address?: string;
+  approx_address?: string;
+  category?: string;
+}
+
+export type PoiPointsResponse = FeatureCollection<Point, PoiPinProperties>;
+
+export interface Bounds {
+  west: number;
+  south: number;
+  east: number;
+  north: number;
+}
+
+export interface FetchPoiPointsOptions {
+  brands?: string[];
+  categoryId?: string | number;
+  bounds?: Bounds;
+}
+
+export async function fetchPoiPoints({
+  brands,
+  categoryId,
+  bounds
+}: FetchPoiPointsOptions): Promise<PoiPointsResponse> {
+  const params = new URLSearchParams();
+  const normalizedBrands = (brands ?? [])
+    .map((value) => String(value).trim())
+    .filter((value) => value.length > 0);
+  if (normalizedBrands.length) {
+    params.set('brands', normalizedBrands.join(','));
+  }
+  if (categoryId != null) {
+    const categoryValue = String(categoryId).trim();
+    if (categoryValue.length) {
+      params.set('category', categoryValue);
+    }
+  }
+  if (!params.has('brands') && !params.has('category')) {
+    return {
+      type: 'FeatureCollection',
+      features: []
+    };
+  }
+  if (bounds) {
+    params.set('bbox', `${bounds.west},${bounds.south},${bounds.east},${bounds.north}`);
+  }
+
+  try {
+    return await fetchApi<PoiPointsResponse>(`/api/poi_points?${params.toString()}`);
+  } catch (error) {
+    console.error('Failed to fetch POI pins:', error);
+    return {
+      type: 'FeatureCollection',
+      features: []
+    };
+  }
+}
+
 // ==================== PLACES SERVICE ====================
 
 export interface PlaceSuggestion {
@@ -291,4 +356,3 @@ export async function fetchPlaceDetails(
     return null;
   }
 }
-
