@@ -8,6 +8,10 @@ CUTOFF?=30
 OVERFLOW?=60
 K_BEST?=20
 
+# Fingerprint directories to track when downstream data must be recomputed
+DANCHOR_BRAND_FINGERPRINT_DIR := build/d_anchor_brand_hash
+DANCHOR_CATEGORY_FINGERPRINT_DIR := build/d_anchor_category_hash
+
 .PHONY: help init clean all \
 	download pois anchors minutes geojson tiles native d_anchor_category d_anchor_brand \
 	d_anchor_category_force d_anchor_brand_force merge climate
@@ -95,7 +99,28 @@ data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_
 # parquet exists and only computes missing ones. This is fast when up-to-date.
 .PHONY: d_anchor_brand
 d_anchor_brand: anchors | build/native.stamp ## 3.6 Compute anchor->brand seconds (incremental, delta only)
-	@for S in $(STATES); do \
+	@set -e; mkdir -p $(DANCHOR_BRAND_FINGERPRINT_DIR); \
+	for S in $(STATES); do \
+	  anchor_sites="data/anchors/$${S}_drive_sites.parquet"; \
+	  anchor_map="data/anchors/$${S}_drive_site_id_map.parquet"; \
+	  fingerprint=$$($(PY) scripts/compute_anchor_fingerprint.py "$$anchor_sites" "$$anchor_map"); \
+	  hash_file="$(DANCHOR_BRAND_FINGERPRINT_DIR)/$${S}.hash"; \
+	  force_flag=""; \
+	  if [ -z "$$fingerprint" ]; then \
+	    echo "[d_anchor_brand] Failed to compute fingerprint for $$S"; exit 1; \
+	  fi; \
+	  if [ ! -f "$$hash_file" ]; then \
+	    echo "[d_anchor_brand] No existing fingerprint for $$S; forcing full recompute."; \
+	    force_flag="--force"; \
+	  else \
+	    prev_hash=$$(cat "$$hash_file"); \
+	    if [ "$$prev_hash" != "$$fingerprint" ]; then \
+	      echo "[d_anchor_brand] Anchor fingerprint changed for $$S; forcing full recompute."; \
+	      force_flag="--force"; \
+	    else \
+	      echo "[d_anchor_brand] Anchor fingerprint unchanged for $$S; running incremental update."; \
+	    fi; \
+	  fi; \
 	  $(PY) src/03d_compute_d_anchor.py \
 	    --pbf data/osm/$$S.osm.pbf \
 	    --anchors data/anchors/$$S\_drive_sites.parquet \
@@ -103,7 +128,9 @@ d_anchor_brand: anchors | build/native.stamp ## 3.6 Compute anchor->brand second
 	    --threads $(THREADS) \
 	    --cutoff $(CUTOFF) \
 	    --overflow-cutoff $(OVERFLOW) \
-	    --out-dir data/d_anchor_brand ; \
+	    $$force_flag \
+	    --out-dir data/d_anchor_brand && \
+	  echo "$$fingerprint" > "$$hash_file"; \
 	done
 
 .PHONY: d_anchor_brand_force
@@ -126,7 +153,28 @@ d_anchor_brand_force: ## 3.6 Force recompute all D_anchor brand data
 # parquet exists and only computes missing ones. This is fast when up-to-date.
 .PHONY: d_anchor_category
 d_anchor_category: anchors | build/native.stamp ## 3.6b Compute anchor->category seconds (incremental, delta only)
-	@for S in $(STATES); do \
+	@set -e; mkdir -p $(DANCHOR_CATEGORY_FINGERPRINT_DIR); \
+	for S in $(STATES); do \
+	  anchor_sites="data/anchors/$${S}_drive_sites.parquet"; \
+	  anchor_map="data/anchors/$${S}_drive_site_id_map.parquet"; \
+	  fingerprint=$$($(PY) scripts/compute_anchor_fingerprint.py "$$anchor_sites" "$$anchor_map"); \
+	  hash_file="$(DANCHOR_CATEGORY_FINGERPRINT_DIR)/$${S}.hash"; \
+	  force_flag=""; \
+	  if [ -z "$$fingerprint" ]; then \
+	    echo "[d_anchor_category] Failed to compute fingerprint for $$S"; exit 1; \
+	  fi; \
+	  if [ ! -f "$$hash_file" ]; then \
+	    echo "[d_anchor_category] No existing fingerprint for $$S; forcing full recompute."; \
+	    force_flag="--force"; \
+	  else \
+	    prev_hash=$$(cat "$$hash_file"); \
+	    if [ "$$prev_hash" != "$$fingerprint" ]; then \
+	      echo "[d_anchor_category] Anchor fingerprint changed for $$S; forcing full recompute."; \
+	      force_flag="--force"; \
+	    else \
+	      echo "[d_anchor_category] Anchor fingerprint unchanged for $$S; running incremental update."; \
+	    fi; \
+	  fi; \
 	  $(PY) src/03e_compute_d_anchor_category.py \
 	    --pbf data/osm/$$S.osm.pbf \
 	    --anchors data/anchors/$$S\_drive_sites.parquet \
@@ -135,7 +183,9 @@ d_anchor_category: anchors | build/native.stamp ## 3.6b Compute anchor->category
 	    --cutoff $(CUTOFF) \
 	    --overflow-cutoff $(OVERFLOW) \
 	    --prune \
-	    --out-dir data/d_anchor_category ; \
+	    $$force_flag \
+	    --out-dir data/d_anchor_category && \
+	  echo "$$fingerprint" > "$$hash_file"; \
 	done
 
 .PHONY: d_anchor_category_force

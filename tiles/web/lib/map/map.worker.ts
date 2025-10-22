@@ -10,28 +10,20 @@ type AnchorMap = Record<string, number>;
 
 const baseExpressionCache = new WeakMap<AnchorMap, MapExpression>();
 
+const MAX_TERMS_PER_HEX = 20;
+const UNREACHABLE = 65535;
+
 function buildBaseExpression(anchorMap: AnchorMap): MapExpression {
   const cached = baseExpressionCache.get(anchorMap);
   if (cached) {
     return cached;
   }
 
-  const UNREACHABLE = 65535;
-  const matchArgs: number[] = [];
-
-  for (const anchorId of Object.keys(anchorMap)) {
-    const parsedId = parseInt(anchorId, 10);
-    const seconds = Number(anchorMap[anchorId]);
-    if (!Number.isFinite(parsedId) || !Number.isFinite(seconds)) {
-      continue;
-    }
-    matchArgs.push(parsedId, seconds);
-  }
-
-  const matchArgsWithFallback = [...matchArgs, UNREACHABLE];
+  const anchorLiteral: MapExpression = ['literal', anchorMap];
   const terms: MapExpression[] = [];
 
-  for (let i = 0; i < 20; i += 1) {
+  for (let i = 0; i < MAX_TERMS_PER_HEX; i += 1) {
+    const anchorIdExpression: MapExpression = ['get', `a${i}_id`];
     const hexToAnchorSec: MapExpression = [
       'coalesce',
       ['get', `a${i}_s`],
@@ -39,15 +31,24 @@ function buildBaseExpression(anchorMap: AnchorMap): MapExpression {
     ];
 
     const anchorToPoiSec: MapExpression = [
-      'match',
-      ['get', `a${i}_id`],
-      ...matchArgsWithFallback
+      'coalesce',
+      [
+        'get',
+        ['to-string', anchorIdExpression],
+        ['var', '__anchor_seconds']
+      ],
+      UNREACHABLE
     ];
 
     terms.push(['+', hexToAnchorSec, anchorToPoiSec]);
   }
 
-  const baseExpression: MapExpression = ['min', ...terms];
+  const baseExpression: MapExpression = [
+    'let',
+    '__anchor_seconds',
+    anchorLiteral,
+    ['min', ...terms]
+  ];
   baseExpressionCache.set(anchorMap, baseExpression);
   return baseExpression;
 }
@@ -87,13 +88,20 @@ export type WorkerDAnchorMessage = {
   data: any;
 };
 
+export type WorkerExpressionsUpdatedMessage = {
+  type: 'expressions-updated';
+  expressions: Record<Mode, { expression: any | null; maxMinutes: number; active: boolean }>;
+  fallbackMode: Mode;
+  signature: string;
+};
+
 // --- Worker implementation ---
 
 let state: WorkerState | null = null;
 // Store dAnchorCache separately to avoid cloning it on every state update
 let dAnchorCache: Record<string, Record<Mode, any>> = {};
 // Cache last posted expressions to avoid redundant postMessage calls
-let lastPostedExpressions: string | null = null;
+let lastPostedExpressionSignature: string | null = null;
 
 function combineWithMin(...conditions: Array<any | null | undefined>): any | null {
   const flattened: any[] = conditions.filter(Boolean);
@@ -148,7 +156,6 @@ function calculateExpressions(tempValues?: Record<string, number>) {
     drive: [],
     walk: []
   };
-
   for (const poi of pois) {
     const currentMode = poiModes[poi.id] || mode;
     const maxMinutes = tempValues?.[poi.id] ?? sliders[poi.id] ?? 30;
@@ -203,10 +210,15 @@ function calculateExpressions(tempValues?: Record<string, number>) {
   });
 
   // Only post if expressions changed
-  const serialized = JSON.stringify(expressions);
-  if (serialized !== lastPostedExpressions) {
-    lastPostedExpressions = serialized;
-    self.postMessage({ type: 'expressions-updated', expressions });
+  const serializedSignature = JSON.stringify(expressions);
+  if (serializedSignature !== lastPostedExpressionSignature) {
+    lastPostedExpressionSignature = serializedSignature;
+    self.postMessage({
+      type: 'expressions-updated',
+      expressions,
+      fallbackMode: mode,
+      signature: serializedSignature
+    });
   }
 }
 

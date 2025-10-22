@@ -184,6 +184,7 @@ export class MapController {
   private fallbackMode: Mode = "drive";
   private worker: Worker;
   private lastExpressions: Record<Mode, ModeExpressionState> | null = null;
+  private lastExpressionSignature: string | null = null;
   private isDragging = false;
   private pinHoverLayerIds: string[] = [];
   private pinRecords = new Map<string, PinRecord>();
@@ -256,20 +257,28 @@ export class MapController {
     
     // Coalesce worker messages using RAF
     let pendingExpressions: Record<Mode, ModeExpressionState> | null = null;
+    let pendingSignature: string | null = null;
+    let pendingFallbackMode: Mode = this.fallbackMode;
     let rafId: number | null = null;
     
     const applyPendingExpressions = () => {
       rafId = null;
-      if (pendingExpressions) {
-        this.setModeExpressions(pendingExpressions, this.fallbackMode);
-        pendingExpressions = null;
-      }
+      if (!pendingExpressions) return;
+      const expressions = pendingExpressions;
+      const signature = pendingSignature;
+      const fallbackMode = pendingFallbackMode;
+      pendingExpressions = null;
+      pendingSignature = null;
+      pendingFallbackMode = this.fallbackMode;
+      this.setModeExpressions(expressions, fallbackMode, signature);
     };
     
     this.worker.onmessage = (e) => {
       if (e.data.type === 'expressions-updated') {
         // Coalesce updates to one per frame
         pendingExpressions = e.data.expressions;
+        pendingSignature = typeof e.data.signature === 'string' ? e.data.signature : null;
+        pendingFallbackMode = e.data.fallbackMode ?? this.fallbackMode;
         if (rafId) {
           cancelAnimationFrame(rafId);
         }
@@ -284,33 +293,20 @@ export class MapController {
     return this.map;
   }
 
-  private expressionsEqual(
-    a: ModeExpressionState | null | undefined,
-    b: ModeExpressionState | null | undefined
-  ): boolean {
-    if (a === b) return true;
-    if (!a || !b) return false;
-    if (a.active !== b.active) return false;
-    if (a.maxMinutes !== b.maxMinutes) return false;
-    // Deep comparison of expression arrays (simple JSON stringify works for our use case)
-    return JSON.stringify(a.expression) === JSON.stringify(b.expression);
-  }
-
   private setModeExpressions(
     expressions: Record<Mode, ModeExpressionState>,
-    fallbackMode: Mode
+    fallbackMode: Mode,
+    signature?: string | null
   ) {
     this.fallbackMode = fallbackMode;
     if (!this.map) return; // Safety check
 
-    // Skip if expressions haven't changed
-    if (this.lastExpressions) {
-      const unchanged = (Object.keys(expressions) as Mode[]).every(mode =>
-        this.expressionsEqual(expressions[mode], this.lastExpressions![mode])
-      );
-      if (unchanged) return;
+    if (signature && signature === this.lastExpressionSignature) {
+      this.lastExpressions = expressions;
+      return;
     }
     
+    this.lastExpressionSignature = signature ?? null;
     this.lastExpressions = expressions;
 
     const anyActive = Object.values(expressions).some((entry) => entry.active);
@@ -798,5 +794,7 @@ export class MapController {
     if (this.worker) {
       this.worker.terminate();
     }
+    this.lastExpressions = null;
+    this.lastExpressionSignature = null;
   }
 }
