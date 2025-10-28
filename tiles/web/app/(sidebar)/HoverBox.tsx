@@ -18,6 +18,7 @@ export default function HoverBox() {
   const defaultMode = useStore((state) => state.mode);
   const hexProps = hover?.kind === 'hex' ? hover.properties : null;
   const pinHover = hover?.kind === 'pin' ? hover : null;
+  const nearPowerCorridor = Boolean(hexProps?.near_power_corridor);
 
   const climateSummary = React.useMemo(() => {
     if (!hexProps) return null;
@@ -82,6 +83,12 @@ export default function HoverBox() {
             <p className="text-[11px] text-stone-500">
               {pinHover.coordinates[1].toFixed(4)}°, {pinHover.coordinates[0].toFixed(4)}°
             </p>
+          </div>
+        )}
+        {hexProps && nearPowerCorridor && (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+            <p className="font-semibold uppercase tracking-wide">Near power corridor</p>
+            <p className="text-xs text-amber-800">Within 200m of a high-voltage transmission line.</p>
           </div>
         )}
         {hexProps && climateSummary && (

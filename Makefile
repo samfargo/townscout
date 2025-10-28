@@ -14,7 +14,7 @@ DANCHOR_CATEGORY_FINGERPRINT_DIR := build/d_anchor_category_hash
 
 .PHONY: help init clean all \
 	download pois anchors minutes geojson tiles native d_anchor_category d_anchor_brand \
-	d_anchor_category_force d_anchor_brand_force merge climate
+	d_anchor_category_force d_anchor_brand_force merge climate power_corridors
 
 help:  ## Show this help message
 	@echo "TownScout Data Pipeline - Available targets:"
@@ -91,6 +91,17 @@ data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_
 		--res 7 8 \
 		--out-times $@ \
 		--anchors data/anchors/$*_drive_sites.parquet
+
+POWER_CORRIDOR_FILES := $(patsubst %,data/power_corridors/%_near_power_corridor.parquet,$(STATES))
+
+power_corridors: $(POWER_CORRIDOR_FILES) ## 3.8 Build high-voltage corridor avoidance flags per hex
+
+data/power_corridors/%_near_power_corridor.parquet: data/osm/%.osm.pbf src/03f_compute_power_corridors.py src/config.py
+	@mkdir -p $(dir $@)
+	$(PY) src/03f_compute_power_corridors.py \
+		--state $* \
+		--pbf data/osm/$*.osm.pbf \
+		--out $@
 
 
 
@@ -215,7 +226,7 @@ climate: $(CLIMATE_PARQUET) ## Build PRISM climate parquet for r7 + r8
 
 # --- Merge & Summaries ---
 # Produce both outputs in one run; use a stamp to avoid duplicate execution.
-MERGE_DEPS := $(MINUTE_FILES) $(ANCHOR_FILES) $(CLIMATE_PARQUET)
+MERGE_DEPS := $(MINUTE_FILES) $(ANCHOR_FILES) $(CLIMATE_PARQUET) $(POWER_CORRIDOR_FILES)
 .PHONY: merge
 merge: $(MERGE_DEPS) ## 4. Merge per-state data and create summaries
 	$(PY) src/04_merge_states.py

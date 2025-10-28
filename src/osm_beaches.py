@@ -161,35 +161,112 @@ def load_overture_water(state: str) -> dict:
 
 def load_osm_beaches(state: str) -> gpd.GeoDataFrame:
     """
-    Load beach POINTS from OSM (avoiding problematic polygon assemblies).
+    Load beach POINTS from OSM, including nodes, ways, and relations.
     
-    Strategy: Only fetch nodes tagged as natural=beach to avoid geometry errors.
+    Strategy: 
+    - Fetch nodes (points), ways (polygons), and relations tagged as natural=beach
+    - Convert polygon geometries to representative points
+    - Handle geometry errors gracefully for relations
     """
     pbf_path = f"data/osm/{state}.osm.pbf"
     if not os.path.exists(pbf_path):
         print(f"[warn] OSM PBF not found at {pbf_path}")
         return gpd.GeoDataFrame(columns=['geometry', 'name', 'id'], geometry='geometry', crs="EPSG:4326")
     
+    all_beaches = []
+    
     try:
         osm = OSM(pbf_path)
-        # Only load beach NODES (points) to avoid geometry assembly issues
-        beach_gdf = osm.get_data_by_custom_criteria(
-            custom_filter={"natural": ["beach"]},
-            tags_as_columns=["name", "natural"],
-            keep_nodes=True,   # Beach points
-            keep_ways=False,   # Skip ways/polygons to avoid errors
-            keep_relations=False,
-        )
         
-        if beach_gdf is None or beach_gdf.empty:
-            print("[info] No beach nodes found in OSM")
+        # Load beach NODES (points)
+        try:
+            beach_nodes = osm.get_data_by_custom_criteria(
+                custom_filter={"natural": ["beach"]},
+                tags_as_columns=["name", "natural"],
+                keep_nodes=True,
+                keep_ways=False,
+                keep_relations=False,
+            )
+            if beach_nodes is not None and not beach_nodes.empty:
+                cols = [c for c in ("name", "natural", "id", "geometry") if c in beach_nodes.columns]
+                beach_nodes = beach_nodes[cols].to_crs("EPSG:4326")
+                all_beaches.append(beach_nodes)
+                print(f"[ok] Loaded {len(beach_nodes)} beach nodes from OSM")
+        except Exception as e:
+            print(f"[warn] Failed to load beach nodes: {e}")
+        
+        # Load beach WAYS (polygons) and convert to points
+        try:
+            beach_ways = osm.get_data_by_custom_criteria(
+                custom_filter={"natural": ["beach"]},
+                tags_as_columns=["name", "natural"],
+                keep_nodes=False,
+                keep_ways=True,
+                keep_relations=False,
+            )
+            if beach_ways is not None and not beach_ways.empty:
+                cols = [c for c in ("name", "natural", "id", "geometry") if c in beach_ways.columns]
+                beach_ways = beach_ways[cols].to_crs("EPSG:4326")
+                
+                # Convert polygons to representative points
+                beach_ways['geometry'] = beach_ways['geometry'].apply(
+                    lambda geom: geom.representative_point() if geom is not None else None
+                )
+                # Filter out any null geometries
+                beach_ways = beach_ways[beach_ways['geometry'].notna()]
+                
+                all_beaches.append(beach_ways)
+                print(f"[ok] Loaded {len(beach_ways)} beach ways from OSM (converted to points)")
+        except Exception as e:
+            print(f"[warn] Failed to load beach ways: {e}")
+        
+        # Load beach RELATIONS and convert to points (with error handling)
+        try:
+            beach_relations = osm.get_data_by_custom_criteria(
+                custom_filter={"natural": ["beach"]},
+                tags_as_columns=["name", "natural"],
+                keep_nodes=False,
+                keep_ways=False,
+                keep_relations=True,
+            )
+            if beach_relations is not None and not beach_relations.empty:
+                cols = [c for c in ("name", "natural", "id", "geometry") if c in beach_relations.columns]
+                beach_relations = beach_relations[cols].to_crs("EPSG:4326")
+                
+                # Convert to representative points, skipping invalid geometries
+                def safe_representative_point(geom):
+                    try:
+                        return geom.representative_point() if geom is not None else None
+                    except Exception:
+                        return None
+                
+                beach_relations['geometry'] = beach_relations['geometry'].apply(safe_representative_point)
+                beach_relations = beach_relations[beach_relations['geometry'].notna()]
+                
+                if not beach_relations.empty:
+                    all_beaches.append(beach_relations)
+                    print(f"[ok] Loaded {len(beach_relations)} beach relations from OSM (converted to points)")
+        except Exception as e:
+            # Relations often cause geometry errors with Shapely 2.x, but that's okay
+            print(f"[info] Skipping beach relations due to geometry errors: {e}")
+        
+        # Combine all beach sources
+        if not all_beaches:
+            print("[info] No beaches found in OSM")
             return gpd.GeoDataFrame(columns=['geometry', 'name', 'id'], geometry='geometry', crs="EPSG:4326")
         
-        # Keep only needed columns and ensure WGS84
-        cols = [c for c in ("name", "natural", "id", "geometry") if c in beach_gdf.columns]
-        beach_gdf = beach_gdf[cols].to_crs("EPSG:4326")
-        print(f"[ok] Loaded {len(beach_gdf)} beach points from OSM")
-        return beach_gdf
+        combined = pd.concat(all_beaches, ignore_index=True)
+        combined = gpd.GeoDataFrame(combined, geometry='geometry', crs="EPSG:4326")
+        
+        # Remove duplicates based on geometry (same location)
+        # Round coordinates to 6 decimal places (~0.1m precision) for duplicate detection
+        combined['_lat'] = combined.geometry.y.round(6)
+        combined['_lon'] = combined.geometry.x.round(6)
+        combined = combined.drop_duplicates(subset=['_lat', '_lon'], keep='first')
+        combined = combined.drop(columns=['_lat', '_lon'])
+        
+        print(f"[ok] Loaded {len(combined)} total unique beach locations from OSM")
+        return combined
         
     except Exception as e:
         print(f"[warn] Failed to load OSM beaches: {e}")
@@ -248,7 +325,12 @@ def classify_beaches_with_overture(
             max_distance=max_d,
             distance_col="d"
         )
-        return j["d"].notna()
+        # sjoin_nearest can return duplicate indices; take first occurrence
+        result = j["d"].notna()
+        if result.index.duplicated().any():
+            result = result[~result.index.duplicated(keep='first')]
+        # Ensure we have a value for every input point
+        return result.reindex(pts_gdf.index, fill_value=False)
 
     # Priority flags
     is_ocean = _flag_within(pts, ocean_src, D_OCEAN)

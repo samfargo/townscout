@@ -69,6 +69,7 @@ export type WorkerState = {
   poiModes: Record<string, Mode>;
   mode: Mode;
   climateSelections: string[];
+  avoidPowerLines: boolean;
 };
 
 export type WorkerMessage = {
@@ -139,10 +140,22 @@ function buildClimateFilterExpression(labels: string[]): any | null {
   return ['match', ['get', 'climate_label'], labels, true, false];
 }
 
+function buildAvoidPowerLinesExpression(enabled: boolean): any | null {
+  if (!enabled) return null;
+  return ['==', ['coalesce', ['get', 'near_power_corridor'], false], false];
+}
+
 function calculateExpressions(tempValues?: Record<string, number>) {
   if (!state) return;
 
-  const { pois, sliders, poiModes, mode, climateSelections } = state;
+  const {
+    pois,
+    sliders,
+    poiModes,
+    mode,
+    climateSelections,
+    avoidPowerLines = false
+  } = state;
 
   const expressions: Record<
     Mode,
@@ -155,6 +168,10 @@ function calculateExpressions(tempValues?: Record<string, number>) {
   const perModeBooleanExpressions: Record<Mode, any[]> = {
     drive: [],
     walk: []
+  };
+  const baseExpressions: Record<Mode, any | null> = {
+    drive: null,
+    walk: null
   };
   for (const poi of pois) {
     const currentMode = poiModes[poi.id] || mode;
@@ -188,25 +205,26 @@ function calculateExpressions(tempValues?: Record<string, number>) {
 
   (Object.keys(perModeBooleanExpressions) as Mode[]).forEach((m) => {
     const combined = combineWithAll(...perModeBooleanExpressions[m]);
-    if (!combined) return;
-    expressions[m].active = true;
-    expressions[m].expression = combined;
+    baseExpressions[m] = combined;
+    if (combined) {
+      expressions[m].active = true;
+      expressions[m].expression = combined;
+    }
   });
 
   // Add climate filter
   const climateFilter = buildClimateFilterExpression(climateSelections || []);
-  
-  // Apply climate filter to both modes by wrapping with 'all' if POI expressions exist
+  const avoidFilter = buildAvoidPowerLinesExpression(Boolean(avoidPowerLines));
+
   (Object.keys(expressions) as Mode[]).forEach((m) => {
-    if (climateFilter && expressions[m].expression) {
-      // Both POI and climate filters: combine with 'all'
-      expressions[m].expression = ['all', expressions[m].expression, climateFilter];
-    } else if (climateFilter) {
-      // Only climate filter
-      expressions[m].expression = climateFilter;
+    const combined = combineWithAll(baseExpressions[m], avoidFilter, climateFilter);
+    if (combined) {
+      expressions[m].expression = combined;
       expressions[m].active = true;
+    } else {
+      expressions[m].expression = null;
+      expressions[m].active = false;
     }
-    // If only POI expressions, leave as-is (already set above)
   });
 
   // Only post if expressions changed

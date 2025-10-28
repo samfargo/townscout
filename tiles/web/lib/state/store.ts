@@ -49,6 +49,10 @@ export interface StoreState {
   climateSelections: string[];
   setClimateSelections: (labels: string[]) => void;
 
+  // Power corridor avoidance
+  avoidPowerLines: boolean;
+  setAvoidPowerLines: (value: boolean) => void;
+
   // Travel mode
   mode: Mode;
   setMode: (mode: Mode) => void;
@@ -111,6 +115,13 @@ export const useStore = create<StoreState>((set) => ({
   setClimateSelections: (labels) =>
     set(() => ({
       climateSelections: Array.from(new Set(labels))
+    })),
+
+  // Power corridor avoidance
+  avoidPowerLines: false,
+  setAvoidPowerLines: (value) =>
+    set(() => ({
+      avoidPowerLines: Boolean(value)
     })),
 
   // Travel mode

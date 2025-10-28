@@ -162,6 +162,21 @@ export function clearClimateSelections(): void {
   setClimateSelections([]);
 }
 
+// Power corridor avoidance
+export function setAvoidPowerLines(enabled: boolean): void {
+  const store = useStore.getState();
+  if (store.avoidPowerLines === Boolean(enabled)) {
+    return;
+  }
+  store.setAvoidPowerLines(Boolean(enabled));
+  void applyCurrentFilter();
+}
+
+export function toggleAvoidPowerLines(): void {
+  const store = useStore.getState();
+  setAvoidPowerLines(!store.avoidPowerLines);
+}
+
 // Slider management
 export function updateSlider(id: string, value: number): void {
   const store = useStore.getState();
@@ -246,7 +261,8 @@ export async function applyCurrentFilter(
       sliders: store.sliders,
       poiModes: store.poiModes,
       mode: store.mode,
-      climateSelections: store.climateSelections
+      climateSelections: store.climateSelections,
+      avoidPowerLines: store.avoidPowerLines
     }
   });
 }

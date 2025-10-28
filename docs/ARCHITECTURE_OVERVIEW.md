@@ -72,7 +72,15 @@ The Rust extension in `townscout_native/` exposes:
 - `aggregate_h3_topk_precached` – aggregates node-level results into per-hex top-K tables using precomputed node→H3 mappings.
 - `weakly_connected_components` and CH utilities used during D_anchor builds.
 
-### 3. Hex Tile Assembly
+### 3. Power Corridor Overlay
+
+| Script | Function |
+| --- | --- |
+| `src/03f_compute_power_corridors.py` | Queries high-voltage OSM `power=line` features (via Pyrosm), buffers them by 200 m, dissolves the corridor, intersects with the H3 grid at r7/r8, and writes per-hex `near_power_corridor` flags to `data/power_corridors/<state>_near_power_corridor.parquet`. Buffer distance and minimum voltage thresholds are CLI parameters so product changes do not require code edits. |
+
+The merge step in `src/04_merge_states.py` consumes these parquet files and defaults missing values to `False`, ensuring tiles always expose the boolean expected by the frontend toggle.
+
+### 4. Hex Tile Assembly
 
 | Script | Function |
 | --- | --- |
@@ -81,7 +89,7 @@ The Rust extension in `townscout_native/` exposes:
 
 Generated tiles are tracked in `state_tiles/` (raw parquet) and `tiles/` (NDJSON + PMTiles). The FastAPI service streams these via HTTP range responses.
 
-### 4. Climate Enrichment
+### 5. Climate Enrichment
 
 - `src/climate/prism_normals_fetch.py` downloads PRISM climate normals (temperature/precipitation rasters).
 - `src/climate/prism_to_hex.py` mosaics raster bands, computes zonal stats for each populated H3 hex, derives seasonal metrics, classifies climate typologies (`classify_climate_expr()`), and outputs quantized parquet at `out/climate/hex_climate.parquet`.
@@ -142,14 +150,14 @@ The web client is a Next.js 13+ App Router project that renders a full-height ma
 ### Map Integration
 
 - `lib/map/MapController.ts` instantiates MapLibre, registers the PMTiles protocol, tracks active mode filters, and exposes hover callbacks. The base style defines r7/r8 PMTiles sources with default visibility and 0.4 opacity, ensuring that when no filters are active, all hexes are shaded (showing the full coverage area).
-- `lib/map/map.worker.ts` builds GPU expressions in a Web Worker to combine multiple POI criteria. When multiple filters are active (e.g., airport + Costco), the worker uses **intersection logic** (MapLibre `'all'` expressions) so only hexes meeting ALL criteria are shown. This ensures that adding more criteria progressively narrows the livable area, as intended. Climate filters are combined with POI filters using AND logic when both are present.
+- `lib/map/map.worker.ts` builds GPU expressions in a Web Worker to combine multiple POI criteria. When multiple filters are active (e.g., airport + Costco), the worker uses **intersection logic** (MapLibre `'all'` expressions) so only hexes meeting ALL criteria are shown. This ensures that adding more criteria progressively narrows the livable area, as intended. Optional overlays (climate selections and the “Avoid power lines” toggle) are AND-ed into those expressions by inspecting tile properties such as `climate_label` and `near_power_corridor`.
 - The MapController maintains a singleton worker instance and applies expression updates via RAF-coalesced batches to minimize render thrashing during slider interactions.
 
 ### Sidebar & UI Components
 
-- `app/(sidebar)/SearchBox.tsx` fetches catalog data and Google Places suggestions (using TanStack Query), dispatches add actions, and exposes the climate typology dropdown.
+- `app/(sidebar)/SearchBox.tsx` fetches catalog data and Google Places suggestions (using TanStack Query), dispatches add actions, and exposes the climate typology dropdown plus the “Avoid power lines” toggle.
 - `app/(sidebar)/FiltersPanel.tsx` renders sliders per active POI, debouncing updates before invoking `updateSlider`.
-- `app/(sidebar)/HoverBox.tsx` summarizes hover details: travel times computed client-side using the same anchor combination logic and decoded climate stats.
+- `app/(sidebar)/HoverBox.tsx` summarizes hover details: travel times computed client-side using the same anchor combination logic, decoded climate stats, and a callout when the hovered hex lies within a buffered power corridor.
 - Shared UI primitives live in `components/ui/` (Tailwind + Radix-inspired shorthands).
 
 Supporting services:
@@ -199,8 +207,8 @@ Cargo builds drop artefacts into `townscout_native/target/`; ensure the library 
 
 1. **Bootstrap data**: run `src/01_download_extracts.py` → `src/02_normalize_pois.py`.
 2. **Build anchors & travel times**: `src/03_build_anchor_sites.py`, `src/03_compute_minutes_per_state.py`, and the D_anchor scripts for categories/brands.
-3. **Generate tiles**: `src/05_h3_to_geojson.py` + `src/06_build_tiles.py` (or follow Makefile recipes if present).
-4. **Process climate overlays**: execute the climate scripts to refresh `out/climate/hex_climate.parquet`.
+3. **Refresh overlays**: `make power_corridors` (or invoke `src/03f_compute_power_corridors.py` directly) and `make climate` to update `data/power_corridors/*.parquet` plus `out/climate/hex_climate.parquet`.
+4. **Generate tiles**: `src/05_h3_to_geojson.py` + `src/06_build_tiles.py` (or follow Makefile recipes if present).
 5. **Serve backend**: `uvicorn api.main:app --reload` (expects data directories populated).
 6. **Run frontend**: `cd tiles/web && npm install && npm run dev`. Set `NEXT_PUBLIC_TOWNSCOUT_API_BASE_URL` if the API runs on a non-default host/port.
 
@@ -212,7 +220,7 @@ Subsequent development typically touches a single layer (e.g., adjusting taxonom
 
 - **Adding new POI categories/brands**: extend `src/taxonomy.py` or the override files in `data/`, regenerate canonical POIs, rebuild anchors, rerun D_anchor scripts, and refresh the catalog API.
 - **Supporting additional states/modes**: update `config.py` (`STATES`, snap radii, H3 resolutions), ensure download scripts clip the desired region, and regenerate all pipeline outputs. Anchors will inherit stable IDs as long as the same `site_id` hashing strategy is used.
-- **New overlays (e.g., crime, schools)**: model after the climate flow—write a script that enriches H3 hexes and merge outputs before tile generation. Expose metadata via API or tiles so the frontend can surface it.
+- **New overlays (e.g., crime, schools)**: model after the climate and power-corridor flows—write a script that enriches H3 hexes, emit parquet keyed by `h3_id`/`res`, and merge outputs before tile generation so the frontend can consume the new attributes.
 - **Frontend experiments**: reuse `lib/actions` to keep map expressions consistent. Any new filter that depends on D_anchor data should populate the cache structure (`dAnchorCache`) and invoke `applyCurrentFilter`.
 
 Use this document as a map when onboarding new contributors or when tracing a data flow end-to-end; it highlights which modules own each responsibility and how artefacts move between layers.

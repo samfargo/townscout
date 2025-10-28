@@ -198,6 +198,38 @@ def main():
     else:
         print("[warn] climate parquet missing; skipping weather merge")
 
+    power_corridor_paths = glob.glob("data/power_corridors/*_near_power_corridor.parquet")
+    if power_corridor_paths:
+        print(f"[info] Attaching power corridor flags ({len(power_corridor_paths)} files)")
+        corridor_frames = []
+        for path in power_corridor_paths:
+            try:
+                df = pd.read_parquet(path)
+            except Exception as exc:
+                print(f"[warn] Failed to read {path}: {exc}")
+                continue
+            missing = {"h3_id", "res", "near_power_corridor"} - set(df.columns)
+            if missing:
+                print(f"[warn] Skipping {path}; missing columns: {missing}")
+                continue
+            corridor_frames.append(df[["h3_id", "res", "near_power_corridor"]])
+
+        if corridor_frames:
+            corridor = pd.concat(corridor_frames, ignore_index=True)
+            corridor["h3_id"] = corridor["h3_id"].astype("uint64", copy=False)
+            corridor["res"] = corridor["res"].astype("int32", copy=False)
+            corridor["near_power_corridor"] = corridor["near_power_corridor"].astype(bool, copy=False)
+            corridor = corridor.drop_duplicates(subset=["h3_id", "res"], keep="last")
+
+            final_wide = final_wide.merge(corridor, on=["h3_id", "res"], how="left")
+            final_wide["near_power_corridor"] = final_wide["near_power_corridor"].fillna(False).astype(bool, copy=False)
+        else:
+            print("[warn] No valid power corridor parquet found; defaulting to False.")
+            final_wide["near_power_corridor"] = False
+    else:
+        print("[warn] Power corridor parquet missing; defaulting to False.")
+        final_wide["near_power_corridor"] = False
+
     # 3. Split by resolution and save
     os.makedirs("state_tiles", exist_ok=True)
     

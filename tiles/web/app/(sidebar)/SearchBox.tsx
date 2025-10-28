@@ -18,6 +18,7 @@ import {
   removePOI,
   normalizeMinutes,
   setClimateSelections,
+  setAvoidPowerLines,
   toggleClimateSelection
 } from '@/lib/actions';
 import { CLIMATE_TYPOLOGY } from '@/lib/data/climate';
@@ -41,6 +42,7 @@ export default function SearchBox() {
   const catalog = useStore((state) => state.catalog);
   const pois = useStore((state) => state.pois);
   const climateSelections = useStore((state) => state.climateSelections);
+  const avoidPowerLines = useStore((state) => state.avoidPowerLines);
 
   const [placeInput, setPlaceInput] = React.useState('');
   const [placesQuery, setPlacesQuery] = React.useState('');
@@ -471,6 +473,24 @@ export default function SearchBox() {
               </Button>
             </div>
           </DropdownSection>
+          <div className="rounded-2xl border border-stone-300 bg-[#f2ebd9] px-4 py-3 shadow-inner">
+            <label className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                className="mt-1 h-4 w-4 accent-amber-700"
+                checked={avoidPowerLines}
+                onChange={(event) => setAvoidPowerLines(event.target.checked)}
+              />
+              <div className="space-y-1">
+                <span className="text-sm font-semibold text-stone-900">
+                  Avoid power lines (high-voltage transmission corridors)
+                </span>
+                <p className="text-xs leading-snug text-stone-600">
+                  Hide hexes within 200m of major overhead transmission lines.
+                </p>
+              </div>
+            </label>
+          </div>
         </div>
         <Separator className="bg-stone-300/80" />
         <div className="space-y-3">
