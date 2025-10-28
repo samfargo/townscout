@@ -1,6 +1,5 @@
-# src/osm_beaches.py
 """
-Beach POI generation using Overture water data for spatial classification.
+Beach classification using Overture water data for spatial classification.
 
 Strategy (as per issues.md):
 - Use Overture water polygons for lakes/shorelines (clean, global coverage)
@@ -12,34 +11,27 @@ This avoids OSM coastline/water geometry issues that cause Shapely 2.x errors.
 """
 import os
 import uuid
+import hashlib
+import sys
+from pathlib import Path
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
 from shapely.ops import unary_union
 from pyrosm import OSM
 
+# Add src to path to import geometry_utils
+src_path = Path(__file__).parent.parent.parent.parent / "src"
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+
 from geometry_utils import clean_geoms
-import hashlib
-
-
-def _dissolve_buffer(gdf, types, meters, geom_types=("Polygon", "MultiPolygon", "LineString", "MultiLineString")):
-    """Efficiently dissolve geometries before buffering to reduce memory usage."""
-    if gdf.empty:
-        return None
-    
-    gm = gdf.to_crs(3857)
-    clean = clean_geoms(gm, list(geom_types))
-    if len(clean) == 0:
-        return None
-    
-    try:
-        # Dissolve before buffer for efficiency
-        from shapely import union_all
-        union = union_all(clean.geometry.values) if hasattr(__import__("shapely"), "union_all") else unary_union(clean.geometry.values)
-        return union.buffer(meters)
-    except Exception as e:
-        print(f"[warn] Failed to dissolve and buffer {types}: {e}")
-        return None
+from townscout.poi.schema import create_empty_poi_dataframe
+from .schema import (
+    BEACH_CLASS, BEACH_TYPES,
+    DISTANCE_OCEAN_M, DISTANCE_LAKE_M, DISTANCE_RIVER_M,
+    OCEAN_SUBTYPES, LAKE_SUBTYPES, RIVER_SUBTYPES
+)
 
 
 def _stable_uuid(namespace: str, src_id, pt: Point) -> str:
@@ -147,9 +139,9 @@ def load_overture_water(state: str) -> dict:
             gdf["subtype"] = gdf["subtype"].astype("string").str.lower()
         
         # Classify by subtype (exclude streams to reduce false river hits)
-        ocean = gdf[gdf['subtype'].isin(['ocean', 'sea'])].copy() if 'subtype' in gdf.columns else gpd.GeoDataFrame()
-        lake = gdf[gdf['subtype'].isin(['lake', 'reservoir', 'pond', 'lagoon'])].copy() if 'subtype' in gdf.columns else gpd.GeoDataFrame()
-        river = gdf[gdf['subtype'].isin(['river', 'canal'])].copy() if 'subtype' in gdf.columns else gpd.GeoDataFrame()
+        ocean = gdf[gdf['subtype'].isin(OCEAN_SUBTYPES)].copy() if 'subtype' in gdf.columns else gpd.GeoDataFrame()
+        lake = gdf[gdf['subtype'].isin(LAKE_SUBTYPES)].copy() if 'subtype' in gdf.columns else gpd.GeoDataFrame()
+        river = gdf[gdf['subtype'].isin(RIVER_SUBTYPES)].copy() if 'subtype' in gdf.columns else gpd.GeoDataFrame()
         
         print(f"[ok] Loaded Overture water: ocean={len(ocean)}, lake={len(lake)}, river={len(river)}")
         return {"ocean": ocean, "lake": lake, "river": river}
@@ -289,9 +281,6 @@ def classify_beaches_with_overture(
     P = 3857
     pts = beach_gdf.to_crs(P).copy()
 
-    # Dist thresholds
-    D_OCEAN, D_LAKE, D_RIVER = 500, 300, 200
-
     def _prep_polys(gdf):
         if gdf is None or gdf.empty:
             return gpd.GeoDataFrame(geometry=[], crs=beach_gdf.crs).to_crs(P)
@@ -333,18 +322,18 @@ def classify_beaches_with_overture(
         return result.reindex(pts_gdf.index, fill_value=False)
 
     # Priority flags
-    is_ocean = _flag_within(pts, ocean_src, D_OCEAN)
+    is_ocean = _flag_within(pts, ocean_src, DISTANCE_OCEAN_M)
     # Mask out already-labeled points before the next joins to save time
     remaining = pts[~is_ocean]
     is_lake = pd.Series(False, index=pts.index)
     if not remaining.empty:
-        lake_mask = _flag_within(remaining, lake_src, D_LAKE)
+        lake_mask = _flag_within(remaining, lake_src, DISTANCE_LAKE_M)
         is_lake.loc[remaining.index] = lake_mask
 
     remaining = pts[~is_ocean & ~is_lake]
     is_river = pd.Series(False, index=pts.index)
     if not remaining.empty:
-        river_mask = _flag_within(remaining, river_src, D_RIVER)
+        river_mask = _flag_within(remaining, river_src, DISTANCE_RIVER_M)
         is_river.loc[remaining.index] = river_mask
 
     labels = pd.Series("other", index=pts.index, dtype="string")
@@ -371,12 +360,7 @@ def build_beach_pois_for_state(state: str) -> gpd.GeoDataFrame:
     
     if beach_points.empty:
         print("[info] No beaches found for classification")
-        return gpd.GeoDataFrame(
-            columns=["poi_id", "name", "brand_id", "brand_name", "class", "category", 
-                     "subcat", "trauma_level", "lon", "lat", "geometry", "source", "ext_id", "provenance"],
-            geometry="geometry", 
-            crs="EPSG:4326"
-        )
+        return create_empty_poi_dataframe()
     
     # Classify beaches by water type
     classified = classify_beaches_with_overture(beach_points, overture_water)
@@ -394,14 +378,14 @@ def build_beach_pois_for_state(state: str) -> gpd.GeoDataFrame:
             poi_id = _stable_uuid("osm_beach", source_id, pt)
             
             # Create category like beach_ocean, beach_lake, etc.
-            category = f"beach_{beach_type}"
+            category = BEACH_TYPES.get(beach_type, BEACH_TYPES["other"])
             
             rows.append({
                 "poi_id": poi_id,
                 "name": name,
                 "brand_id": None,
                 "brand_name": None,
-                "class": "natural",
+                "class": BEACH_CLASS,
                 "category": category,
                 "subcat": beach_type,
                 "trauma_level": None,
@@ -417,12 +401,7 @@ def build_beach_pois_for_state(state: str) -> gpd.GeoDataFrame:
             continue
     
     if not rows:
-        return gpd.GeoDataFrame(
-            columns=["poi_id", "name", "brand_id", "brand_name", "class", "category", 
-                     "subcat", "trauma_level", "lon", "lat", "geometry", "source", "ext_id", "provenance"],
-            geometry="geometry", 
-            crs="EPSG:4326"
-        )
+        return create_empty_poi_dataframe()
     
     result = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
     
@@ -437,3 +416,4 @@ def build_beach_pois_for_state(state: str) -> gpd.GeoDataFrame:
     print(f"[ok] Built {len(result)} beach POIs: {type_summary}")
     
     return result
+

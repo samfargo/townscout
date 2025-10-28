@@ -7,6 +7,9 @@ THREADS?=8
 CUTOFF?=30
 OVERFLOW?=60
 K_BEST?=20
+# Increase K_BEST for better routing approximation in sparse networks
+# Urban: 20, Suburban: 35, Rural: 50+ recommended
+# Higher values improve coverage but increase tile size and compute cost
 
 # Fingerprint directories to track when downstream data must be recomputed
 DANCHOR_BRAND_FINGERPRINT_DIR := build/d_anchor_brand_hash
@@ -94,11 +97,11 @@ data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_
 
 POWER_CORRIDOR_FILES := $(patsubst %,data/power_corridors/%_near_power_corridor.parquet,$(STATES))
 
-power_corridors: $(POWER_CORRIDOR_FILES) ## 3.8 Build high-voltage corridor avoidance flags per hex
+power_corridors: $(POWER_CORRIDOR_FILES) ## Build high-voltage corridor avoidance flags per hex
 
-data/power_corridors/%_near_power_corridor.parquet: data/osm/%.osm.pbf src/03f_compute_power_corridors.py src/config.py
+data/power_corridors/%_near_power_corridor.parquet: data/osm/%.osm.pbf src/config.py
 	@mkdir -p $(dir $@)
-	$(PY) src/03f_compute_power_corridors.py \
+	$(PY) src/power_corridors/osm_to_hex.py \
 		--state $* \
 		--pbf data/osm/$*.osm.pbf \
 		--out $@

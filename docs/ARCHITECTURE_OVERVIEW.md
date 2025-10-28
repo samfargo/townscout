@@ -41,9 +41,38 @@ Supporting modules:
 - `src/taxonomy.py` defines the canonical class → category → subcategory hierarchy, brand registry, and source tag mappings. Optional CSV/YAML files in `data/` override defaults. The taxonomy includes special handling for:
   - **Places of Worship**: OSM `amenity=place_of_worship` POIs are classified by their `religion` tag into separate categories: `place_of_worship_church` (Christian), `place_of_worship_synagogue` (Jewish), `place_of_worship_temple` (Hindu/Buddhist/Jain/Sikh), and `place_of_worship_mosque` (Muslim). This allows users to filter by specific worship types while OSM only provides the generic `place_of_worship` amenity tag.
   - **Libraries**: Mapped from OSM `amenity=library` and Overture `library` category.
-- `src/osm_beaches.py` provides specialized beach classification that identifies ocean vs. lake beaches using spatial analysis. Beaches are classified into separate categories (`beach_ocean`, `beach_lake`, `beach_river`, `beach_other`) based on proximity to coastlines (150m) and inland water bodies (100m for lakes, 80m for rivers). This enables distinct frontend filter options for "Any Beach (Ocean)" and "Any Beach (Lake)".
 - `src/geometry_utils.py` provides geometry hygiene utilities to prevent Shapely 2.x `create_collection` errors when building GeometryCollection or Multi* objects from mixed/invalid geometries. The `clean_geoms()` function filters out null, empty, and non-geometry objects before unary_union operations.
 - `src/util_osm.py` wraps Geofabrik downloads used by step 01.
+
+**New Module Structure (Oct 2024 Refactoring):**
+
+The POI processing logic has been reorganized into a clean modular architecture under `townscout/`:
+
+- **`townscout/poi/`** - Shared POI ingestion, normalization, and conflation
+  - `schema.py` - Canonical POI schema definition and validators
+  - `ingest_osm.py` - OSM data loading via Pyrosm with taxonomy-driven filtering
+  - `ingest_overture.py` - Overture data loading from parquet with WKB geometry conversion
+  - `normalize.py` - Source-specific normalization to canonical schema (brand resolution, category mapping)
+  - `conflate.py` - Multi-source deduplication using H3-based spatial heuristics
+  - `snap.py` - Connectivity-aware snapping (placeholder for future enhancements)
+
+- **`townscout/domains_poi/`** - Domain-specific POI handlers with custom processing
+  - `airports/` - Curated CSV loading from `Future/airports_coordinates.csv`, arterial road snapping logic
+  - `beaches/` - Beach classification using Overture water spatial analysis (ocean/lake/river/other)
+  - `trauma/` - ACS Level 1 trauma center ingestion via HTTP API with state-level filtering
+
+- **`townscout/domains_overlay/`** - Per-hex overlay computation (not route-to-able)
+  - `power_corridors/` - High-voltage transmission line proximity flags from OSM power=line
+  - `climate/` - PRISM normals quantization, seasonal aggregation, climate typology classification
+
+Overlay processing scripts are organized in dedicated subdirectories under `src/`:
+- **`src/climate/`** - Climate data ingestion and processing
+  - `prism_normals_fetch.py` - Downloads PRISM climate normals
+  - `prism_to_hex.py` - Processes rasters to per-hex climate metrics
+- **`src/power_corridors/`** - Power corridor data processing
+  - `osm_to_hex.py` - Computes per-hex power corridor proximity flags
+
+The existing pipeline scripts (`src/02_normalize_pois.py`, `src/climate/prism_to_hex.py`, `src/power_corridors/osm_to_hex.py`) now act as thin CLI wrappers that import from the townscout modules, maintaining backward compatibility while providing a clean separation of concerns. This modular design makes it straightforward to add new POI types or overlays without modifying core pipeline logic.
 
 ### 2. Anchor Generation & Graph Preparation
 
@@ -72,11 +101,11 @@ The Rust extension in `townscout_native/` exposes:
 - `aggregate_h3_topk_precached` – aggregates node-level results into per-hex top-K tables using precomputed node→H3 mappings.
 - `weakly_connected_components` and CH utilities used during D_anchor builds.
 
-### 3. Power Corridor Overlay
+### 3. Overlay Data Processing
 
 | Script | Function |
 | --- | --- |
-| `src/03f_compute_power_corridors.py` | Queries high-voltage OSM `power=line` features (via Pyrosm), buffers them by 200 m, dissolves the corridor, intersects with the H3 grid at r7/r8, and writes per-hex `near_power_corridor` flags to `data/power_corridors/<state>_near_power_corridor.parquet`. Buffer distance and minimum voltage thresholds are CLI parameters so product changes do not require code edits. |
+| `src/power_corridors/osm_to_hex.py` | Queries high-voltage OSM `power=line` features (via Pyrosm), buffers them by 200 m, dissolves the corridor, intersects with the H3 grid at r7/r8, and writes per-hex `near_power_corridor` flags to `data/power_corridors/<state>_near_power_corridor.parquet`. Buffer distance and minimum voltage thresholds are CLI parameters so product changes do not require code edits. |
 
 The merge step in `src/04_merge_states.py` consumes these parquet files and defaults missing values to `False`, ensuring tiles always expose the boolean expected by the frontend toggle.
 
@@ -89,13 +118,17 @@ The merge step in `src/04_merge_states.py` consumes these parquet files and defa
 
 Generated tiles are tracked in `state_tiles/` (raw parquet) and `tiles/` (NDJSON + PMTiles). The FastAPI service streams these via HTTP range responses.
 
-### 5. Climate Enrichment
+### 5. Overlay Enrichment (Climate & Power Corridors)
+
+Climate and power corridor overlays are processed as auxiliary data enrichment:
 
 - `src/climate/prism_normals_fetch.py` downloads PRISM climate normals (temperature/precipitation rasters).
-- `src/climate/prism_to_hex.py` mosaics raster bands, computes zonal stats for each populated H3 hex, derives seasonal metrics, classifies climate typologies (`classify_climate_expr()`), and outputs quantized parquet at `out/climate/hex_climate.parquet`.
+- `src/climate/prism_to_hex.py` - CLI wrapper for `townscout.domains_overlay.climate`. Mosaics raster bands, computes zonal stats for each populated H3 hex, derives seasonal metrics, classifies climate typologies (via `classify_climate_expr()`), and outputs quantized parquet at `out/climate/hex_climate.parquet`.
+- `src/power_corridors/osm_to_hex.py` - CLI wrapper for `townscout.domains_overlay.power_corridors`. Processes OSM power infrastructure data to generate per-hex proximity flags.
 - Tests in `tests/test_climate_parquet.py` enforce dtype expectations on quantized columns.
+- Validation functions in `townscout.domains_overlay.climate.climate_validation` check for reasonable temperature/precipitation ranges and seasonal patterns.
 
-Climate outputs are later joined to T_hex tiles so the map can expose climate metadata alongside travel times.
+These overlay outputs are later joined to T_hex tiles so the map can expose climate and power corridor metadata alongside travel times.
 
 ---
 
@@ -207,7 +240,7 @@ Cargo builds drop artefacts into `townscout_native/target/`; ensure the library 
 
 1. **Bootstrap data**: run `src/01_download_extracts.py` → `src/02_normalize_pois.py`.
 2. **Build anchors & travel times**: `src/03_build_anchor_sites.py`, `src/03_compute_minutes_per_state.py`, and the D_anchor scripts for categories/brands.
-3. **Refresh overlays**: `make power_corridors` (or invoke `src/03f_compute_power_corridors.py` directly) and `make climate` to update `data/power_corridors/*.parquet` plus `out/climate/hex_climate.parquet`.
+3. **Refresh overlays**: `make climate` and `make power_corridors` (or invoke `src/climate/prism_to_hex.py` and `src/power_corridors/osm_to_hex.py` directly) to update `out/climate/hex_climate.parquet` and `data/power_corridors/*.parquet`.
 4. **Generate tiles**: `src/05_h3_to_geojson.py` + `src/06_build_tiles.py` (or follow Makefile recipes if present).
 5. **Serve backend**: `uvicorn api.main:app --reload` (expects data directories populated).
 6. **Run frontend**: `cd tiles/web && npm install && npm run dev`. Set `NEXT_PUBLIC_TOWNSCOUT_API_BASE_URL` if the API runs on a non-default host/port.
@@ -224,3 +257,386 @@ Subsequent development typically touches a single layer (e.g., adjusting taxonom
 - **Frontend experiments**: reuse `lib/actions` to keep map expressions consistent. Any new filter that depends on D_anchor data should populate the cache structure (`dAnchorCache`) and invoke `applyCurrentFilter`.
 
 Use this document as a map when onboarding new contributors or when tracing a data flow end-to-end; it highlights which modules own each responsibility and how artefacts move between layers.
+
+---
+
+## Implementation Status & Technical Details
+
+### Current Implementation Status
+
+- T_hex compute is implemented in `src/03_compute_minutes_per_state.py` with a Rust native kernel.
+- The compute emits a long format per-hex table: `(h3_id, anchor_int_id, time_s, res)` and tiles store top‑K per hex as `a{i}_id` + `a{i}_s`.
+- The frontend exclusively uses anchor‑mode: it composes `a{i}_s` from tiles with API‑served D\_anchor per category and per brand, enabling thousands of POIs as filter options without tile changes.
+- Category D\_anchor: Hive‑partitioned parquet at `data/d_anchor_category/mode={0|2}/category_id=*/part-*.parquet` loaded by the API.
+- Brand D\_anchor: Hive‑partitioned parquet at `data/d_anchor_brand/mode={0|2}/brand_id=*/part-*.parquet` produced by `src/03d_compute_d_anchor.py` and loaded by the API.
+- Hex summaries include climate quantiles and a `near_power_corridor` boolean generated by `src/power_corridors/osm_to_hex.py`, powering the "Avoid power lines" toggle in the frontend.
+
+### Core Model: Matrix Factorization
+
+```
+Total Travel Time = T_hex[hex→anchor] + D_anchor[anchor→category]
+```
+
+* **T\_hex**: For each H3 hex, store travel time to its top‑K nearest anchors.
+* **D\_anchor**: For each anchor, store travel time to the *nearest* POI in each category/brand.
+* **Frontend**: Calculates the min over K anchors per criterion entirely on the GPU.
+
+Sentinel: `65535` (uint16) means unreachable / ≥ cutoff.
+
+### Sources & Baselines (Massachusetts examples)
+
+* OSM broad POIs ≈ 76,688 (many are low‑value street furniture).
+* Overture Places (MA clip) ≈ 461,249 with strong brand normalization.
+* Conclusion: **Hybrid** ≫ either alone. Overture for brands; OSM for civic/natural/tag richness. Airports are sourced from a curated CSV (`Future/airports_coordinates.csv`) and OSM/Overture airports are ignored to keep a consistent set.
+
+### Anchors & Sites
+
+**Anchor Sites (definition).** A site is a *road‑node–centric* aggregation of nearby POIs for a mode (drive/walk). Multiple POIs (across sources) can share one site.
+
+**Why sites?**
+
+* One precompute per site instead of per POI ⇒ 2–5× routing reduction in dense areas.
+* Stable IDs tied to the road graph, not noisy POI centroids.
+
+**Generation.**
+
+1. Build routable graph from OSM.
+2. Snap POIs to nearest graph node by mode (uses **connectivity-aware snapping** as of Oct 2024: considers k=10 candidates and prefers nodes with ≥2 edges to avoid isolated service roads).
+3. Group by `(mode, node_id)` ⇒ `site_id`.
+4. Store aggregated brand/category membership.
+
+**Counts.** 26,019 drive‑mode anchors for Massachusetts (1:1 hex coverage; see [ANCHORS.md](ANCHORS.md) for scaling analysis).
+
+**Quality fix (Oct 2025).** Previous naive nearest-neighbor snapping caused Logan Airport to reach only 20K nodes (vs. Worcester's 289K). Connectivity-aware snapping now selects better-connected nodes within 2× the nearest distance, improving ~38% of POI anchors statewide.
+
+### Data Contracts (Hard Requirements)
+
+**T\_hex tiles (contract):**
+
+* Anchor arrays per hex: `a{i}_id` (int32, anchor_int_id) and `a{i}_s` (uint16 seconds).
+* Polygon geometry = H3 cell boundary.
+* Layer names = `t_hex_r7_*`, `t_hex_r8_*`.
+* Additional attributes may include boolean overlays; currently `near_power_corridor` (true when a hex is within 200 m of a high-voltage transmission corridor) is required for the livability toggle.
+
+**D\_anchor API must return:**
+
+* JSON `{anchor_id: seconds}` with `65535` sentinel for unreachable.
+* Anchor IDs that appear in T\_hex tiles.
+* Mode partitioning if multiple modes are supported.
+
+**Frontend assumptions:**
+
+* Uses anchor fields in tiles (`a{i}_id`, `a{i}_s`) and composes with API D_anchor (categories and brands) on the GPU.
+* Applies optional overlays (climate selections, "Avoid power lines") by combining tile properties such as `climate_label` and `near_power_corridor` inside GPU expressions.
+* Mode: `drive` (walk supported if walk tiles + D_anchor provided). The system gracefully handles missing walk mode data by returning empty results, allowing drive mode to function normally.
+* Units: minutes in the UI.
+
+### Canonical Schemas
+
+**POI**
+
+* `poi_id: str` (uuid5 over `source|ext_id|rounded lon/lat`)
+* `name: str`
+* `brand_id: str|null` (canonical)
+* `brand_name: str|null`
+* `class: str` (venue|civic|transport|natural|…)
+* `category: str` (supermarket|hospital|…)
+* `subcat: str` (ER|preschool|mexican fast food|…)
+* `lon, lat: float32`
+* `geom_type: uint8` (0=point,1=centroid,2=entrance)
+* `area_m2: float32`
+* `source: str` (overture|osm|fdic|cms|csv\:chipotle|user)
+* `ext_id: str|null`
+* `h3_r9: str`
+* `node_drive_id, node_walk_id: int64|null`
+* `dist_drive_m, dist_walk_m: float32`
+* `anchorable: bool` | `exportable: bool`
+* `license, source_updated_at, ingested_at: str`
+* `provenance: list[str]`
+
+**Anchor Site**
+
+* `site_id: str` (uuid5 of `mode|node_id`)
+* `mode: str` (drive|walk)
+* `node_id: int64`
+* `lon, lat: float32`
+* `poi_ids: list[str]`
+* `brands: list[str]`
+* `categories: list[str]`
+* `brand_tiers: list[int]`
+* `weight_hint: int`
+
+**t\_hex (Travel)**
+
+* `h3_id: uint64`
+* `anchor_int_id: int32`
+* `time_s: uint16` (`65535` sentinel)
+
+**Summaries**
+
+* `min_cat(hex_r9, category, min_time_drive_s, min_time_walk_s)`
+* `min_brand(hex_r9, brand_id, min_time_drive_s, min_time_walk_s)`
+* `near_power_corridor: bool` (per hex, copied to both r7/r8 exports; defaults to `False` when corridor data is missing)
+
+### Pipeline (Deterministic Stages)
+
+1. **Ingest**
+
+* Overture → `data/overture/<state>_places.parquet` (via DuckDB clip).
+* OSM → `data/osm/<state>.osm.pbf` (Pyrosm/OGR).
+* Optional CSVs.
+
+2. **Normalize**
+
+* Lowercase/strip names.
+* Brand resolution: `brand.names.primary > names.primary > alias registry`.
+* Category mapping: Overture `categories.primary/alternate` + OSM `amenity/shop/cuisine` → **TownScout taxonomy**.
+* **Brand fallback logic**: POIs with missing `brand` field fall back to `name` field for brand matching.
+
+3. **Conflate & Deduplicate**
+
+* H3 r9 proximity: walk 0.25 mi, drive 1 mi (tunable, density‑aware).
+* Merge same brand+category; tie‑break: Overture wins chains; OSM wins civic/natural & polygons; record `provenance`.
+
+4. **Build Anchor Sites**
+
+* Snap to nearest road node by mode; group by `(mode,node_id)`.
+* Aggregate `poi_ids`, `brands`, `categories`.
+
+5. **Travel Precompute (K-best)**
+
+* Multi‑source Dijkstra from sites using K-best algorithm.
+* Store global top‑K per hex (recommended K=20+ for dense urban areas).
+* Parameters: `--cutoff 90 --k-best 20` for comprehensive coverage.
+
+6. **Overlay Data (Climate & Power Corridors)**
+
+* Run `src/climate/prism_to_hex.py` to generate climate metrics from PRISM rasters.
+* Run `src/power_corridors/osm_to_hex.py` to buffer high-voltage OSM `power=line` features, dissolve the corridor, and intersect with the H3 grid.
+* Writes `data/power_corridors/<state>_near_power_corridor.parquet` with `near_power_corridor` flags at r7/r8 resolutions (defaults to `False` when no qualifying lines exist).
+* Buffer distance defaults to 200 m; adjust with `--buffer-meters` if product requirements change.
+
+7. **Summaries & Merge**
+
+* Precompute `min_cat` & `min_brand` for exposed categories & A‑list brands.
+* Long‑tail brands resolved via joins at query time.
+* Merge overlay datasets (climate, `near_power_corridor`) so downstream tiles expose the necessary attributes.
+
+8. **Tiles**
+
+* Convert merged data → NDJSON → PMTiles (r7/r8 layers, exact layer names).
+
+### Query UX (Deterministic Rules)
+
+* **Category filter:** Compute on GPU from D\_anchor category chunks.
+* **Brand (A‑list):** Compute on GPU from D\_anchor brand chunks (no per‑brand tile columns).
+* **Fallback:** Optional local Dijkstra for rare gaps.
+
+UI rules:
+
+* Choosing a brand auto‑locks its parent category.
+* If no coverage, suggest category fallback.
+* Clicking a hex shows nearest POI from the underlying site with provenance.
+
+### Performance Targets (Enforced)
+
+* Initial load (tiles + D\_anchor cache): **< 2s**.
+* Slider response: **< 250ms**.
+* Render on zoom/pan: **< 100ms**.
+* Browser heap (MA full): **< 200MB**.
+* PMTiles size (2 categories, nationwide): **< 400MB**.
+
+### Known Limitations
+
+* Free‑flow speeds only; no live traffic.
+* No mode mixing (e.g., walk→transit→drive).
+* POI freshness requires periodic pipeline runs.
+* uint16 cap (≈18h) on times; rounding to seconds.
+* **Triangle inequality violations**: The core approximation `hex→anchor + anchor→POI ≈ hex→POI` can be significantly wrong when optimal paths don't share common routing nodes. This is especially problematic in:
+  - Suburban/rural networks with limited connectivity options
+  - Areas where anchors are accessible via slow local roads but POIs are reachable via fast highways
+  - Scenarios where the closest anchor by distance is not on the optimal routing path
+* **No error bounding**: Current system provides no quantification of approximation error magnitude or confidence intervals.
+* **Silent approximation failures**: Users receive travel time estimates without indication of uncertainty or potential error ranges.
+
+### Implementation Tasks (LLM‑friendly, with I/O and checks)
+
+**A. Taxonomy & Brand Registry**
+
+* **Input:** Overture categories + OSM tags; seed CSV of brand aliases.
+* **Output:** `data/taxonomy/categories.yml`, `data/brands/registry.csv` (columns: `brand_id,canonical,aliases|;‑sep,wikidata?`).
+* **Checks:** Aliases must be unique; map every exposed UI category to ≥1 source tag.
+
+**B. Ingest + Normalize**
+
+* **Input:** Overture parquet, OSM PBF, CSVs.
+* **Output:** `data/poi/normalized.parquet` (schema above).
+* **Checks:** ≥95% of A‑list brands receive `brand_id`; drop obviously wrong geoms (>200km off state bbox).
+
+**C. Conflation**
+
+* **Input:** `normalized.parquet`.
+* **Output:** `data/poi/conflated.parquet` with `provenance` list.
+* **Checks:** For chains (Dunkin, Starbucks, etc.) Overture dominates when both present; polygons preserved.
+
+**D. Anchor Sites**
+
+* **Input:** Conflated POIs; OSM graph.
+* **Output:** `data/anchors/sites_{mode}.parquet`.
+* **Checks:** No site with 0 POIs; record `brands/categories` arrays; `site_id` stable.
+
+**E. T\_hex**
+
+* **Input:** Sites; OSM graph.
+* **Output:** `out/t_hex/{state}_{mode}.parquet` with `k` and `a{i}_*` fields.
+* **Checks:** Each hex has `k≤K_ANCHORS`; flags only in {0, bitfield}; no orphan anchor IDs.
+
+**F. D\_anchor**
+
+* **Input:** Sites; POIs by category/brand.
+* **Output:** Hive‑partitioned parquet per `(mode, category_id|brand_id)`.
+* **Checks:** Every anchor present in T\_hex appears in D\_anchor (or sentinel 65535).
+
+**G. Tiles**
+
+* **Input:** T\_hex summary parquet from merge/summarize step.
+* **Output:** `tiles/t_hex_r7_{mode}.pmtiles`, `tiles/t_hex_r8_{mode}.pmtiles`.
+* **Checks:** Layer names match frontend configs; H3 boundaries valid; NDJSON line count == hex count.
+
+**H. Frontend Wiring**
+
+* **Input:** PMTiles, D\_anchor JSON endpoints.
+* **Output:** Working sliders; GPU expressions; debounced updates.
+* **Checks:** Synthetic test: hex with hand‑set `a{i}` times produces correct visibility across thresholds.
+
+### Deterministic Config (Single Source of Truth)
+
+* `K_ANCHORS = 20` (recommended for dense urban areas; adjustable via Makefile `--k-best` parameter).
+* `UNREACHABLE = 65535`.
+* Snap radii defaults: walk 0.25 mi; drive 1 mi; allow density‑adaptive overrides.
+* Partitions: `mode ∈ {drive, walk}`.
+* Tile layers: `t_hex_r7_*`, `t_hex_r8_*` only.
+
+Allowlists & Sources (overhaul scope)
+- `data/taxonomy/category_allowlist.txt`: category labels to precompute. The category D_anchor step reads this by default; use `--prune` to remove stale categories.
+- `data/brands/allowlist.txt`: A‑list canonical brand_ids to precompute for brand queries and to include in anchors when their categories aren't allowlisted.
+- Airports: `Future/airports_coordinates.csv` only (normalization injects these; OSM/Overture airports are discarded).
+
+Taxonomy & Config Files (minimal)
+- `src/taxonomy.py`: built‑in taxonomy + mappings (defaults).
+- `data/brands/registry.csv`: brand canon + aliases you edit regularly.
+- `data/taxonomy/category_labels.json`: generated by category D_anchor; served by the API.
+- `data/taxonomy/d_anchor_limits.json`: runtime limits for D_anchor computation (max_minutes, top_k per category/brand).
+- Optional advanced override (disabled by default): `data/taxonomy/categories.yml`. Enable with `TS_TAXONOMY_YAML=1` if you need to extend mappings.
+
+### Airport Handling (Target)
+
+* Snap internal airport POIs to nearest public arterial (motorway/trunk/primary/secondary/tertiary/residential) within 5km.
+* If none found, mark unreachable rather than routing through private/service ways.
+
+### Scaling Guidelines
+
+* Batch sizes for Dijkstra tuned to memory; parallelize across states.
+* ZSTD for all parquet; prefer column pruning.
+* Serve PMTiles via CDN; avoid dynamic map servers.
+
+### Snapshots & Deltas
+
+* Monthly snapshots: `snapshot_date=YYYY‑MM‑DD`.
+* Track deltas: added/moved/removed POIs.
+* Incremental recompute: only anchors whose sites changed.
+
+### Acceptance Tests (Targets)
+
+1. **Anchor consistency:** Every `a{i}_id` in tiles exists in D\_anchor for every exposed category (or sentinel).
+2. **Determinism:** Re‑running T\_hex/D\_anchor with same inputs yields byte‑identical outputs (modulo parquet row group ordering) — verify with hash of sorted records.
+3. **Performance:** On MA dataset, map responds ≤250ms for a 3‑slider scenario; memory ≤200MB.
+4. **Correctness:** Known hand‑crafted cells verify expected mins across K anchors.
+5. **Schema compliance:** Validate parquet schemas against canonical definitions in CI.
+
+### Known Pitfalls (Avoid)
+
+* Reducing polygons to points for large venues (hospitals, parks) — keep polygon for UX and snapping sanity.
+* Letting brand alias chaos bleed into queries — **require** registry usage everywhere.
+* Airport routing through service/private roads — always snap to arterials.
+* Breaking contract between T\_hex and D\_anchor — keep IDs stable and complete.
+
+### Glossary
+
+* **H3 r9:** Hex resolution used for per‑cell summaries.
+* **Anchor / Site:** Aggregation of POIs snapped to a road node by mode.
+* **T\_hex:** Hex→anchor top‑K travel times.
+* **D\_anchor:** Anchor→nearest POI per category/brand.
+* **A‑list brands:** Pre‑indexed brands with precomputed `min_brand`.
+
+### Proposed Solutions for Triangle Inequality Issues
+
+**1. Error Distribution Analysis**
+* Implement validation framework (`scripts/validate_triangle_approximation.py`) to empirically measure error distributions across different network topologies
+* Generate per-region error statistics (urban vs suburban vs rural)
+* Establish error thresholds for acceptable approximation quality
+
+**2. Enhanced K-Anchor Strategy**
+* **Diversified anchor selection**: Instead of K=20 nearest anchors, select anchors that maximize routing path diversity
+* **Directional anchors**: Ensure anchor coverage in all cardinal directions from each hex
+* **Network topology-aware selection**: Prioritize anchors on different road hierarchies (local, arterial, highway)
+
+**3. Approximation Confidence Scoring**
+* Compute per-hex "confidence" scores based on:
+  - Anchor spatial distribution around the hex
+  - Road network density and connectivity
+  - Variance in anchor-to-POI times across the K anchors
+* Expose confidence levels in API responses and UI
+
+**4. Selective Ground Truth Validation**
+* For low-confidence predictions, compute actual shortest paths on-demand
+* Cache frequently-requested routes to amortize computation cost
+* Hybrid approach: use approximation for high-confidence cases, exact routing for uncertain cases
+
+**5. User Communication**
+* Display travel time ranges instead of point estimates (e.g., "12-18 minutes")
+* Visual indicators for approximation confidence in the UI
+* Clear disclaimers about estimation methodology in dense vs sparse areas
+
+### Open Questions (Not Blockers; Track Separately)
+
+* Exact tiering for brands (A‑list vs long‑tail) per state.
+* Walk‑mode tiles rollout order and UI toggle design.
+* Density‑adaptive snap radius heuristics.
+* **Routing approximation quality**: Acceptable error thresholds for different use cases (browsing vs final decisions).
+
+### Climate Data Fields
+
+PRISM-derived climate metrics are stored as quantized integers to keep parquet and tile payloads compact. Any column ending with `_q` follows these rules:
+
+- `*_f_q`: Temperatures in tenths of degrees Fahrenheit. Decode with `value / 10`.
+- `*_mm_q`: Precipitation totals in tenths of millimetres. Decode with `value / 10`.
+- `*_in_q`: Precipitation totals in tenths of inches. Decode with `value / 10`.
+
+The scale factors are also recorded in the `out/climate/hex_climate.parquet` metadata under the `townscout_prism` key for downstream analytics.
+
+#### Climate Data Validation
+
+Before using climate data in tiles, verify these key properties:
+
+1. **Seasonal Pattern**: Monthly temperatures should follow natural progression:
+   - Winter (Dec-Feb): Coldest months
+   - Spring (Mar-May): Warming trend
+   - Summer (Jun-Aug): Peak temperatures
+   - Fall (Sep-Nov): Cooling trend
+
+2. **Expected Ranges** (Massachusetts example):
+   - January mean: ~25-35°F (coastal warmer)
+   - July mean: ~68-74°F
+   - Annual mean: ~45-52°F
+   - Annual precipitation: ~42-50 inches
+
+3. **File Mapping**: Ensure PRISM files map to correct months:
+   - Use exact patterns like `*_202001_*.tif` for January
+   - Avoid ambiguous patterns that could match wrong months
+   - Sort matches for deterministic selection
+
+4. **Data Integrity**:
+   - No null values in climate columns
+   - Temperatures and precipitation within realistic ranges
+   - Consistent units across all hexes
