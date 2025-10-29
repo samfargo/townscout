@@ -409,7 +409,7 @@ def load_D_anchor_category(mode: str, category_id: int) -> pd.DataFrame:
 
 def load_D_anchor_brand(mode: str, brand_id: str) -> pd.DataFrame:
     """
-    Load seconds-based anchor→brand table produced by 03d_compute_d_anchor.py.
+    Load seconds-based anchor→brand table produced by 05_compute_d_anchor.py.
     Layout: data/d_anchor_brand/mode={0|2}/brand_id=<brand_id>/part-*.parquet
     Columns: anchor_id:uint32, brand_id:str, mode:uint8, seconds_u16:uint16(nullable), snapshot_ts:date
     """

@@ -55,7 +55,7 @@ The anchor selection strategy directly controls the tradeoff between accuracy an
 **Configuration:**
 - **Default K**: 5 anchors per hex (configurable via `--k-best`)
 - **Dense urban recommendation**: K=20+ for comprehensive coverage
-- **Current tiles**: K=20 (set in `src/04_merge_states.py`)
+- **Current tiles**: K=20 (set in `src/07_merge_states.py`)
 
 **Memory per hex (K=20):**
 - **Anchor IDs**: 20 × 4 bytes (int32) = 80 bytes

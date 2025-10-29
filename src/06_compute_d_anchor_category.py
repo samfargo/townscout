@@ -1,7 +1,7 @@
 """
 Compute D_anchor for categories: anchor_id -> seconds to nearest anchor that contains a POI in that category.
 
-This mirrors the brand variant (03d_compute_d_anchor.py), but partitions by
+This mirrors the brand variant (05_compute_d_anchor.py), but partitions by
 numeric category_id under a unified directory:
 
   data/d_anchor_category/mode=<0|2>/category_id=<id>/part-000.parquet
@@ -17,7 +17,7 @@ Also writes a convenience label map at data/taxonomy/category_labels.json
 mapping string ids to human-friendly labels, if possible.
 
 Usage:
-  PY=PYTHONPATH=src .venv/bin/python src/03e_compute_d_anchor_category.py \
+  PY=PYTHONPATH=src .venv/bin/python src/06_compute_d_anchor_category.py \
     --pbf data/osm/massachusetts.osm.pbf \
     --anchors data/anchors/massachusetts_drive_sites.parquet \
     --mode drive

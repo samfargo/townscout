@@ -49,7 +49,7 @@ for each POI:
    - Implemented connectivity scoring logic
    - Updated main() to pass indptr parameter
 
-2. `src/03_compute_minutes_per_state.py`
+2. `src/04_compute_minutes_per_state.py`
    - Updated call site to pass indptr (line 115)
 
 **Key Features:**
@@ -190,7 +190,7 @@ Updated documentation per workspace rules:
 
 ### Source Code
 - `src/03_build_anchor_sites.py` (lines 34-40, 83-156, 228)
-- `src/03_compute_minutes_per_state.py` (line 115)
+- `src/04_compute_minutes_per_state.py` (line 115)
 
 ### Documentation
 - `README.md` (lines 82, 86-88)

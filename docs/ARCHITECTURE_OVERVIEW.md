@@ -67,14 +67,14 @@ The POI processing logic has been reorganized into a clean modular architecture 
   - `climate/` - PRISM normals quantization, seasonal aggregation, climate typology classification
   - `politics/` - County-level 2024 U.S. Presidential election results with Republican vote share and political lean bucketing (0-4: Strong Democrat to Strong Republican)
 
-Overlay processing scripts are organized in dedicated subdirectories under `src/`:
-- **`src/climate/`** - Climate data ingestion and processing
+Overlay processing is organized under `townscout/domains_overlay/` with CLI entry points for each domain:
+- **`townscout/domains_overlay/climate/`** - Climate data ingestion and processing
   - `prism_normals_fetch.py` - Downloads PRISM climate normals
-  - `prism_to_hex.py` - Processes rasters to per-hex climate metrics
-- **`src/power_corridors/`** - Power corridor data processing
-  - `osm_to_hex.py` - Computes per-hex power corridor proximity flags (wrapper around townscout.domains_overlay.power_corridors)
-- **`src/politics/`** - Political lean data processing
-  - `politics_to_hex.py` - Processes 2024 presidential election results from MIT Election Lab and joins county polygons to H3 cells (wrapper around townscout.domains_overlay.politics)
+  - `prism_to_hex.py` - CLI wrapper that processes rasters to per-hex climate metrics
+- **`townscout/domains_overlay/power_corridors/`** - Power corridor data processing
+  - `osm_to_hex.py` - CLI wrapper that computes per-hex power corridor proximity flags
+- **`townscout/domains_overlay/politics/`** - Political lean data processing
+  - `politics_to_hex.py` - CLI wrapper that processes 2024 presidential election results from MIT Election Lab and joins county polygons to H3 cells
 
 **Power Corridor Processing Notes:**
 - Extracts high-voltage transmission lines (power=line with voltage ≥100kV) from OSM PBF files
@@ -84,15 +84,15 @@ Overlay processing scripts are organized in dedicated subdirectories under `src/
 - Flags H3 hexes within buffer zone using vectorized pandas operations for performance
 - **Massachusetts results**: 2,582 high-voltage transmission lines identified, 1,744 hexes flagged (~2.06% of state coverage)
 
-The existing pipeline scripts (`src/02_normalize_pois.py`, `src/climate/prism_to_hex.py`, `src/power_corridors/osm_to_hex.py`) now act as thin CLI wrappers that import from the townscout modules, maintaining backward compatibility while providing a clean separation of concerns. This modular design makes it straightforward to add new POI types or overlays without modifying core pipeline logic.
+The existing pipeline scripts (`src/02_normalize_pois.py`) and overlay CLI entry points (`townscout/domains_overlay/*/`) act as thin CLI wrappers that import from the townscout modules, maintaining backward compatibility while providing a clean separation of concerns. This modular design makes it straightforward to add new POI types or overlays without modifying core pipeline logic.
 
 ### 2. Anchor Generation & Graph Preparation
 
 | Script | Responsibility | Notes |
 | --- | --- | --- |
 | `src/03_build_anchor_sites.py` | Snaps canonical POIs to road graph nodes (drive/walk), groups them into anchor sites with deterministic `anchor_int_id`s. | **Connectivity-aware snapping** (as of Oct 2024): queries k=10 nearest nodes and prefers nodes with ≥2 edges over poorly-connected nodes within 2x the nearest distance. This fixes issues like Logan Airport snapping to isolated service roads. Relies on CSR graph caches built by `graph/pyrosm_csr.py`; uses config snap radii. |
-| `src/03_compute_minutes_per_state.py` | Builds/loads CSR graphs, maps anchors onto nodes, runs the native K-best kernel to compute `hex → anchor` travel times (T_hex), and writes parquet for each H3 resolution. | Imports helpers from `townscout_native` via `t_hex` module; optionally emits anchor site outputs for reuse. |
-| `src/03c_compute_overlays.py`, `src/03d_compute_d_anchor.py`, `src/03e_compute_d_anchor_category.py` | Compute auxiliary overlays and D_anchor tables (anchor → nearest brand/category). | Share logic via `src/d_anchor_common.py`. Runtime limits (max_minutes, top_k) are loaded from `data/taxonomy/d_anchor_limits.json` to control SSSP cutoffs and result filtering per entity. |
+| `src/04_compute_minutes_per_state.py` | Builds/loads CSR graphs, maps anchors onto nodes, runs the native K-best kernel to compute `hex → anchor` travel times (T_hex), and writes parquet for each H3 resolution. | Imports helpers from `townscout_native` via `t_hex` module; optionally emits anchor site outputs for reuse. |
+| `src/05_compute_d_anchor.py`, `src/06_compute_d_anchor_category.py` | Compute D_anchor tables (anchor → nearest brand/category). | Share logic via `src/d_anchor_common.py`. Runtime limits (max_minutes, top_k) are loaded from `data/taxonomy/d_anchor_limits.json` to control SSSP cutoffs and result filtering per entity. |
 
 Core graph helpers live in `src/graph/`:
 
@@ -117,9 +117,9 @@ The Rust extension in `townscout_native/` exposes:
 
 | Script | Function |
 | --- | --- |
-| `src/power_corridors/osm_to_hex.py` | Queries high-voltage OSM `power=line` features (via Pyrosm), buffers them by 200 m, dissolves the corridor, intersects with the H3 grid at r7/r8, and writes per-hex `near_power_corridor` flags to `data/power_corridors/<state>_near_power_corridor.parquet`. Buffer distance and minimum voltage thresholds are CLI parameters so product changes do not require code edits. |
+| `townscout/domains_overlay/power_corridors/osm_to_hex.py` | Queries high-voltage OSM `power=line` features (via Pyrosm), buffers them by 200 m, dissolves the corridor, intersects with the H3 grid at r7/r8, and writes per-hex `near_power_corridor` flags to `data/power_corridors/<state>_near_power_corridor.parquet`. Buffer distance and minimum voltage thresholds are CLI parameters so product changes do not require code edits. |
 
-The merge step in `src/04_merge_states.py` consumes these parquet files and defaults missing values to `False`, ensuring tiles always expose the boolean expected by the frontend toggle.
+The merge step in `src/07_merge_states.py` consumes these parquet files and defaults missing values to `False`, ensuring tiles always expose the boolean expected by the frontend toggle.
 
 **Politics overlay:**
 - Loads 2024 U.S. Presidential election results from MIT Election Lab dataset (`townscout/domains_overlay/politics/countypres_2000-2024.csv`)
@@ -139,8 +139,8 @@ The merge step in `src/04_merge_states.py` consumes these parquet files and defa
 
 | Script | Function |
 | --- | --- |
-| `src/05_h3_to_geojson.py` | Converts the long-format T_hex parquet into H3 polygon NDJSON, preserving `a{i}_id` + `a{i}_s` arrays per hex. |
-| `src/06_build_tiles.py` | Uses tippecanoe/PMTiles tooling to build multi-resolution vector tiles (`tiles/t_hex_r{7,8}_drive.pmtiles`). Layer IDs must match frontend constants. |
+| `src/08_h3_to_geojson.py` | Converts the long-format T_hex parquet into H3 polygon NDJSON, preserving `a{i}_id` + `a{i}_s` arrays per hex. |
+| `src/09_build_tiles.py` | Uses tippecanoe/PMTiles tooling to build multi-resolution vector tiles (`tiles/t_hex_r{7,8}_drive.pmtiles`). Layer IDs must match frontend constants. |
 
 Generated tiles are tracked in `state_tiles/` (raw parquet) and `tiles/` (NDJSON + PMTiles). The FastAPI service streams these via HTTP range responses.
 
@@ -148,9 +148,9 @@ Generated tiles are tracked in `state_tiles/` (raw parquet) and `tiles/` (NDJSON
 
 Climate and power corridor overlays are processed as auxiliary data enrichment:
 
-- `src/climate/prism_normals_fetch.py` downloads PRISM climate normals (temperature/precipitation rasters).
-- `src/climate/prism_to_hex.py` - CLI wrapper for `townscout.domains_overlay.climate`. Mosaics raster bands, computes zonal stats for each populated H3 hex, derives seasonal metrics, classifies climate typologies (via `classify_climate_expr()`), and outputs quantized parquet at `out/climate/hex_climate.parquet`.
-- `src/power_corridors/osm_to_hex.py` - CLI wrapper for `townscout.domains_overlay.power_corridors`. Processes OSM power infrastructure data to generate per-hex proximity flags.
+- `townscout/domains_overlay/climate/prism_normals_fetch.py` downloads PRISM climate normals (temperature/precipitation rasters).
+- `townscout/domains_overlay/climate/prism_to_hex.py` - CLI wrapper for climate overlay logic. Mosaics raster bands, computes zonal stats for each populated H3 hex, derives seasonal metrics, classifies climate typologies (via `classify_climate_expr()`), and outputs quantized parquet at `out/climate/hex_climate.parquet`.
+- `townscout/domains_overlay/power_corridors/osm_to_hex.py` - CLI wrapper for power corridor overlay logic. Processes OSM power infrastructure data to generate per-hex proximity flags.
 - Tests in `tests/test_climate_parquet.py` enforce dtype expectations on quantized columns.
 - Validation functions in `townscout.domains_overlay.climate.climate_validation` check for reasonable temperature/precipitation ranges and seasonal patterns.
 
@@ -235,8 +235,8 @@ Supporting services:
 
 ## Climate Overlay Flow
 
-1. `src/climate/prism_normals_fetch.py` downloads PRISM raster normals by variable/month.
-2. `src/climate/prism_to_hex.py` reads H3 IDs from the travel-time parquet (`data/minutes/*_drive_t_hex.parquet` by default), builds GeoJSON polygons, runs zonal statistics on the PRISM rasters, derives seasonal averages, quantizes values, classifies them into typologies, and writes `out/climate/hex_climate.parquet`.
+1. `townscout/domains_overlay/climate/prism_normals_fetch.py` downloads PRISM raster normals by variable/month.
+2. `townscout/domains_overlay/climate/prism_to_hex.py` reads H3 IDs from the travel-time parquet (`data/minutes/*_drive_t_hex.parquet` by default), builds GeoJSON polygons, runs zonal statistics on the PRISM rasters, derives seasonal averages, quantizes values, classifies them into typologies, and writes `out/climate/hex_climate.parquet`.
 3. Downstream tooling (not shown here) merges the climate parquet into tile generation so each hex feature includes:
    - Quantized fields (`*_f_q`, `*_in_q`) for compact storage (kernel expects scaling factors like 0.1°F or 0.1").
    - `climate_label` matching `CLIMATE_TYPOLOGY` used by the frontend for filtering.
@@ -265,9 +265,9 @@ Cargo builds drop artefacts into `townscout_native/target/`; ensure the library 
 ## Typical Local Workflow
 
 1. **Bootstrap data**: run `src/01_download_extracts.py` → `src/02_normalize_pois.py`.
-2. **Build anchors & travel times**: `src/03_build_anchor_sites.py`, `src/03_compute_minutes_per_state.py`, and the D_anchor scripts for categories/brands.
-3. **Refresh overlays**: `make climate` and `make power_corridors` (or invoke `src/climate/prism_to_hex.py` and `src/power_corridors/osm_to_hex.py` directly) to update `out/climate/hex_climate.parquet` and `data/power_corridors/*.parquet`.
-4. **Generate tiles**: `src/05_h3_to_geojson.py` + `src/06_build_tiles.py` (or follow Makefile recipes if present).
+2. **Build anchors & travel times**: `src/03_build_anchor_sites.py`, `src/04_compute_minutes_per_state.py`, and the D_anchor scripts for categories/brands.
+3. **Refresh overlays**: `make climate` and `make power_corridors` (or invoke `townscout/domains_overlay/climate/prism_to_hex.py` and `townscout/domains_overlay/power_corridors/osm_to_hex.py` directly) to update `out/climate/hex_climate.parquet` and `data/power_corridors/*.parquet`.
+4. **Generate tiles**: `src/08_h3_to_geojson.py` + `src/09_build_tiles.py` (or follow Makefile recipes if present).
 5. **Serve backend**: `uvicorn api.main:app --reload` (expects data directories populated).
 6. **Run frontend**: `cd tiles/web && npm install && npm run dev`. Set `NEXT_PUBLIC_TOWNSCOUT_API_BASE_URL` if the API runs on a non-default host/port.
 
@@ -290,12 +290,12 @@ Use this document as a map when onboarding new contributors or when tracing a da
 
 ### Current Implementation Status
 
-- T_hex compute is implemented in `src/03_compute_minutes_per_state.py` with a Rust native kernel.
+- T_hex compute is implemented in `src/04_compute_minutes_per_state.py` with a Rust native kernel.
 - The compute emits a long format per-hex table: `(h3_id, anchor_int_id, time_s, res)` and tiles store top‑K per hex as `a{i}_id` + `a{i}_s`.
 - The frontend exclusively uses anchor‑mode: it composes `a{i}_s` from tiles with API‑served D\_anchor per category and per brand, enabling thousands of POIs as filter options without tile changes.
 - Category D\_anchor: Hive‑partitioned parquet at `data/d_anchor_category/mode={0|2}/category_id=*/part-*.parquet` loaded by the API.
-- Brand D\_anchor: Hive‑partitioned parquet at `data/d_anchor_brand/mode={0|2}/brand_id=*/part-*.parquet` produced by `src/03d_compute_d_anchor.py` and loaded by the API.
-- Hex summaries include climate quantiles and a `near_power_corridor` boolean generated by `src/power_corridors/osm_to_hex.py`, powering the "Avoid power lines" toggle in the frontend.
+- Brand D\_anchor: Hive‑partitioned parquet at `data/d_anchor_brand/mode={0|2}/brand_id=*/part-*.parquet` produced by `src/05_compute_d_anchor.py` and loaded by the API.
+- Hex summaries include climate quantiles and a `near_power_corridor` boolean generated by `townscout/domains_overlay/power_corridors/osm_to_hex.py`, powering the "Avoid power lines" toggle in the frontend.
 
 ### Core Model: Matrix Factorization
 
@@ -437,11 +437,11 @@ Sentinel: `65535` (uint16) means unreachable / ≥ cutoff.
 
 6. **Overlay Data (Climate, Power Corridors & Politics)**
 
-* Run `src/climate/prism_to_hex.py` to generate climate metrics from PRISM rasters.
-* Run `src/power_corridors/osm_to_hex.py` to buffer high-voltage OSM `power=line` features, dissolve the corridor, and intersect with the H3 grid.
+* Run `townscout/domains_overlay/climate/prism_to_hex.py` to generate climate metrics from PRISM rasters.
+* Run `townscout/domains_overlay/power_corridors/osm_to_hex.py` to buffer high-voltage OSM `power=line` features, dissolve the corridor, and intersect with the H3 grid.
 * Writes `data/power_corridors/<state>_near_power_corridor.parquet` with `near_power_corridor` flags at r7/r8 resolutions (defaults to `False` when no qualifying lines exist).
 * Buffer distance defaults to 200 m; adjust with `--buffer-meters` if product requirements change.
-* Run `src/politics/politics_to_hex.py` to process 2024 presidential election results and join county-level political lean to H3 cells.
+* Run `townscout/domains_overlay/politics/politics_to_hex.py` to process 2024 presidential election results and join county-level political lean to H3 cells.
 * Writes `data/politics/<state>_political_lean.parquet` with `political_lean` (0-4 buckets) and `rep_vote_share` at r7/r8 resolutions (null values for hexes without county data).
 
 7. **Summaries & Merge**

@@ -82,9 +82,9 @@ MINUTE_FILES := $(patsubst %,data/minutes/%_drive_t_hex.parquet,$(STATES))
 
 minutes: $(MINUTE_FILES)  ## 3. Compute per-state travel time minutes from POIs to hexes
 
-data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_drive_sites.parquet src/03_compute_minutes_per_state.py src/graph/pyrosm_csr.py src/config.py | build/native.stamp
+data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_drive_sites.parquet src/04_compute_minutes_per_state.py src/graph/pyrosm_csr.py src/config.py | build/native.stamp
 	@echo "--- Computing minutes for $* (drive) ---"
-	$(PY) src/03_compute_minutes_per_state.py \
+	$(PY) src/04_compute_minutes_per_state.py \
 		--pbf data/osm/$*.osm.pbf \
 		--pois data/poi/$*_canonical.parquet \
 		--mode drive \
@@ -101,7 +101,7 @@ power_corridors: $(POWER_CORRIDOR_FILES) ## Build high-voltage corridor avoidanc
 
 data/power_corridors/%_near_power_corridor.parquet: data/osm/%.osm.pbf src/config.py
 	@mkdir -p $(dir $@)
-	$(PY) src/power_corridors/osm_to_hex.py \
+	$(PY) townscout/domains_overlay/power_corridors/osm_to_hex.py \
 		--state $* \
 		--pbf data/osm/$*.osm.pbf \
 		--out $@
@@ -135,7 +135,7 @@ d_anchor_brand: anchors | build/native.stamp ## 3.6 Compute anchor->brand second
 	      echo "[d_anchor_brand] Anchor fingerprint unchanged for $$S; running incremental update."; \
 	    fi; \
 	  fi; \
-	  $(PY) src/03d_compute_d_anchor.py \
+	  $(PY) src/05_compute_d_anchor.py \
 	    --pbf data/osm/$$S.osm.pbf \
 	    --anchors data/anchors/$$S\_drive_sites.parquet \
 	    --mode drive \
@@ -151,7 +151,7 @@ d_anchor_brand: anchors | build/native.stamp ## 3.6 Compute anchor->brand second
 d_anchor_brand_force: ## 3.6 Force recompute all D_anchor brand data
 	@for S in $(STATES); do \
 	  echo "--- Force computing D_anchor brand for $$S (drive) ---"; \
-	  $(PY) src/03d_compute_d_anchor.py \
+	  $(PY) src/05_compute_d_anchor.py \
 	    --pbf data/osm/$$S.osm.pbf \
 	    --anchors data/anchors/$$S\_drive_sites.parquet \
 	    --mode drive \
@@ -189,7 +189,7 @@ d_anchor_category: anchors | build/native.stamp ## 3.6b Compute anchor->category
 	      echo "[d_anchor_category] Anchor fingerprint unchanged for $$S; running incremental update."; \
 	    fi; \
 	  fi; \
-	  $(PY) src/03e_compute_d_anchor_category.py \
+	  $(PY) src/06_compute_d_anchor_category.py \
 	    --pbf data/osm/$$S.osm.pbf \
 	    --anchors data/anchors/$$S\_drive_sites.parquet \
 	    --mode drive \
@@ -206,7 +206,7 @@ d_anchor_category: anchors | build/native.stamp ## 3.6b Compute anchor->category
 d_anchor_category_force: ## 3.6b Force recompute all D_anchor category data
 	@for S in $(STATES); do \
 	  echo "--- Force computing D_anchor category for $$S (drive) ---"; \
-	  $(PY) src/03e_compute_d_anchor_category.py \
+	  $(PY) src/06_compute_d_anchor_category.py \
 	    --pbf data/osm/$$S.osm.pbf \
 	    --anchors data/anchors/$$S\_drive_sites.parquet \
 	    --mode drive \
@@ -222,7 +222,7 @@ CLIMATE_PARQUET := out/climate/hex_climate.parquet
 
 $(CLIMATE_PARQUET): $(MINUTE_FILES)
 	@mkdir -p $(dir $@)
-	$(PY) src/climate/prism_to_hex.py
+	$(PY) townscout/domains_overlay/climate/prism_to_hex.py
 
 climate: $(CLIMATE_PARQUET) ## Build PRISM climate parquet for r7 + r8
 	@echo "[ok] Climate parquet ready at $(CLIMATE_PARQUET)"
@@ -232,13 +232,13 @@ climate: $(CLIMATE_PARQUET) ## Build PRISM climate parquet for r7 + r8
 MERGE_DEPS := $(MINUTE_FILES) $(ANCHOR_FILES) $(CLIMATE_PARQUET) $(POWER_CORRIDOR_FILES)
 .PHONY: merge
 merge: $(MERGE_DEPS) ## 4. Merge per-state data and create summaries
-	$(PY) src/04_merge_states.py
+	$(PY) src/07_merge_states.py
 
 # --- GeoJSON (build from merged summaries) ---
 # Use a stamp file to avoid running merge twice (it produces both r7 and r8 files)
 state_tiles/.merge.stamp: $(MERGE_DEPS)
 	@mkdir -p state_tiles
-	$(PY) src/04_merge_states.py
+	$(PY) src/07_merge_states.py
 	@touch $@
 
 state_tiles/us_r7.parquet: state_tiles/.merge.stamp
@@ -246,13 +246,13 @@ state_tiles/us_r8.parquet: state_tiles/.merge.stamp
 
 tiles/us_r7.geojson: state_tiles/us_r7.parquet
 	@mkdir -p tiles
-	CLIMATE_DECODE_AT_EXPORT=false $(PY) src/05_h3_to_geojson.py \
+	CLIMATE_DECODE_AT_EXPORT=false $(PY) src/08_h3_to_geojson.py \
 		--input state_tiles/us_r7.parquet \
 		--output $@
 
 tiles/us_r8.geojson: state_tiles/us_r8.parquet
 	@mkdir -p tiles
-	CLIMATE_DECODE_AT_EXPORT=false $(PY) src/05_h3_to_geojson.py \
+	CLIMATE_DECODE_AT_EXPORT=false $(PY) src/08_h3_to_geojson.py \
 		--input state_tiles/us_r8.parquet \
 		--output $@
 
@@ -264,20 +264,20 @@ tiles: tiles/t_hex_r7_drive.pmtiles tiles/t_hex_r8_drive.pmtiles ## 6. Build vec
 	@mkdir -p tiles/web
 
 tiles/t_hex_r7_drive.pmtiles: tiles/us_r7.geojson
-	$(PY) src/06_build_tiles.py \
+	$(PY) src/09_build_tiles.py \
 		--input $< \
 		--output $@ \
 		--layer t_hex_r7_drive \
 		--minzoom 4 --maxzoom 8
 
 tiles/t_hex_r8_drive.pmtiles: tiles/us_r8.geojson
-	$(PY) src/06_build_tiles.py \
+	$(PY) src/09_build_tiles.py \
 		--input $< \
 		--output $@ \
 		--layer t_hex_r8_drive \
 		--minzoom 8 --maxzoom 12
 	@if [ -f tiles/us_r8_walk.geojson ]; then \
-		$(PY) src/06_build_tiles.py \
+		$(PY) src/09_build_tiles.py \
 			--input tiles/us_r8_walk.geojson \
 			--output tiles/t_hex_r8_walk.pmtiles \
 			--layer t_hex_r8_walk \

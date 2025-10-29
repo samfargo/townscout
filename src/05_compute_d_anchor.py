@@ -14,13 +14,13 @@ Columns:
   - snapshot_ts: date
 
 Usage:
-  PY=PYTHONPATH=src .venv/bin/python src/03d_compute_d_anchor.py \
+  PY=PYTHONPATH=src .venv/bin/python src/05_compute_d_anchor.py \
     --pbf data/osm/massachusetts.osm.pbf \
     --anchors data/anchors/massachusetts_drive_sites.parquet \
     --mode drive --brands-threshold 5
 
 Or target a single brand:
-  PY=PYTHONPATH=src .venv/bin/python src/03d_compute_d_anchor.py \
+  PY=PYTHONPATH=src .venv/bin/python src/05_compute_d_anchor.py \
     --pbf data/osm/massachusetts.osm.pbf \
     --anchors data/anchors/massachusetts_drive_sites.parquet \
     --mode drive --brand starbucks

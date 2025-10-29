@@ -4,12 +4,12 @@ Compute per-hex political lean flags based on 2024 US Presidential election resu
 
 Usage:
 
-    PYTHONPATH=src python src/politics/politics_to_hex.py \
+    PYTHONPATH=. python townscout/domains_overlay/politics/politics_to_hex.py \
         --csv townscout/domains_overlay/politics/countypres_2000-2024.csv \
         --out data/politics/political_lean.parquet
 
     # For state-specific processing:
-    PYTHONPATH=src python src/politics/politics_to_hex.py \
+    PYTHONPATH=. python townscout/domains_overlay/politics/politics_to_hex.py \
         --csv townscout/domains_overlay/politics/countypres_2000-2024.csv \
         --out data/politics/massachusetts_political_lean.parquet \
         --state Massachusetts

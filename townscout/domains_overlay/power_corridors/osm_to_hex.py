@@ -5,7 +5,7 @@ transmission corridors derived from OSM power infrastructure data.
 
 Usage (per state):
 
-    PYTHONPATH=src python src/power_corridors/osm_to_hex.py \
+    PYTHONPATH=. python townscout/domains_overlay/power_corridors/osm_to_hex.py \
         --state massachusetts \
         --pbf data/osm/massachusetts.osm.pbf \
         --out data/power_corridors/massachusetts_near_power_corridor.parquet
