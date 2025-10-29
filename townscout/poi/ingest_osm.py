@@ -7,7 +7,6 @@ import os
 import sys
 from pathlib import Path
 import geopandas as gpd
-from pyrosm import OSM
 
 # Add src to path to import taxonomy
 src_path = Path(__file__).parent.parent.parent / "src"
@@ -15,6 +14,7 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from taxonomy import OSM_TAG_MAP
+from townscout.osm.pyrosm_utils import get_osm_data
 
 
 def load_osm_pois(state: str, pbf_path: str = None) -> gpd.GeoDataFrame:
@@ -36,7 +36,6 @@ def load_osm_pois(state: str, pbf_path: str = None) -> gpd.GeoDataFrame:
         return gpd.GeoDataFrame(columns=['geometry'], geometry='geometry', crs="EPSG:4326")
 
     print(f"--- Loading OSM POIs for {state} from {pbf_path} ---")
-    osm = OSM(pbf_path)
     
     # Taxonomy-driven filter: only request tags we map into TownScout taxonomy
     wanted: dict[str, set[str]] = {}
@@ -56,24 +55,15 @@ def load_osm_pois(state: str, pbf_path: str = None) -> gpd.GeoDataFrame:
     # Keep common tag columns used by normalization.
     tag_cols = ["name", "brand", "operator", "amenity", "shop", "leisure", "tourism", "religion"]
     
-    try:
-        gdf = osm.get_data_by_custom_criteria(
-            custom_filter=custom_filter,
-            tags_as_columns=tag_cols,
-            keep_nodes=True,
-            keep_ways=True,
-            keep_relations=False,  # skip relations to avoid multipolygon assembly
-        )
-    except Exception as e:
-        print(f"[warn] get_data_by_custom_criteria failed (nodes+ways). Falling back to nodes-only. Error: {e}")
-        gdf = osm.get_data_by_custom_criteria(
-            custom_filter=custom_filter,
-            tags_as_columns=tag_cols,
-            keep_nodes=True,
-            keep_ways=False,
-            keep_relations=False,
-        )
-    
+    gdf = get_osm_data(
+        pbf_path,
+        custom_filter=custom_filter,
+        tags_as_columns=tag_cols,
+        keep_nodes=True,
+        keep_ways=True,
+        keep_relations=False,
+    )
+
     if gdf is None or gdf.empty:
         print(f"[warn] No POIs found in {pbf_path} with the current filter.")
         return gpd.GeoDataFrame(columns=['geometry'], geometry='geometry', crs="EPSG:4326")
@@ -81,4 +71,3 @@ def load_osm_pois(state: str, pbf_path: str = None) -> gpd.GeoDataFrame:
     gdf = gdf.to_crs("EPSG:4326")
     print(f"[ok] Loaded {len(gdf)} POIs from OSM for {state}")
     return gdf
-

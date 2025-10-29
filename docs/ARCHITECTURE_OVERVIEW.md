@@ -41,8 +41,9 @@ Supporting modules:
 - `src/taxonomy.py` defines the canonical class → category → subcategory hierarchy, brand registry, and source tag mappings. Optional CSV/YAML files in `data/` override defaults. The taxonomy includes special handling for:
   - **Places of Worship**: OSM `amenity=place_of_worship` POIs are classified by their `religion` tag into separate categories: `place_of_worship_church` (Christian), `place_of_worship_synagogue` (Jewish), `place_of_worship_temple` (Hindu/Buddhist/Jain/Sikh), and `place_of_worship_mosque` (Muslim). This allows users to filter by specific worship types while OSM only provides the generic `place_of_worship` amenity tag.
   - **Libraries**: Mapped from OSM `amenity=library` and Overture `library` category.
-- `src/geometry_utils.py` provides geometry hygiene utilities to prevent Shapely 2.x `create_collection` errors when building GeometryCollection or Multi* objects from mixed/invalid geometries. The `clean_geoms()` function filters out null, empty, and non-geometry objects before unary_union operations.
+- `src/geometry_utils.py` provides geometry hygiene utilities to prevent Shapely 2.x `create_collection` errors when building GeometryCollection or Multi* objects from mixed/invalid geometries. The `clean_geoms()` function filters out null, empty, and non-geometry objects before unary_union operations. Used extensively in power corridor processing to work around pyrosm compatibility issues.
 - `src/util_osm.py` wraps Geofabrik downloads used by step 01.
+- `townscout/osm/pyrosm_utils.py` provides robust OSM data extraction across pyrosm versions with automatic fallback to alternative APIs and ensures requested tag columns are always present in returned DataFrames (critical for power corridor voltage extraction).
 
 **New Module Structure (Oct 2024 Refactoring):**
 
@@ -62,7 +63,7 @@ The POI processing logic has been reorganized into a clean modular architecture 
   - `trauma/` - ACS Level 1 trauma center ingestion via HTTP API with state-level filtering
 
 - **`townscout/domains_overlay/`** - Per-hex overlay computation (not route-to-able)
-  - `power_corridors/` - High-voltage transmission line proximity flags from OSM power=line
+  - `power_corridors/` - High-voltage transmission line proximity flags from OSM power=line (uses GeoPandas OSM driver due to pyrosm/Shapely 2.x compatibility issues; implements iterative union for buffered corridor geometry)
   - `climate/` - PRISM normals quantization, seasonal aggregation, climate typology classification
 
 Overlay processing scripts are organized in dedicated subdirectories under `src/`:
@@ -70,7 +71,15 @@ Overlay processing scripts are organized in dedicated subdirectories under `src/
   - `prism_normals_fetch.py` - Downloads PRISM climate normals
   - `prism_to_hex.py` - Processes rasters to per-hex climate metrics
 - **`src/power_corridors/`** - Power corridor data processing
-  - `osm_to_hex.py` - Computes per-hex power corridor proximity flags
+  - `osm_to_hex.py` - Computes per-hex power corridor proximity flags (wrapper around townscout.domains_overlay.power_corridors)
+
+**Power Corridor Processing Notes:**
+- Extracts high-voltage transmission lines (power=line with voltage ≥100kV) from OSM PBF files
+- Uses GeoPandas OSM driver instead of pyrosm to avoid Shapely 2.x compatibility issues with ufunc 'create_collection' errors
+- Parses OSM `other_tags` column to extract voltage and power type information
+- Buffers power lines by 200m (configurable) and dissolves using iterative union approach for Shapely 2.x compatibility
+- Flags H3 hexes within buffer zone using vectorized pandas operations for performance
+- **Massachusetts results**: 2,582 high-voltage transmission lines identified, 1,744 hexes flagged (~2.06% of state coverage)
 
 The existing pipeline scripts (`src/02_normalize_pois.py`, `src/climate/prism_to_hex.py`, `src/power_corridors/osm_to_hex.py`) now act as thin CLI wrappers that import from the townscout modules, maintaining backward compatibility while providing a clean separation of concerns. This modular design makes it straightforward to add new POI types or overlays without modifying core pipeline logic.
 

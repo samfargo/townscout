@@ -17,8 +17,6 @@ from pathlib import Path
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
-from shapely.ops import unary_union
-from pyrosm import OSM
 
 # Add src to path to import geometry_utils
 src_path = Path(__file__).parent.parent.parent.parent / "src"
@@ -27,6 +25,7 @@ if str(src_path) not in sys.path:
 
 from geometry_utils import clean_geoms
 from townscout.poi.schema import create_empty_poi_dataframe
+from townscout.osm.pyrosm_utils import get_osm_data
 from .schema import (
     BEACH_CLASS, BEACH_TYPES,
     DISTANCE_OCEAN_M, DISTANCE_LAKE_M, DISTANCE_RIVER_M,
@@ -168,79 +167,70 @@ def load_osm_beaches(state: str) -> gpd.GeoDataFrame:
     all_beaches = []
     
     try:
-        osm = OSM(pbf_path)
-        
-        # Load beach NODES (points)
-        try:
-            beach_nodes = osm.get_data_by_custom_criteria(
-                custom_filter={"natural": ["beach"]},
-                tags_as_columns=["name", "natural"],
-                keep_nodes=True,
-                keep_ways=False,
-                keep_relations=False,
+        custom_filter = {"natural": ["beach"]}
+        tag_cols = ["name", "natural"]
+
+        beach_nodes = get_osm_data(
+            pbf_path,
+            custom_filter=custom_filter,
+            tags_as_columns=tag_cols,
+            keep_nodes=True,
+            keep_ways=False,
+            keep_relations=False,
+        )
+        if not beach_nodes.empty:
+            cols = [c for c in ("name", "natural", "id", "geometry") if c in beach_nodes.columns]
+            beach_nodes = beach_nodes[cols]
+            beach_nodes = beach_nodes.to_crs("EPSG:4326")
+            all_beaches.append(beach_nodes)
+            print(f"[ok] Loaded {len(beach_nodes)} beach nodes from OSM")
+
+        beach_ways = get_osm_data(
+            pbf_path,
+            custom_filter=custom_filter,
+            tags_as_columns=tag_cols,
+            keep_nodes=False,
+            keep_ways=True,
+            keep_relations=False,
+        )
+        if not beach_ways.empty:
+            cols = [c for c in ("name", "natural", "id", "geometry") if c in beach_ways.columns]
+            beach_ways = beach_ways[cols]
+            beach_ways = beach_ways.to_crs("EPSG:4326")
+
+            beach_ways["geometry"] = beach_ways["geometry"].apply(
+                lambda geom: geom.representative_point() if geom is not None else None
             )
-            if beach_nodes is not None and not beach_nodes.empty:
-                cols = [c for c in ("name", "natural", "id", "geometry") if c in beach_nodes.columns]
-                beach_nodes = beach_nodes[cols].to_crs("EPSG:4326")
-                all_beaches.append(beach_nodes)
-                print(f"[ok] Loaded {len(beach_nodes)} beach nodes from OSM")
-        except Exception as e:
-            print(f"[warn] Failed to load beach nodes: {e}")
-        
-        # Load beach WAYS (polygons) and convert to points
-        try:
-            beach_ways = osm.get_data_by_custom_criteria(
-                custom_filter={"natural": ["beach"]},
-                tags_as_columns=["name", "natural"],
-                keep_nodes=False,
-                keep_ways=True,
-                keep_relations=False,
-            )
-            if beach_ways is not None and not beach_ways.empty:
-                cols = [c for c in ("name", "natural", "id", "geometry") if c in beach_ways.columns]
-                beach_ways = beach_ways[cols].to_crs("EPSG:4326")
-                
-                # Convert polygons to representative points
-                beach_ways['geometry'] = beach_ways['geometry'].apply(
-                    lambda geom: geom.representative_point() if geom is not None else None
-                )
-                # Filter out any null geometries
-                beach_ways = beach_ways[beach_ways['geometry'].notna()]
-                
-                all_beaches.append(beach_ways)
-                print(f"[ok] Loaded {len(beach_ways)} beach ways from OSM (converted to points)")
-        except Exception as e:
-            print(f"[warn] Failed to load beach ways: {e}")
-        
-        # Load beach RELATIONS and convert to points (with error handling)
-        try:
-            beach_relations = osm.get_data_by_custom_criteria(
-                custom_filter={"natural": ["beach"]},
-                tags_as_columns=["name", "natural"],
-                keep_nodes=False,
-                keep_ways=False,
-                keep_relations=True,
-            )
-            if beach_relations is not None and not beach_relations.empty:
-                cols = [c for c in ("name", "natural", "id", "geometry") if c in beach_relations.columns]
-                beach_relations = beach_relations[cols].to_crs("EPSG:4326")
-                
-                # Convert to representative points, skipping invalid geometries
-                def safe_representative_point(geom):
-                    try:
-                        return geom.representative_point() if geom is not None else None
-                    except Exception:
-                        return None
-                
-                beach_relations['geometry'] = beach_relations['geometry'].apply(safe_representative_point)
-                beach_relations = beach_relations[beach_relations['geometry'].notna()]
-                
-                if not beach_relations.empty:
-                    all_beaches.append(beach_relations)
-                    print(f"[ok] Loaded {len(beach_relations)} beach relations from OSM (converted to points)")
-        except Exception as e:
-            # Relations often cause geometry errors with Shapely 2.x, but that's okay
-            print(f"[info] Skipping beach relations due to geometry errors: {e}")
+            beach_ways = beach_ways[beach_ways["geometry"].notna()]
+
+            all_beaches.append(beach_ways)
+            print(f"[ok] Loaded {len(beach_ways)} beach ways from OSM (converted to points)")
+
+        beach_relations = get_osm_data(
+            pbf_path,
+            custom_filter=custom_filter,
+            tags_as_columns=tag_cols,
+            keep_nodes=False,
+            keep_ways=False,
+            keep_relations=True,
+        )
+        if not beach_relations.empty:
+            cols = [c for c in ("name", "natural", "id", "geometry") if c in beach_relations.columns]
+            beach_relations = beach_relations[cols]
+            beach_relations = beach_relations.to_crs("EPSG:4326")
+
+            def safe_representative_point(geom):
+                try:
+                    return geom.representative_point() if geom is not None else None
+                except Exception:
+                    return None
+
+            beach_relations["geometry"] = beach_relations["geometry"].apply(safe_representative_point)
+            beach_relations = beach_relations[beach_relations["geometry"].notna()]
+
+            if not beach_relations.empty:
+                all_beaches.append(beach_relations)
+                print(f"[ok] Loaded {len(beach_relations)} beach relations from OSM (converted to points)")
         
         # Combine all beach sources
         if not all_beaches:
@@ -416,4 +406,3 @@ def build_beach_pois_for_state(state: str) -> gpd.GeoDataFrame:
     print(f"[ok] Built {len(result)} beach POIs: {type_summary}")
     
     return result
-

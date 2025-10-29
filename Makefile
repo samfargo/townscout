@@ -286,7 +286,8 @@ tiles/t_hex_r8_drive.pmtiles: tiles/us_r8.geojson
 
 ## Full pipeline now includes brand/category D_anchor so the API works out of the box
 all:  ## Run the full data pipeline (tiles + D_anchor)
-	@START_TIME=$$(date +%s); \
+	@set -e; \
+	START_TIME=$$(date +%s); \
 	$(MAKE) tiles d_anchor_category d_anchor_brand; \
 	END_TIME=$$(date +%s); \
 	ELAPSED=$$(($$END_TIME - $$START_TIME)); \
