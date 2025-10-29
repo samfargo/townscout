@@ -17,7 +17,9 @@ import pandas as pd
 import polars as pl
 from tqdm import tqdm
 
-from climate.prism_to_hex import classify_climate_expr, TEMP_SCALE, PPT_MM_SCALE, PPT_IN_SCALE
+from townscout.domains_overlay.climate import classify_climate_expr
+from townscout.domains_overlay.climate.schema import TEMP_SCALE, PPT_MM_SCALE, PPT_IN_SCALE
+from townscout.domains_overlay.validation import check_parquet_files
 
 from config import STATES, H3_RES_LOW, H3_RES_HIGH, STATE_BOUNDING_BOXES
 
@@ -201,18 +203,12 @@ def main():
     power_corridor_paths = glob.glob("data/power_corridors/*_near_power_corridor.parquet")
     if power_corridor_paths:
         print(f"[info] Attaching power corridor flags ({len(power_corridor_paths)} files)")
-        corridor_frames = []
-        for path in power_corridor_paths:
-            try:
-                df = pd.read_parquet(path)
-            except Exception as exc:
-                print(f"[warn] Failed to read {path}: {exc}")
-                continue
-            missing = {"h3_id", "res", "near_power_corridor"} - set(df.columns)
-            if missing:
-                print(f"[warn] Skipping {path}; missing columns: {missing}")
-                continue
-            corridor_frames.append(df[["h3_id", "res", "near_power_corridor"]])
+        corridor_frames = check_parquet_files(
+            power_corridor_paths,
+            required_columns={"h3_id", "res", "near_power_corridor"},
+            warn_only=True
+        )
+        corridor_frames = [df[["h3_id", "res", "near_power_corridor"]] for df in corridor_frames]
 
         if corridor_frames:
             corridor = pd.concat(corridor_frames, ignore_index=True)
@@ -229,6 +225,32 @@ def main():
     else:
         print("[warn] Power corridor parquet missing; defaulting to False.")
         final_wide["near_power_corridor"] = False
+
+    # Politics overlay: political lean based on 2024 presidential election
+    politics_paths = glob.glob("data/politics/*_political_lean.parquet")
+    if politics_paths:
+        print(f"[info] Attaching political lean data ({len(politics_paths)} files)")
+        politics_frames = check_parquet_files(
+            politics_paths,
+            required_columns={"h3_id", "res", "political_lean", "rep_vote_share"},
+            warn_only=True
+        )
+        politics_frames = [df[["h3_id", "res", "political_lean", "rep_vote_share"]] for df in politics_frames]
+
+        if politics_frames:
+            politics = pd.concat(politics_frames, ignore_index=True)
+            politics["h3_id"] = politics["h3_id"].astype("uint64", copy=False)
+            politics["res"] = politics["res"].astype("int32", copy=False)
+            politics["political_lean"] = politics["political_lean"].astype("uint8", copy=False)
+            politics["rep_vote_share"] = politics["rep_vote_share"].astype("float32", copy=False)
+            politics = politics.drop_duplicates(subset=["h3_id", "res"], keep="last")
+
+            final_wide = final_wide.merge(politics, on=["h3_id", "res"], how="left")
+            # Keep NaN for hexes without political data (water, unpopulated areas, etc.)
+        else:
+            print("[warn] No valid politics parquet found; skipping political lean.")
+    else:
+        print("[info] Politics parquet missing; skipping political lean (optional overlay).")
 
     # 3. Split by resolution and save
     os.makedirs("state_tiles", exist_ok=True)

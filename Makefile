@@ -1,4 +1,4 @@
-PY=PYTHONPATH=src .venv/bin/python
+PY=PYTHONPATH=.:src .venv/bin/python
 PYTHON_BIN?=$(shell command -v python3.11 2>/dev/null || command -v python3 2>/dev/null)
 STATES=massachusetts
 

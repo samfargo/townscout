@@ -28,57 +28,11 @@ src_path = Path(__file__).parent.parent.parent.parent / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
-from config import H3_RES_LOW, H3_RES_HIGH, STATE_BOUNDING_BOXES
+from config import H3_RES_LOW, H3_RES_HIGH
 from geometry_utils import clean_geoms
 from .schema import BUFFER_METERS_DEFAULT, MIN_VOLTAGE_KV_DEFAULT
-
-try:
-    import h3  # type: ignore
-    H3_GEO_TO_CELLS = getattr(h3, "geo_to_cells", None)
-    H3_POLYFILL_GEOJSON = getattr(h3, "polyfill_geojson", None)
-    H3_POLYFILL = getattr(h3, "polyfill", None)
-    H3_STRING_TO_INT = next(
-        (getattr(h3, attr, None) for attr in ("string_to_h3", "str_to_int", "string_to_int")),
-        None,
-    )
-except ImportError:
-    try:
-        from h3.api.basic_int import h3 as h3  # type: ignore
-        H3_GEO_TO_CELLS = getattr(h3, "geo_to_cells", None)
-        H3_POLYFILL_GEOJSON = getattr(h3, "polyfill_geojson", None)
-        H3_POLYFILL = getattr(h3, "polyfill", None)
-        H3_STRING_TO_INT = getattr(h3, "string_to_h3", None)
-    except Exception as exc:  # pragma: no cover - import guard
-        raise RuntimeError("h3 library is required") from exc
-
-
-def _cell_to_int(cell) -> int:
-    """Robustly convert an H3 address (string or int) to its uint64 integer form."""
-    if isinstance(cell, (int, np.integer)):
-        return int(cell)
-    if isinstance(cell, str):
-        if callable(H3_STRING_TO_INT):
-            return int(H3_STRING_TO_INT(cell))
-        # Fall back to base-16 parsing for legacy APIs
-        return int(cell, 16)
-    # Allow numpy scalars (float64) emitted by some h3 builds
-    try:
-        return int(cell)
-    except Exception as exc:  # pragma: no cover - defensive
-        raise TypeError(f"Unsupported H3 cell type: {type(cell)!r}") from exc
-
-
-def _bbox_polygon(bbox: dict) -> dict:
-    return {
-        "type": "Polygon",
-        "coordinates": [[
-            [bbox["west"], bbox["south"]],
-            [bbox["east"], bbox["south"]],
-            [bbox["east"], bbox["north"]],
-            [bbox["west"], bbox["north"]],
-            [bbox["west"], bbox["south"]],
-        ]]
-    }
+from ..h3_utils import polygon_to_cells, state_hex_universe
+from ..validation import validate_overlay_output
 
 
 def _extract_voltage_values(raw) -> Sequence[float]:
@@ -237,69 +191,7 @@ def _dissolve_and_buffer(lines: gpd.GeoDataFrame, buffer_meters: float) -> Optio
         return None
 
 
-def _polygon_to_cells(geom: Polygon | MultiPolygon, resolution: int) -> Set[int]:
-    if geom is None or geom.is_empty:
-        return set()
-    mapping = geom.__geo_interface__
-    polygons: Iterable[dict]
-    if mapping["type"] == "Polygon":
-        polygons = [mapping]
-    elif mapping["type"] == "MultiPolygon":
-        polygons = (
-            {"type": "Polygon", "coordinates": coords}
-            for coords in mapping["coordinates"]
-        )
-    else:
-        return set()
-
-    result: Set[int] = set()
-    for poly in polygons:
-        cells: Iterable = []
-        if callable(H3_GEO_TO_CELLS):
-            cells = H3_GEO_TO_CELLS(poly, resolution)
-        elif callable(H3_POLYFILL_GEOJSON):
-            cells = H3_POLYFILL_GEOJSON(poly, resolution)
-        elif callable(H3_POLYFILL):
-            # Legacy API expects lat/long tuples
-            coords_latlon = [
-                [(lat, lon) for lon, lat in ring]
-                for ring in poly["coordinates"]
-            ]
-            cells = H3_POLYFILL(coords_latlon, resolution, geo_json_conformant=True)
-        else:  # pragma: no cover - defensive
-            raise RuntimeError("No suitable H3 polyfill function available.")
-        result.update(_cell_to_int(cell) for cell in cells)
-    return result
-
-
-def _state_hex_universe(state: str, resolutions: Sequence[int]) -> pd.DataFrame:
-    bbox = STATE_BOUNDING_BOXES.get(state)
-    if not bbox:
-        raise ValueError(f"No bounding box configured for state '{state}'")
-    polygon = _bbox_polygon(bbox)
-    records: list[tuple[int, int]] = []
-    for res in resolutions:
-        if callable(H3_GEO_TO_CELLS):
-            cells = H3_GEO_TO_CELLS(polygon, res)
-        elif callable(H3_POLYFILL_GEOJSON):
-            cells = H3_POLYFILL_GEOJSON(polygon, res)
-        elif callable(H3_POLYFILL):
-            coords_latlon = [
-                [(lat, lon) for lon, lat in ring]
-                for ring in polygon["coordinates"]
-            ]
-            cells = H3_POLYFILL(coords_latlon, res, geo_json_conformant=True)
-        else:  # pragma: no cover - defensive
-            raise RuntimeError("No suitable H3 polyfill function available.")
-        for cell in cells:
-            records.append((_cell_to_int(cell), res))
-
-    if not records:
-        return pd.DataFrame(columns=["h3_id", "res"])
-    df = pd.DataFrame(records, columns=["h3_id", "res"])
-    df["h3_id"] = df["h3_id"].astype("uint64", copy=False)
-    df["res"] = df["res"].astype("int32", copy=False)
-    return df.drop_duplicates(ignore_index=True)
+# H3 conversion functions moved to shared h3_utils module
 
 
 def compute_power_corridor_flags(
@@ -343,14 +235,14 @@ def compute_power_corridor_flags(
         print("[warn] No buffered corridor geometry produced; writing all False flags.")
 
     print("[info] Building state hex universe")
-    base = _state_hex_universe(state, target_res)
+    base = state_hex_universe(state, target_res)
 
     if buffered_geom is None:
         base["near_power_corridor"] = False
     else:
         all_hits: dict[int, Set[int]] = {}
         for res in target_res:
-            hits = _polygon_to_cells(buffered_geom, res)
+            hits = polygon_to_cells(buffered_geom, res)
             all_hits[res] = hits
             print(f"[info] res={res}: {len(hits)} hexes flagged")
 
@@ -362,5 +254,15 @@ def compute_power_corridor_flags(
                 base.loc[mask, "near_power_corridor"] = True
 
     base["near_power_corridor"] = base["near_power_corridor"].astype(bool, copy=False)
+    
+    # Validate output schema
+    try:
+        validate_overlay_output(
+            base,
+            expected_columns={"h3_id", "res", "near_power_corridor"}
+        )
+    except ValueError as exc:
+        print(f"[warn] Output validation failed: {exc}")
+    
     base.to_parquet(output_path, index=False)
     print(f"[ok] Wrote {len(base)} rows to {output_path}")

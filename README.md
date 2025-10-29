@@ -85,7 +85,10 @@ For detailed data contracts and technical specifications, see `docs/ARCHITECTURE
 The system uses a modular architecture for POI processing:
 - **Shared POI logic** in `townscout/poi/` for ingestion, normalization, and conflation
 - **Domain-specific handlers** in `townscout/domains_poi/` for specialized POI types
-- **Overlay computation** in `townscout/domains_overlay/` and `src/climate/`, `src/power_corridors/` for climate and power corridor data
+- **Overlay computation** in `townscout/domains_overlay/` for non-routable hex enrichment:
+  - **Climate** - Temperature and precipitation metrics from PRISM normals
+  - **Power corridors** - High-voltage transmission line proximity flags
+  - **Political lean** - County-level 2024 presidential election results mapped to H3 cells
 
 The architecture supports both category-based (e.g., "supermarket") and brand-based (e.g., "Whole Foods") queries, with configurable runtime limits and comprehensive coverage of livability-relevant categories.
 

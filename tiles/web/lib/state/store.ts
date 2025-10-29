@@ -53,6 +53,10 @@ export interface StoreState {
   avoidPowerLines: boolean;
   setAvoidPowerLines: (value: boolean) => void;
 
+  // Political lean filter (0-4: Strong Dem to Strong Rep)
+  politicalLeanRange: [number, number] | null;
+  setPoliticalLeanRange: (range: [number, number] | null) => void;
+
   // Travel mode
   mode: Mode;
   setMode: (mode: Mode) => void;
@@ -122,6 +126,13 @@ export const useStore = create<StoreState>((set) => ({
   setAvoidPowerLines: (value) =>
     set(() => ({
       avoidPowerLines: Boolean(value)
+    })),
+
+  // Political lean filter
+  politicalLeanRange: null,
+  setPoliticalLeanRange: (range) =>
+    set(() => ({
+      politicalLeanRange: range
     })),
 
   // Travel mode

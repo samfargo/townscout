@@ -177,6 +177,27 @@ export function toggleAvoidPowerLines(): void {
   setAvoidPowerLines(!store.avoidPowerLines);
 }
 
+// Political lean filter
+export function setPoliticalLeanRange(range: [number, number] | null): void {
+  const store = useStore.getState();
+  const current = store.politicalLeanRange;
+  
+  // Compare arrays properly
+  if (range === null && current === null) {
+    return;
+  }
+  if (range !== null && current !== null && range[0] === current[0] && range[1] === current[1]) {
+    return;
+  }
+  
+  store.setPoliticalLeanRange(range);
+  void applyCurrentFilter();
+}
+
+export function clearPoliticalLeanRange(): void {
+  setPoliticalLeanRange(null);
+}
+
 // Slider management
 export function updateSlider(id: string, value: number): void {
   const store = useStore.getState();
@@ -262,7 +283,8 @@ export async function applyCurrentFilter(
       poiModes: store.poiModes,
       mode: store.mode,
       climateSelections: store.climateSelections,
-      avoidPowerLines: store.avoidPowerLines
+      avoidPowerLines: store.avoidPowerLines,
+      politicalLeanRange: store.politicalLeanRange
     }
   });
 }

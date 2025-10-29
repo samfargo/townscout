@@ -65,6 +65,7 @@ The POI processing logic has been reorganized into a clean modular architecture 
 - **`townscout/domains_overlay/`** - Per-hex overlay computation (not route-to-able)
   - `power_corridors/` - High-voltage transmission line proximity flags from OSM power=line (uses GeoPandas OSM driver due to pyrosm/Shapely 2.x compatibility issues; implements iterative union for buffered corridor geometry)
   - `climate/` - PRISM normals quantization, seasonal aggregation, climate typology classification
+  - `politics/` - County-level 2024 U.S. Presidential election results with Republican vote share and political lean bucketing (0-4: Strong Democrat to Strong Republican)
 
 Overlay processing scripts are organized in dedicated subdirectories under `src/`:
 - **`src/climate/`** - Climate data ingestion and processing
@@ -72,6 +73,8 @@ Overlay processing scripts are organized in dedicated subdirectories under `src/
   - `prism_to_hex.py` - Processes rasters to per-hex climate metrics
 - **`src/power_corridors/`** - Power corridor data processing
   - `osm_to_hex.py` - Computes per-hex power corridor proximity flags (wrapper around townscout.domains_overlay.power_corridors)
+- **`src/politics/`** - Political lean data processing
+  - `politics_to_hex.py` - Processes 2024 presidential election results from MIT Election Lab and joins county polygons to H3 cells (wrapper around townscout.domains_overlay.politics)
 
 **Power Corridor Processing Notes:**
 - Extracts high-voltage transmission lines (power=line with voltage ≥100kV) from OSM PBF files
@@ -117,6 +120,20 @@ The Rust extension in `townscout_native/` exposes:
 | `src/power_corridors/osm_to_hex.py` | Queries high-voltage OSM `power=line` features (via Pyrosm), buffers them by 200 m, dissolves the corridor, intersects with the H3 grid at r7/r8, and writes per-hex `near_power_corridor` flags to `data/power_corridors/<state>_near_power_corridor.parquet`. Buffer distance and minimum voltage thresholds are CLI parameters so product changes do not require code edits. |
 
 The merge step in `src/04_merge_states.py` consumes these parquet files and defaults missing values to `False`, ensuring tiles always expose the boolean expected by the frontend toggle.
+
+**Politics overlay:**
+- Loads 2024 U.S. Presidential election results from MIT Election Lab dataset (`townscout/domains_overlay/politics/countypres_2000-2024.csv`)
+- Calculates Republican vote share per county as `rep_votes / (rep_votes + dem_votes)`
+- Assigns counties to political lean buckets:
+  - 0: Strong Democrat (0.0-0.2 Rep share)
+  - 1: Lean Democrat (0.2-0.4)
+  - 2: Moderate (0.4-0.6)
+  - 3: Lean Republican (0.6-0.8)
+  - 4: Strong Republican (0.8-1.0)
+- Downloads Census TIGER county boundaries if not present
+- Joins county polygons to H3 cells at r7/r8 resolutions using H3 polyfill
+- Outputs `data/politics/<state>_political_lean.parquet` with columns: `h3_id`, `res`, `political_lean` (uint8), `rep_vote_share` (float32), `county_fips`, `county_name`
+- Hexes without political data (water, unpopulated areas, etc.) have null values and are excluded when the filter is active
 
 ### 4. Hex Tile Assembly
 
@@ -183,7 +200,7 @@ The web client is a Next.js 13+ App Router project that renders a full-height ma
 
 ### State & Actions
 
-- Global state lives in `lib/state/store.ts` (Zustand) tracking active POIs, per-filter sliders, mode selections, cached D_anchor maps, and climate selections. State is ephemeral and resets on page refresh to ensure clean initialization.
+- Global state lives in `lib/state/store.ts` (Zustand) tracking active POIs, per-filter sliders, mode selections, cached D_anchor maps, climate selections, and political lean range. State is ephemeral and resets on page refresh to ensure clean initialization.
 - `lib/actions/index.ts` holds the imperative bridge between UI state and the map:
   - Fetches catalog metadata and ensures caches are hydrated (`ensureCatalogLoaded`).
   - Adds/removes POIs (`addCategory`, `addBrand`, `addCustom`, `removePOI`) and keeps D_anchor caches in sync.
@@ -192,12 +209,12 @@ The web client is a Next.js 13+ App Router project that renders a full-height ma
 ### Map Integration
 
 - `lib/map/MapController.ts` instantiates MapLibre, registers the PMTiles protocol, tracks active mode filters, and exposes hover callbacks. The base style defines r7/r8 PMTiles sources with default visibility and 0.4 opacity, ensuring that when no filters are active, all hexes are shaded (showing the full coverage area).
-- `lib/map/map.worker.ts` builds GPU expressions in a Web Worker to combine multiple POI criteria. When multiple filters are active (e.g., airport + Costco), the worker uses **intersection logic** (MapLibre `'all'` expressions) so only hexes meeting ALL criteria are shown. This ensures that adding more criteria progressively narrows the livable area, as intended. Optional overlays (climate selections and the “Avoid power lines” toggle) are AND-ed into those expressions by inspecting tile properties such as `climate_label` and `near_power_corridor`.
+- `lib/map/map.worker.ts` builds GPU expressions in a Web Worker to combine multiple POI criteria. When multiple filters are active (e.g., airport + Costco), the worker uses **intersection logic** (MapLibre `'all'` expressions) so only hexes meeting ALL criteria are shown. This ensures that adding more criteria progressively narrows the livable area, as intended. Optional overlays (climate selections, "Avoid power lines" toggle, and political lean range filter) are AND-ed into those expressions by inspecting tile properties such as `climate_label`, `near_power_corridor`, and `political_lean`.
 - The MapController maintains a singleton worker instance and applies expression updates via RAF-coalesced batches to minimize render thrashing during slider interactions.
 
 ### Sidebar & UI Components
 
-- `app/(sidebar)/SearchBox.tsx` fetches catalog data and Google Places suggestions (using TanStack Query), dispatches add actions, and exposes the climate typology dropdown plus the “Avoid power lines” toggle.
+- `app/(sidebar)/SearchBox.tsx` fetches catalog data and Google Places suggestions (using TanStack Query), dispatches add actions, and exposes the climate typology dropdown, "Avoid power lines" toggle, and Political Views range slider (0-4: Strong Democrat to Strong Republican).
 - `app/(sidebar)/FiltersPanel.tsx` renders sliders per active POI, debouncing updates before invoking `updateSlider`.
 - `app/(sidebar)/HoverBox.tsx` summarizes hover details: travel times computed client-side using the same anchor combination logic, decoded climate stats, and a callout when the hovered hex lies within a buffered power corridor.
 - Shared UI primitives live in `components/ui/` (Tailwind + Radix-inspired shorthands).
@@ -418,18 +435,20 @@ Sentinel: `65535` (uint16) means unreachable / ≥ cutoff.
 * Store global top‑K per hex (recommended K=20+ for dense urban areas).
 * Parameters: `--cutoff 90 --k-best 20` for comprehensive coverage.
 
-6. **Overlay Data (Climate & Power Corridors)**
+6. **Overlay Data (Climate, Power Corridors & Politics)**
 
 * Run `src/climate/prism_to_hex.py` to generate climate metrics from PRISM rasters.
 * Run `src/power_corridors/osm_to_hex.py` to buffer high-voltage OSM `power=line` features, dissolve the corridor, and intersect with the H3 grid.
 * Writes `data/power_corridors/<state>_near_power_corridor.parquet` with `near_power_corridor` flags at r7/r8 resolutions (defaults to `False` when no qualifying lines exist).
 * Buffer distance defaults to 200 m; adjust with `--buffer-meters` if product requirements change.
+* Run `src/politics/politics_to_hex.py` to process 2024 presidential election results and join county-level political lean to H3 cells.
+* Writes `data/politics/<state>_political_lean.parquet` with `political_lean` (0-4 buckets) and `rep_vote_share` at r7/r8 resolutions (null values for hexes without county data).
 
 7. **Summaries & Merge**
 
 * Precompute `min_cat` & `min_brand` for exposed categories & A‑list brands.
 * Long‑tail brands resolved via joins at query time.
-* Merge overlay datasets (climate, `near_power_corridor`) so downstream tiles expose the necessary attributes.
+* Merge overlay datasets (climate, `near_power_corridor`, `political_lean`, `rep_vote_share`) so downstream tiles expose the necessary attributes.
 
 8. **Tiles**
 

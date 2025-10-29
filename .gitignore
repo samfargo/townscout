@@ -41,6 +41,7 @@ data/osm/cache_csr/*.arrow
 data/poi/*.parquet
 data/minutes/*.parquet
 data/deltas/*.csv
+data/boundaries
 state_tiles/*.parquet
 state_tiles/*.csv
 tiles/*.geojson

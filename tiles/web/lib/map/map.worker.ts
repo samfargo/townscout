@@ -70,6 +70,7 @@ export type WorkerState = {
   mode: Mode;
   climateSelections: string[];
   avoidPowerLines: boolean;
+  politicalLeanRange: [number, number] | null;
 };
 
 export type WorkerMessage = {
@@ -145,6 +146,19 @@ function buildAvoidPowerLinesExpression(enabled: boolean): any | null {
   return ['==', ['coalesce', ['get', 'near_power_corridor'], false], false];
 }
 
+function buildPoliticalLeanFilterExpression(range: [number, number] | null): any | null {
+  if (!range) return null;
+  const [min, max] = range;
+  // Filter: political_lean >= min AND political_lean <= max
+  // Handle null values (hexes without political data like water/unpopulated areas)
+  return [
+    'all',
+    ['has', 'political_lean'],
+    ['>=', ['get', 'political_lean'], min],
+    ['<=', ['get', 'political_lean'], max]
+  ];
+}
+
 function calculateExpressions(tempValues?: Record<string, number>) {
   if (!state) return;
 
@@ -154,7 +168,8 @@ function calculateExpressions(tempValues?: Record<string, number>) {
     poiModes,
     mode,
     climateSelections,
-    avoidPowerLines = false
+    avoidPowerLines = false,
+    politicalLeanRange = null
   } = state;
 
   const expressions: Record<
@@ -212,12 +227,13 @@ function calculateExpressions(tempValues?: Record<string, number>) {
     }
   });
 
-  // Add climate filter
+  // Add overlay filters
   const climateFilter = buildClimateFilterExpression(climateSelections || []);
   const avoidFilter = buildAvoidPowerLinesExpression(Boolean(avoidPowerLines));
+  const politicalFilter = buildPoliticalLeanFilterExpression(politicalLeanRange);
 
   (Object.keys(expressions) as Mode[]).forEach((m) => {
-    const combined = combineWithAll(baseExpressions[m], avoidFilter, climateFilter);
+    const combined = combineWithAll(baseExpressions[m], avoidFilter, climateFilter, politicalFilter);
     if (combined) {
       expressions[m].expression = combined;
       expressions[m].active = true;

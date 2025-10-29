@@ -19,7 +19,9 @@ import {
   normalizeMinutes,
   setClimateSelections,
   setAvoidPowerLines,
-  toggleClimateSelection
+  toggleClimateSelection,
+  setPoliticalLeanRange,
+  clearPoliticalLeanRange
 } from '@/lib/actions';
 import { CLIMATE_TYPOLOGY } from '@/lib/data/climate';
 import { buildCategoryGroups, fetchPlaceDetails, fetchPlaceSuggestions, type PlaceSuggestion } from '@/lib/services';
@@ -43,6 +45,7 @@ export default function SearchBox() {
   const pois = useStore((state) => state.pois);
   const climateSelections = useStore((state) => state.climateSelections);
   const avoidPowerLines = useStore((state) => state.avoidPowerLines);
+  const politicalLeanRange = useStore((state) => state.politicalLeanRange);
 
   const [placeInput, setPlaceInput] = React.useState('');
   const [placesQuery, setPlacesQuery] = React.useState('');
@@ -490,6 +493,80 @@ export default function SearchBox() {
                 </p>
               </div>
             </label>
+          </div>
+          <div className="rounded-2xl border border-stone-300 bg-[#f2ebd9] px-4 py-3 shadow-inner">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-stone-900">
+                  Political Views Filter
+                </span>
+                {politicalLeanRange && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-xs text-stone-600 hover:text-amber-900"
+                    onClick={() => clearPoliticalLeanRange()}
+                  >
+                    Clear
+                  </Button>
+                )}
+              </div>
+              <div className="space-y-2">
+                <div className="flex justify-between text-xs text-stone-600">
+                  <span>← Democrat</span>
+                  <span>Republican →</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="4"
+                  step="1"
+                  value={politicalLeanRange ? politicalLeanRange[0] : 0}
+                  className="w-full accent-amber-700"
+                  disabled={!politicalLeanRange}
+                  onChange={(e) => {
+                    const minValue = parseInt(e.target.value);
+                    const maxValue = politicalLeanRange ? politicalLeanRange[1] : 4;
+                    setPoliticalLeanRange([Math.min(minValue, maxValue), maxValue]);
+                  }}
+                />
+                <input
+                  type="range"
+                  min="0"
+                  max="4"
+                  step="1"
+                  value={politicalLeanRange ? politicalLeanRange[1] : 4}
+                  className="w-full accent-amber-700"
+                  disabled={!politicalLeanRange}
+                  onChange={(e) => {
+                    const maxValue = parseInt(e.target.value);
+                    const minValue = politicalLeanRange ? politicalLeanRange[0] : 0;
+                    setPoliticalLeanRange([minValue, Math.max(minValue, maxValue)]);
+                  }}
+                />
+                <div className="flex justify-between text-[10px] text-stone-500">
+                  <span>Strong Dem</span>
+                  <span>Lean Dem</span>
+                  <span>Moderate</span>
+                  <span>Lean Rep</span>
+                  <span>Strong Rep</span>
+                </div>
+                {politicalLeanRange ? (
+                  <p className="text-xs text-stone-600">
+                    Showing counties from {['Strong Dem', 'Lean Dem', 'Moderate', 'Lean Rep', 'Strong Rep'][politicalLeanRange[0]]} to {['Strong Dem', 'Lean Dem', 'Moderate', 'Lean Rep', 'Strong Rep'][politicalLeanRange[1]]}
+                  </p>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full border-amber-700 text-amber-900 hover:bg-amber-50"
+                    onClick={() => setPoliticalLeanRange([0, 4])}
+                  >
+                    Enable Political Filter
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
         <Separator className="bg-stone-300/80" />
