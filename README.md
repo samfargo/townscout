@@ -123,14 +123,14 @@ make pois anchors minutes climate power_corridors d_anchor_category d_anchor_bra
 ```
 
 ### Category & Brand Scope (Stay Focused)
-- Categories: edit `data/taxonomy/category_allowlist.txt`. The category step uses it by default; pass `--prune` when running the script directly to remove old categories.
-- Brands (A‑list): edit `data/brands/allowlist.txt`. The brand step reads it by default if you don't pass `--brand`.
-- Tip: Use `--threads` and consider a smaller `--overflow-cutoff` (e.g., 60) for faster runs on laptops.
+- **Categories**: edit `data/taxonomy/POI_category_registry.csv` (columns: `category_id`, `numeric_id`, `display_name`). Any category in the CSV is automatically allowlisted for anchors and precomputation. Numeric IDs are explicit to prevent drift.
+- **Brands**: edit `data/taxonomy/POI_brand_registry.csv` (columns: `brand_id`, `canonical`, `aliases`, `wikidata`). Any brand in the registry is automatically allowlisted for anchors and precomputation.
+- **Tip**: Use `--threads` and consider a smaller `--overflow-cutoff` (e.g., 60) for faster runs on laptops.
 
 ### Coverage Optimization
 For maximum POI coverage (especially dense brands):
-1. Expand brand aliases in `data/brands/registry.csv` for comprehensive name matching
-2. Compute `make d_anchor_brand` for all desired brands (or threshold)
+1. Add brands to `data/taxonomy/POI_brand_registry.csv` with comprehensive aliases for name matching
+2. Compute `make d_anchor_brand` for all brands in the registry (or use threshold)
 3. Increase K-best parameters (`--k-best 20+`) for dense urban areas if needed
 
 API:

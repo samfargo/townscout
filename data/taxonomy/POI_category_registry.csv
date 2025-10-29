@@ -1,0 +1,20 @@
+category_id,numeric_id,display_name
+airport,1,Airport
+bus_station,2,Bus Station
+cafe,3,Café
+fast_food,5,Fast Food
+hospital,7,Hospital
+park,8,Park
+pharmacy,9,Pharmacy
+railway_station,10,Railway Station
+supermarket,11,Supermarket
+beach_ocean,12,Beach Ocean
+beach_lake,13,Beach Lake
+library,14,Library
+place_of_worship_church,15,Place Of Worship Church
+place_of_worship_mosque,16,Place Of Worship Mosque
+place_of_worship_synagogue,17,Place Of Worship Synagogue
+place_of_worship_temple,18,Place Of Worship Temple
+trauma_level_1_adult,19,Trauma Level 1 Adult
+trauma_level_1_pediatric,20,Trauma Level 1 Pediatric
+

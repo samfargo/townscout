@@ -1,12 +1,15 @@
 """
-Defines the Townscout canonical taxonomy for POIs and a brand registry.
+Defines the Townscout canonical taxonomy for POIs and registries.
 
 This module provides the data structures and mappings required to normalize
 POIs from various sources (Overture, OSM) into a consistent, canonical schema.
 
-Config-driven: if present, the following files override/extend built-ins:
-- data/brands/registry.csv (brand_id,canonical,aliases,wikidata?)
-- data/taxonomy/categories.yml (keys: overture_map, osm_map with mapping entries)
+Single source of truth for allowlists (anti-drift design):
+- POI_brand_registry.csv (brand_id,canonical,aliases,wikidata) - all brands in registry are allowlisted
+- POI_category_registry.csv (category_id,numeric_id,display_name) - all categories in CSV are allowlisted with explicit IDs
+
+Optional override:
+- categories.yml (keys: overture_map, osm_map) - extends category mappings if TS_TAXONOMY_YAML=1
 """
 from __future__ import annotations
 import csv
@@ -106,13 +109,10 @@ BRAND_REGISTRY = {
     "costco": ("Costco", ["costco wholesale"]),
     "starbucks": ("Starbucks", ["starbucks coffee", "starbucks reserve"]),
     "mcdonalds": ("McDonald's", ["mcdonalds", "mcdonald's"]),
-    "dunkin": ("Dunkin'", ["dunkin donuts", "dunkin’"]),
+    "dunkin": ("Dunkin'", ["dunkin donuts", "dunkin'"]),
     "whole_foods": ("Whole Foods Market", ["whole foods", "wholefoods"]),
-    "trader_joes": ("Trader Joe's", ["trader joes", "trader joe’s"]),
+    "trader_joes": ("Trader Joe's", ["trader joes", "trader joe's"]),
     "wegmans": ("Wegmans", []),
-    "market_basket": ("Market Basket", ["demoulas market basket", "demoulas"]),
-    "stop_and_shop": ("Stop & Shop", ["stop & shop", "stop and shop"]),
-    "aldi": ("ALDI", ["aldi"],),
     "walmart": ("Walmart", ["wal-mart"]),
     "target": ("Target", []),
     "home_depot": ("The Home Depot", ["home depot"]),
@@ -120,11 +120,8 @@ BRAND_REGISTRY = {
     "cvs": ("CVS Pharmacy", ["cvs", "cvs/pharmacy", "cvs health"]),
     "walgreens": ("Walgreens", ["walgreen"]),
     "rite_aid": ("Rite Aid", ["riteaid"]),
-    "bjs": ("BJ's Wholesale Club", ["bj's", "bjs wholesale"]),
     "sams_club": ("Sam's Club", ["sams club"]),
     "panera": ("Panera Bread", ["panera"]),
-    "ikea": ("IKEA", []),
-    "best_buy": ("Best Buy", []),
 }
 
 
@@ -147,6 +144,107 @@ def _load_brand_registry_csv(path: str) -> Dict[str, Tuple[str, List[str]]]:
     except Exception:
         return {}
     return out
+
+
+def get_allowlisted_brands(path: str = None) -> set[str]:
+    """
+    Load all brand_ids from the brand registry CSV.
+    All brands in the registry are considered allowlisted.
+    
+    Args:
+        path: Path to registry CSV file. If None, uses default POI_brand_registry.csv in same directory.
+        
+    Returns:
+        Set of all brand_ids in the registry.
+    """
+    if path is None:
+        # Relative to this file's directory
+        path = os.path.join(os.path.dirname(__file__), "POI_brand_registry.csv")
+    
+    brand_ids: set[str] = set()
+    try:
+        with open(path, newline="") as f:
+            rdr = csv.DictReader(f)
+            for row in rdr:
+                bid = str(row.get("brand_id", "")).strip()
+                if bid:
+                    brand_ids.add(bid)
+    except FileNotFoundError:
+        return set()
+    except Exception:
+        return set()
+    return brand_ids
+
+
+def get_categories(path: str = None) -> Dict[str, Tuple[int, str]]:
+    """
+    Load categories from CSV with explicit numeric IDs (anti-drift design).
+    All categories in the CSV are considered allowlisted.
+    
+    Args:
+        path: Path to categories CSV file. If None, uses default POI_category_registry.csv in same directory.
+        
+    Returns:
+        Dict mapping category_id -> (numeric_id, display_name)
+        
+    Raises:
+        ValueError: If duplicate numeric_ids are found (prevents ID drift).
+    """
+    if path is None:
+        # Relative to this file's directory
+        path = os.path.join(os.path.dirname(__file__), "POI_category_registry.csv")
+    
+    categories: Dict[str, Tuple[int, str]] = {}
+    numeric_ids_seen: Dict[int, str] = {}
+    
+    try:
+        with open(path, newline="") as f:
+            rdr = csv.DictReader(f)
+            for row_num, row in enumerate(rdr, start=2):  # start=2 accounts for header
+                cat_id = str(row.get("category_id", "")).strip()
+                if not cat_id:
+                    continue
+                    
+                try:
+                    numeric_id = int(row.get("numeric_id", "0"))
+                except (ValueError, TypeError):
+                    raise ValueError(f"Invalid numeric_id in {path} row {row_num}: {row.get('numeric_id')}")
+                
+                # Check for duplicate numeric IDs (critical for preventing drift)
+                if numeric_id in numeric_ids_seen:
+                    raise ValueError(
+                        f"Duplicate numeric_id={numeric_id} in {path}: "
+                        f"'{numeric_ids_seen[numeric_id]}' and '{cat_id}'"
+                    )
+                numeric_ids_seen[numeric_id] = cat_id
+                
+                display_name = str(row.get("display_name", "")).strip() or cat_id.replace("_", " ").title()
+                categories[cat_id] = (numeric_id, display_name)
+                
+    except FileNotFoundError:
+        return {}
+    except ValueError:
+        raise  # Re-raise validation errors
+    except Exception as e:
+        print(f"[warn] Failed to load categories from {path}: {e}")
+        return {}
+    
+    return categories
+
+
+def get_allowlisted_categories(path: str = None) -> set[str]:
+    """
+    Load all category_ids from the categories CSV.
+    All categories in the CSV are considered allowlisted.
+    
+    Args:
+        path: Path to categories CSV file. If None, uses default location.
+        
+    Returns:
+        Set of all category_ids in the CSV.
+    """
+    categories = get_categories(path)
+    return set(categories.keys())
 
 # --- Overture Category Mapping ---
 # Maps Overture's primary and alternate categories to the Townscout Taxonomy.
@@ -293,8 +391,9 @@ OSM_TAG_MAP = {
     }
 
 # --- Optional external config overrides ---
-_BRANDS_CSV = os.path.join("data", "brands", "registry.csv")
-_CATS_YML = os.path.join("data", "taxonomy", "categories.yml")
+# Paths relative to this file's directory
+_BRANDS_CSV = os.path.join(os.path.dirname(__file__), "POI_brand_registry.csv")
+_CATS_YML = os.path.join(os.path.dirname(__file__), "categories.yml")
 
 # Override/extend brand registry if CSV present
 _from_csv = _load_brand_registry_csv(_BRANDS_CSV)
@@ -324,3 +423,4 @@ if _USE_CATS_YAML and yaml is not None and os.path.isfile(_CATS_YML):
                         OSM_TAG_MAP[(str(tag_key), str(tag_val))] = (str(v[0]), str(v[1]), str(v[2]))
     except Exception:
         pass
+

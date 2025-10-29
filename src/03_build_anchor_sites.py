@@ -84,23 +84,10 @@ def build_anchor_sites_from_nodes(
 
     before = len(canonical_pois)
     # Tighten to overhaul scope: allowlisted categories OR allowlisted brands (A-list)
-    allowlist_path = os.path.join("data", "taxonomy", "category_allowlist.txt")
-    allowed: set[str] = set()
-    if os.path.isfile(allowlist_path):
-        try:
-            with open(allowlist_path, "r") as f:
-                allowed = {ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")}
-        except Exception:
-            allowed = set()
-    # Optional brand allowlist (canonical brand_id per line)
-    brand_allow_path = os.path.join("data", "brands", "allowlist.txt")
-    brand_allowed: set[str] = set()
-    if os.path.isfile(brand_allow_path):
-        try:
-            with open(brand_allow_path, "r") as f:
-                brand_allowed = {ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")}
-        except Exception:
-            brand_allowed = set()
+    from taxonomy import get_allowlisted_categories, get_allowlisted_brands
+    
+    allowed: set[str] = get_allowlisted_categories()
+    brand_allowed: set[str] = get_allowlisted_brands()
 
     if allowed or brand_allowed:
         cond_cat = canonical_pois["category"].isin(sorted(allowed)) if allowed else False

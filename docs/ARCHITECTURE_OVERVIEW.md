@@ -2,7 +2,7 @@
 
 This repository powers the TownScout experience: a livability map that blends precomputed travel times, on-demand POI routing, and climate enrichment. The system is split into four cooperating layers:
 
-1. **Data engineering pipeline** in `src/` that ingests reference data, builds the road graph/anchor sites, computes travel-time products, enriches hexes with climate metrics, and produces parquet + PMTiles artefacts.
+1. **Data engineering pipeline** in `src/` that ingests reference data, builds the road graph/anchor sites, computes travel-time products, enriches hexes with climate metrics, and produces parquet + PMTiles artifacts.
 2. **Native Rust kernels** in `townscout_native/` that accelerate the heaviest graph algorithms (multi-source K-best routing, contraction hierarchy helpers).
 3. **FastAPI service** in `api/main.py` that exposes D_anchor lookups, catalog metadata, Google Places proxies, and static assets.
 4. **Next.js frontend** in `tiles/web/` that renders the interactive map and composes GPU expressions from tiles + API responses.
@@ -34,11 +34,11 @@ Pipeline scripts are designed to be run sequentially; each stage emits artefacts
 | Script | Responsibility | Key Outputs |
 | --- | --- | --- |
 | `src/01_download_extracts.py` | Downloads Geofabrik OSM PBF extracts and clips Overture Places via DuckDB. | `data/osm/<state>.osm.pbf`, `data/overture/ma_places.parquet` |
-| `src/02_normalize_pois.py` | Loads Overture + OSM POIs, normalizes to the TownScout taxonomy (`src/taxonomy.py`), resolves brands, and deduplicates. | `data/poi/<state>_canonical.parquet` (geometry in WKB, brand/category columns) |
+| `src/02_normalize_pois.py` | Loads Overture + OSM POIs, normalizes to the TownScout taxonomy (`data/taxonomy/taxonomy.py`), resolves brands, and deduplicates. | `data/poi/<state>_canonical.parquet` (geometry in WKB, brand/category columns) |
 
 Supporting modules:
 
-- `src/taxonomy.py` defines the canonical class → category → subcategory hierarchy, brand registry, and source tag mappings. Optional CSV/YAML files in `data/` override defaults. The taxonomy includes special handling for:
+- `data/taxonomy/taxonomy.py` defines the canonical class → category → subcategory hierarchy, brand registry, and source tag mappings. Optional CSV/YAML files in `data/taxonomy/` override defaults. The taxonomy includes special handling for:
   - **Places of Worship**: OSM `amenity=place_of_worship` POIs are classified by their `religion` tag into separate categories: `place_of_worship_church` (Christian), `place_of_worship_synagogue` (Jewish), `place_of_worship_temple` (Hindu/Buddhist/Jain/Sikh), and `place_of_worship_mosque` (Muslim). This allows users to filter by specific worship types while OSM only provides the generic `place_of_worship` amenity tag.
   - **Libraries**: Mapped from OSM `amenity=library` and Overture `library` category.
 - `src/geometry_utils.py` provides geometry hygiene utilities to prevent Shapely 2.x `create_collection` errors when building GeometryCollection or Multi* objects from mixed/invalid geometries. The `clean_geoms()` function filters out null, empty, and non-geometry objects before unary_union operations. Used extensively in power corridor processing to work around pyrosm compatibility issues.
@@ -277,7 +277,7 @@ Subsequent development typically touches a single layer (e.g., adjusting taxonom
 
 ## Extending the System
 
-- **Adding new POI categories/brands**: extend `src/taxonomy.py` or the override files in `data/`, regenerate canonical POIs, rebuild anchors, rerun D_anchor scripts, and refresh the catalog API.
+- **Adding new POI categories/brands**: extend `data/taxonomy/taxonomy.py` or the override files in `data/taxonomy/`, regenerate canonical POIs, rebuild anchors, rerun D_anchor scripts, and refresh the catalog API.
 - **Supporting additional states/modes**: update `config.py` (`STATES`, snap radii, H3 resolutions), ensure download scripts clip the desired region, and regenerate all pipeline outputs. Anchors will inherit stable IDs as long as the same `site_id` hashing strategy is used.
 - **New overlays (e.g., crime, schools)**: model after the climate and power-corridor flows—write a script that enriches H3 hexes, emit parquet keyed by `h3_id`/`res`, and merge outputs before tile generation so the frontend can consume the new attributes.
 - **Frontend experiments**: reuse `lib/actions` to keep map expressions consistent. Any new filter that depends on D_anchor data should populate the cache structure (`dAnchorCache`) and invoke `applyCurrentFilter`.
@@ -492,7 +492,7 @@ UI rules:
 **A. Taxonomy & Brand Registry**
 
 * **Input:** Overture categories + OSM tags; seed CSV of brand aliases.
-* **Output:** `data/taxonomy/categories.yml`, `data/brands/registry.csv` (columns: `brand_id,canonical,aliases|;‑sep,wikidata?`).
+* **Output:** `data/taxonomy/categories.yml`, `data/taxonomy/POI_brand_registry.csv` (columns: `brand_id,canonical,aliases|;‑sep,wikidata?`).
 * **Checks:** Aliases must be unique; map every exposed UI category to ≥1 source tag.
 
 **B. Ingest + Normalize**
@@ -546,14 +546,14 @@ UI rules:
 * Tile layers: `t_hex_r7_*`, `t_hex_r8_*` only.
 
 Allowlists & Sources (overhaul scope)
-- `data/taxonomy/category_allowlist.txt`: category labels to precompute. The category D_anchor step reads this by default; use `--prune` to remove stale categories.
-- `data/brands/allowlist.txt`: A‑list canonical brand_ids to precompute for brand queries and to include in anchors when their categories aren't allowlisted.
+- `data/taxonomy/POI_category_registry.csv`: category definitions with explicit numeric IDs (anti-drift). Columns: `category_id`, `numeric_id`, `display_name`. Any category in the CSV is automatically allowlisted for anchors and precomputation.
+- `data/taxonomy/POI_brand_registry.csv`: brand definitions with aliases. Columns: `brand_id`, `canonical`, `aliases`, `wikidata`. All brands in the registry are automatically allowlisted for anchors and precomputation.
 - Airports: `Future/airports_coordinates.csv` only (normalization injects these; OSM/Overture airports are discarded).
 
 Taxonomy & Config Files (minimal)
-- `src/taxonomy.py`: built‑in taxonomy + mappings (defaults).
-- `data/brands/registry.csv`: brand canon + aliases you edit regularly.
-- `data/taxonomy/category_labels.json`: generated by category D_anchor; served by the API.
+- `data/taxonomy/taxonomy.py`: built‑in taxonomy + mappings (defaults).
+- `data/taxonomy/POI_brand_registry.csv`: brand canon and aliases. Any brand present is automatically allowlisted.
+- `data/taxonomy/POI_category_registry.csv`: category definitions with explicit numeric IDs and display names. Single source of truth.
 - `data/taxonomy/d_anchor_limits.json`: runtime limits for D_anchor computation (max_minutes, top_k per category/brand).
 - Optional advanced override (disabled by default): `data/taxonomy/categories.yml`. Enable with `TS_TAXONOMY_YAML=1` if you need to extend mappings.
 

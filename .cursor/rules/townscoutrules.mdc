@@ -3,4 +3,4 @@ alwaysApply: true
 ---
 Use the virtual enviornment (/Users/sam/townscout/.venv) when running command prompts in the terminal.Use the virtual enviornment (/Users/sam/townscout/.venv) when running command prompts in the terminal.
 
-Each time you make code changes, ensure that the @README.MD, @ARCHITECTURE_OVERVIEW.MD, and @ANCHORS.md files are up-to-date and accurate. If they are not, update where applicable.
+Each time you make code changes, ensure that the @README.MD, @ARCHITECTURE_OVERVIEW.MD, @ANCHORS.md, and @datasets.json files are up-to-date and accurate. If they are not, update where applicable.

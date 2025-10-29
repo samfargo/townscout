@@ -503,10 +503,31 @@ def list_available_categories(mode: str) -> list[int]:
     return sorted(set(ids))
 
 def _load_category_label_to_id() -> Dict[str, int]:
-    """Load category label -> id mapping from category_label_to_id.json.
+    """Load category label -> id mapping from POI_category_registry.csv.
     Returns mapping from label strings (e.g. 'fast_food') to integer category IDs.
+    
+    Falls back to legacy category_label_to_id.json if CSV doesn't exist.
     """
     base = os.path.join("data", "taxonomy")
+    csv_path = os.path.join(base, "POI_category_registry.csv")
+    
+    # Try CSV first (new approach with explicit IDs)
+    if os.path.isfile(csv_path):
+        try:
+            import csv
+            label_to_id = {}
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    cat_id = str(row.get("category_id", "")).strip()
+                    numeric_id = int(row.get("numeric_id", 0))
+                    if cat_id and numeric_id:
+                        label_to_id[cat_id] = numeric_id
+            return label_to_id
+        except Exception as e:
+            print(f"[warn] Failed to load POI_category_registry.csv: {e}")
+    
+    # Fallback to legacy JSON
     json_path = os.path.join(base, "category_label_to_id.json")
     if os.path.isfile(json_path):
         try:
@@ -518,12 +539,31 @@ def _load_category_label_to_id() -> Dict[str, int]:
     return {}
 
 def _load_category_labels() -> Dict[str, str]:
-    """Load optional category id -> label mapping.
-    Supports JSON (object {"1":"Supermarket",...}) or CSV with headers category_id,label.
-    Returns mapping with string keys.
+    """Load category id -> display name mapping from POI_category_registry.csv.
+    Returns mapping with string numeric_id keys (e.g. {"1": "Airport"}).
+    
+    Falls back to legacy category_labels.json if CSV doesn't exist.
     """
     base = os.path.join("data", "taxonomy")
-    # JSON first
+    csv_path = os.path.join(base, "POI_category_registry.csv")
+    
+    # Try CSV first (new approach)
+    if os.path.isfile(csv_path):
+        try:
+            import csv
+            id_to_label = {}
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    numeric_id = str(row.get("numeric_id", "")).strip()
+                    display_name = str(row.get("display_name", "")).strip()
+                    if numeric_id and display_name:
+                        id_to_label[numeric_id] = display_name
+            return id_to_label
+        except Exception as e:
+            print(f"[warn] Failed to load POI_category_registry.csv: {e}")
+    
+    # Fallback to legacy JSON
     json_path = os.path.join(base, "category_labels.json")
     if os.path.isfile(json_path):
         try:
@@ -533,9 +573,10 @@ def _load_category_labels() -> Dict[str, str]:
                 return {str(k): str(v) for k, v in obj.items()}
         except Exception:
             pass
-    # CSV fallback
-    csv_path = os.path.join(base, "category_labels.csv")
-    if os.path.isfile(csv_path):
+    
+    # Final fallback: CSV without display_name column
+    csv_fallback_path = os.path.join(base, "category_labels.csv")
+    if os.path.isfile(csv_fallback_path):
         try:
             import csv
             out: Dict[str, str] = {}

@@ -25,7 +25,7 @@ The anchor selection strategy directly controls the tradeoff between accuracy an
 **Anchors are NOT arbitrary spatial points.** Each anchor represents a road network node where one or more POIs have been snapped.
 
 **Selection Process:**
-1. **POI Filtering**: Only POIs from allowlisted categories (`data/taxonomy/category_allowlist.txt`) or A-list brands (`data/brands/allowlist.txt`) become anchor candidates
+1. **POI Filtering**: Only POIs from categories in `data/taxonomy/POI_category_registry.csv` or brands in `data/taxonomy/POI_brand_registry.csv` become anchor candidates
 2. **Connectivity-Aware Snapping**: POIs snap to road graph nodes using intelligent node selection:
    - Query k=10 nearest road nodes
    - Prefer nodes with ≥2 edges (avoid dead ends)
@@ -176,27 +176,31 @@ a{K-1}_id: int32, a{K-1}_s: uint16
 
 ### Core Anchor Selection
 
-**Category Allowlist** (`data/taxonomy/category_allowlist.txt`):
+**Category Registry** (`data/taxonomy/POI_category_registry.csv`):
+```csv
+category_id,numeric_id,display_name
+supermarket,11,Supermarket
+cafe,3,Café
+fast_food,5,Fast Food
+hospital,7,Hospital
+trauma_level_1_adult,19,Trauma Level 1 Adult
+pharmacy,9,Pharmacy
+park,8,Park
+airport,1,Airport
 ```
-supermarket
-cafe  
-fast_food
-hospital
-trauma_level_1_adult
-pharmacy
-park
-airport
-```
+All categories in the CSV are automatically included in anchors and precomputed. Numeric IDs are explicit to prevent drift.
 
-**Brand Allowlist** (`data/brands/allowlist.txt`):
+**Brand Registry** (`data/taxonomy/POI_brand_registry.csv`):
+```csv
+brand_id,canonical,aliases,wikidata
+costco,Costco,"costco wholesale",
+starbucks,Starbucks,"starbucks coffee|starbucks reserve",
+dunkin,Dunkin',"dunkin donuts|dunkin'",
+mcdonalds,McDonald's,"mcdonalds|mcdonald's",
+cvs,CVS Pharmacy,"cvs|cvs/pharmacy|cvs health",
+walmart,Walmart,"wal-mart",
 ```
-costco
-starbucks
-dunkin
-mcdonalds
-cvs
-walmart
-```
+All brands in the registry are automatically included in anchors and precomputed. Add or remove brands to control scope.
 
 ### Runtime Limits (`data/taxonomy/d_anchor_limits.json`)
 

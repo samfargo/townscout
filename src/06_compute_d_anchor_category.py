@@ -137,7 +137,7 @@ def main():
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1), help="Parallel category workers (processes)")
     ap.add_argument("--out-dir", default="data/d_anchor_category")
-    ap.add_argument("--allowlist", default="data/taxonomy/category_allowlist.txt", help="Optional path to category allowlist (one category label per line)")
+    ap.add_argument("--categories-csv", default="data/taxonomy/POI_category_registry.csv", help="Path to categories CSV with explicit numeric IDs")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--prune", action="store_true", help="Remove existing category partitions not in current targets")
     args = ap.parse_args()
@@ -175,69 +175,46 @@ def main():
                 cat_counts[s] = cat_counts.get(s, 0) + 1
                 cat_values.append(s)
 
+    # Load categories from CSV with explicit numeric IDs (anti-drift design)
+    from taxonomy import get_categories
+    try:
+        all_categories = get_categories(args.categories_csv)
+        print(f"[info] Loaded {len(all_categories)} categories from {args.categories_csv}")
+    except ValueError as e:
+        print(f"[error] Invalid categories CSV: {e}")
+        return
+    except Exception as e:
+        print(f"[error] Failed to load categories CSV: {e}")
+        return
+    
+    if not all_categories:
+        print(f"[error] No categories found in {args.categories_csv}")
+        return
+
     # Resolve targets
     targets: List[str] = list(dict.fromkeys(map(str, args.category)))
-    # Optional allowlist file
-    if (not targets) and args.allowlist and os.path.isfile(args.allowlist):
-        try:
-            with open(args.allowlist, "r") as f:
-                allowed = [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
-            targets = [c for c in allowed]
-            print(f"[info] Loaded {len(targets)} categories from allowlist {args.allowlist}")
-        except Exception as e:
-            print(f"[warn] Failed to read allowlist {args.allowlist}: {e}")
-    if args.min_sites > 0 and not targets:
-        targets += [c for c, n in cat_counts.items() if n >= args.min_sites]
     if not targets:
-        # Default: all categories seen in anchors
-        targets = sorted(set(cat_values))
-    else:
-        # Keep only those present in anchors (avoid empty outputs)
-        present = set(cat_counts.keys())
-        targets = sorted([t for t in set(targets) if t in present])
+        # Use all categories from CSV
+        targets = sorted(all_categories.keys())
+        print(f"[info] Using all {len(targets)} categories from CSV")
+    
+    if args.min_sites > 0:
+        # Filter by minimum site count
+        targets = [c for c in targets if cat_counts.get(c, 0) >= args.min_sites]
+        print(f"[info] Filtered to {len(targets)} categories with >= {args.min_sites} sites")
+    
+    # Keep only those present in anchors (avoid empty outputs)
+    present = set(cat_counts.keys())
+    targets = sorted([t for t in set(targets) if t in present])
+    
     if not targets:
         print("[warn] No categories to compute; exiting.")
         return
-
-    # Stable category_id mapping persisted across runs
-    labels_dir = os.path.join("data", "taxonomy")
-    ensure_dir(labels_dir)
-    label_to_id_path = os.path.join(labels_dir, "category_label_to_id.json")
-    persisted_map: Dict[str, int] = {}
-    if os.path.isfile(label_to_id_path):
-        try:
-            with open(label_to_id_path, "r") as f:
-                obj = json.load(f)
-                if isinstance(obj, dict):
-                    persisted_map = {str(k): int(v) for k, v in obj.items()}
-        except Exception as e:
-            print(f"[warn] Failed to read existing label→id map {label_to_id_path}: {e}")
-
-    next_id = (max(persisted_map.values()) + 1) if persisted_map else 1
-    new_labels = [lab for lab in sorted(set(targets)) if lab not in persisted_map]
-    for lab in new_labels:
-        persisted_map[lab] = next_id
-        next_id += 1
-    # Restrict active mapping to current targets, but persist the full map to disk
-    label_to_id: Dict[str, int] = {lab: persisted_map[lab] for lab in targets}
-
-    # Persist full label→id mapping for stability
-    try:
-        with open(label_to_id_path, "w") as f:
-            json.dump(persisted_map, f, indent=2, sort_keys=True)
-        print(f"[ok] Wrote stable label→id map to {label_to_id_path}")
-    except Exception as e:
-        print(f"[warn] Failed to write label→id map: {e}")
-
-    # Also persist a convenience id→pretty label map for the API; keys must be strings
-    labels_path = os.path.join(labels_dir, "category_labels.json")
-    try:
-        id_to_label = {str(pid): _normalize_label(lab) for lab, pid in persisted_map.items()}
-        with open(labels_path, "w") as f:
-            json.dump(id_to_label, f, indent=2, sort_keys=True)
-        print(f"[ok] Wrote labels to {labels_path}")
-    except Exception as e:
-        print(f"[warn] Failed to write labels: {e}")
+    
+    # Build label_to_id mapping from CSV (explicit IDs, no drift)
+    label_to_id: Dict[str, int] = {cat_id: numeric_id for cat_id, (numeric_id, _) in all_categories.items() if cat_id in targets}
+    
+    print(f"[info] Computing {len(targets)} categories: {', '.join(targets)}")
 
     # CSR + mappings
     csr_start = time.perf_counter()

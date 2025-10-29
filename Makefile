@@ -56,7 +56,7 @@ data/overture/ma_places.parquet:
 	@test -f $@ || (echo "[error] expected $@ after download" && exit 1)
 
 # Allow make to build canonical POI parquet on demand
-data/poi/%_canonical.parquet: data/osm/%.osm.pbf data/overture/ma_places.parquet src/02_normalize_pois.py src/taxonomy.py data/brands/registry.csv
+data/poi/%_canonical.parquet: data/osm/%.osm.pbf data/overture/ma_places.parquet src/02_normalize_pois.py data/taxonomy/taxonomy.py data/taxonomy/POI_brand_registry.csv
 	$(PY) src/02_normalize_pois.py
 
 # Build anchor sites per state (deterministic, reusable)
@@ -64,7 +64,7 @@ ANCHOR_FILES := $(patsubst %,data/anchors/%_drive_sites.parquet,$(STATES))
 
 anchors: $(ANCHOR_FILES) ## 2.5 Build anchor sites per state
 
-data/anchors/%_drive_sites.parquet: data/poi/%_canonical.parquet data/osm/%.osm.pbf src/03_build_anchor_sites.py src/graph/pyrosm_csr.py src/taxonomy.py src/config.py | build/native.stamp
+data/anchors/%_drive_sites.parquet: data/poi/%_canonical.parquet data/osm/%.osm.pbf src/03_build_anchor_sites.py src/graph/pyrosm_csr.py data/taxonomy/taxonomy.py src/config.py | build/native.stamp
 	@mkdir -p data/anchors
 	@echo "--- Building anchor sites for $* (drive) ---"
 	$(PY) src/03_build_anchor_sites.py \

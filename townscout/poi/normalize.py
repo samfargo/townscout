@@ -9,10 +9,10 @@ from pathlib import Path
 import pandas as pd
 import geopandas as gpd
 
-# Add src to path to import taxonomy
-src_path = Path(__file__).parent.parent.parent / "src"
-if str(src_path) not in sys.path:
-    sys.path.insert(0, str(src_path))
+# Add data/taxonomy to path to import taxonomy
+taxonomy_path = Path(__file__).parent.parent.parent / "data" / "taxonomy"
+if str(taxonomy_path) not in sys.path:
+    sys.path.insert(0, str(taxonomy_path))
 
 from taxonomy import BRAND_REGISTRY, OVERTURE_CATEGORY_MAP, OSM_TAG_MAP
 from .schema import CANONICAL_POI_SCHEMA, create_empty_poi_dataframe

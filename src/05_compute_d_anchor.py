@@ -135,7 +135,7 @@ def main():
     ap.add_argument("--mode", required=True, choices=["drive", "walk"])
     ap.add_argument("--brand", action="append", default=[], help="Brand id (canonical or alias) to compute; can repeat")
     ap.add_argument("--brands-threshold", type=int, default=0, help="If >0, compute for all brands with >= this many anchors")
-    ap.add_argument("--allowlist", default="data/brands/allowlist.txt", help="Optional path to brand allowlist (one canonical brand_id per line)")
+    ap.add_argument("--allowlist", default="data/taxonomy/POI_brand_registry.csv", help="Path to brand registry CSV")
     ap.add_argument("--cutoff", type=int, default=30)
     ap.add_argument("--overflow-cutoff", type=int, default=90)
     ap.add_argument("--threads", type=int, default=1)
@@ -182,15 +182,15 @@ def main():
 
     # Resolve brand targets
     targets: List[str] = list(dict.fromkeys(map(str, args.brand)))
-    # Optional allowlist file
-    if (not targets) and args.allowlist and os.path.isfile(args.allowlist):
+    # Get allowlisted brands from registry CSV if no explicit brands specified
+    if not targets:
+        from taxonomy import get_allowlisted_brands
         try:
-            with open(args.allowlist, "r") as f:
-                allowed = [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
-            targets = [b for b in allowed]
-            print(f"[info] Loaded {len(targets)} brands from allowlist {args.allowlist}")
+            allowed = get_allowlisted_brands(args.allowlist)
+            targets = sorted(allowed)
+            print(f"[info] Loaded {len(targets)} brands from registry allowlist in {args.allowlist}")
         except Exception as e:
-            print(f"[warn] Failed to read brand allowlist {args.allowlist}: {e}")
+            print(f"[warn] Failed to read brand allowlist from {args.allowlist}: {e}")
     if args.brands_threshold > 0 and not targets:
         targets += [b for b, cnt in brand_counts.items() if cnt >= args.brands_threshold]
     targets = sorted(set(targets))
