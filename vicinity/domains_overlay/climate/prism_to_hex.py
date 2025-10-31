@@ -1,7 +1,7 @@
 """
 Convert PRISM climate normals to per-hex parquet with quantized values.
 
-This is now a thin wrapper around the townscout.domains_overlay.climate module.
+This is now a thin wrapper around the vicinity.domains_overlay.climate module.
 """
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-# Add project root to path to import townscout
+# Add project root to path to import vicinity
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-# Import from the new townscout.domains_overlay.climate module
-from townscout.domains_overlay.climate import process_climate_data
-from townscout.domains_overlay.climate.schema import (
+# Import from the new vicinity.domains_overlay.climate module
+from vicinity.domains_overlay.climate import process_climate_data
+from vicinity.domains_overlay.climate.schema import (
     PRISM_DIR_DEFAULT,
     MINUTES_GLOB_DEFAULT,
     OUT_PARQUET_DEFAULT,

@@ -1,5 +1,5 @@
 """
-Defines the Townscout canonical taxonomy for POIs and registries.
+Defines the vicinity canonical taxonomy for POIs and registries.
 
 This module provides the data structures and mappings required to normalize
 POIs from various sources (Overture, OSM) into a consistent, canonical schema.
@@ -20,7 +20,7 @@ try:
 except Exception:
     yaml = None
 
-# --- Townscout POI Taxonomy ---
+# --- vicinity POI Taxonomy ---
 # A hierarchical classification system: class -> category -> subcat
 # This is a starting point and should be expanded based on data analysis.
 TAXONOMY = {
@@ -247,9 +247,9 @@ def get_allowlisted_categories(path: str = None) -> set[str]:
     return set(categories.keys())
 
 # --- Overture Category Mapping ---
-# Maps Overture's primary and alternate categories to the Townscout Taxonomy.
+# Maps Overture's primary and alternate categories to the vicinity Taxonomy.
 # Key: lowercase overture category
-# Value: (Townscout class, Townscout category, Townscout subcat)
+# Value: (vicinity class, vicinity category, vicinity subcat)
 OVERTURE_CATEGORY_MAP = {
     # Food & drink
     "supermarket": ("food_and_drink", "supermarket", "supermarket"),
@@ -310,9 +310,9 @@ OVERTURE_CATEGORY_MAP = {
 
 
 # --- OSM Tag Mapping ---
-# Maps OSM tags (e.g., from 'amenity', 'shop', 'leisure') to the Townscout Taxonomy.
+# Maps OSM tags (e.g., from 'amenity', 'shop', 'leisure') to the vicinity Taxonomy.
 # Key: (tag_key, tag_value)
-# Value: (Townscout class, Townscout category, Townscout subcat)
+# Value: (vicinity class, vicinity category, vicinity subcat)
 OSM_TAG_MAP = {
     # Food & drink
     ("shop", "supermarket"): ("food_and_drink", "supermarket", "supermarket"),

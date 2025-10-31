@@ -14,7 +14,7 @@ if str(taxonomy_path) not in sys.path:
     sys.path.insert(0, str(taxonomy_path))
 
 from taxonomy import OSM_TAG_MAP
-from townscout.osm.pyrosm_utils import get_osm_data
+from vicinity.osm.pyrosm_utils import get_osm_data
 
 
 def load_osm_pois(state: str, pbf_path: str = None) -> gpd.GeoDataFrame:
@@ -37,7 +37,7 @@ def load_osm_pois(state: str, pbf_path: str = None) -> gpd.GeoDataFrame:
 
     print(f"--- Loading OSM POIs for {state} from {pbf_path} ---")
     
-    # Taxonomy-driven filter: only request tags we map into TownScout taxonomy
+    # Taxonomy-driven filter: only request tags we map into vicinity taxonomy
     wanted: dict[str, set[str]] = {}
     for (k, v), _ts in OSM_TAG_MAP.items():
         wanted.setdefault(k, set()).add(v)

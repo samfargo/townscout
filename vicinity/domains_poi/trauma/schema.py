@@ -7,7 +7,7 @@ import pyarrow as pa
 TRAUMA_CLASS = "health"
 TRAUMA_CATEGORY = "hospital"
 
-# Trauma level mappings (ACS labels -> TownScout schema)
+# Trauma level mappings (ACS labels -> vicinity schema)
 LEVEL_MAP = {
     "Level I Trauma Center": ("trauma_level_1_adult", "adult"),
     "Level I Pediatric Trauma Center": ("trauma_level_1_pediatric", "pediatric"),

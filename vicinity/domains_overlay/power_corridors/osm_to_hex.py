@@ -5,7 +5,7 @@ transmission corridors derived from OSM power infrastructure data.
 
 Usage (per state):
 
-    PYTHONPATH=. python townscout/domains_overlay/power_corridors/osm_to_hex.py \
+    PYTHONPATH=. python vicinity/domains_overlay/power_corridors/osm_to_hex.py \
         --state massachusetts \
         --pbf data/osm/massachusetts.osm.pbf \
         --out data/power_corridors/massachusetts_near_power_corridor.parquet
@@ -15,7 +15,7 @@ The output parquet contains columns:
     - res (int32)
     - near_power_corridor (bool)
 
-This is now a thin wrapper around the townscout.domains_overlay.power_corridors module.
+This is now a thin wrapper around the vicinity.domains_overlay.power_corridors module.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-# Add project root to path to import townscout and config
+# Add project root to path to import vicinity and config
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -36,14 +36,14 @@ if str(src_path) not in sys.path:
 
 from config import H3_RES_LOW, H3_RES_HIGH
 
-# Import from the new townscout.domains_overlay.power_corridors module
-from townscout.domains_overlay.power_corridors import compute_power_corridor_flags
-from townscout.domains_overlay.power_corridors.schema import (
+# Import from the new vicinity.domains_overlay.power_corridors module
+from vicinity.domains_overlay.power_corridors import compute_power_corridor_flags
+from vicinity.domains_overlay.power_corridors.schema import (
     BUFFER_METERS_DEFAULT,
     MIN_VOLTAGE_KV_DEFAULT
 )
 
-# All core logic is now in townscout.domains_overlay.power_corridors.build_corridor_overlay
+# All core logic is now in vicinity.domains_overlay.power_corridors.build_corridor_overlay
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:

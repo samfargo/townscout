@@ -9,7 +9,7 @@ Pipeline:
 5. Conflate and deduplicate POIs from both sources.
 6. Save the final canonical POI set to a parquet file.
 
-This is now a thin wrapper around the townscout.poi module.
+This is now a thin wrapper around the vicinity.poi module.
 """
 import os
 import sys
@@ -17,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 import geopandas as gpd
 
-# Add project root to path to import townscout
+# Add project root to path to import vicinity
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -29,8 +29,8 @@ if str(src_path) not in sys.path:
 
 from config import STATES
 
-# Import from the new townscout.poi module
-from townscout.poi import (
+# Import from the new vicinity.poi module
+from vicinity.poi import (
     CANONICAL_POI_SCHEMA,
     load_osm_pois,
     load_overture_pois,
@@ -40,9 +40,9 @@ from townscout.poi import (
 )
 
 # Import domain-specific POI handlers
-from townscout.domains_poi.airports import load_airports_csv
-from townscout.domains_poi.beaches import build_beach_pois_for_state
-from townscout.domains_poi.trauma import load_level1_trauma_pois
+from vicinity.domains_poi.airports import load_airports_csv
+from vicinity.domains_poi.beaches import build_beach_pois_for_state
+from vicinity.domains_poi.trauma import load_level1_trauma_pois
 
 
 def main():

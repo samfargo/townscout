@@ -17,9 +17,9 @@ import pandas as pd
 import polars as pl
 from tqdm import tqdm
 
-from townscout.domains_overlay.climate import classify_climate_expr
-from townscout.domains_overlay.climate.schema import TEMP_SCALE, PPT_MM_SCALE, PPT_IN_SCALE
-from townscout.domains_overlay.validation import check_parquet_files
+from vicinity.domains_overlay.climate import classify_climate_expr
+from vicinity.domains_overlay.climate.schema import TEMP_SCALE, PPT_MM_SCALE, PPT_IN_SCALE
+from vicinity.domains_overlay.validation import check_parquet_files
 
 from config import STATES, H3_RES_LOW, H3_RES_HIGH, STATE_BOUNDING_BOXES
 

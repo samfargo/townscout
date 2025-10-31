@@ -1,5 +1,5 @@
 'use client';
-// Card primitives tailored to the TownScout UI.
+// Card primitives tailored to the vicinity UI.
 
 import * as React from "react";
 

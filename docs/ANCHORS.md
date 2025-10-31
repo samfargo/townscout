@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-**TownScout's scalability claim hinges on smart anchor selection.** This document explains how anchors are chosen, density constraints, and memory budgets that make "scales to nationwide cheaply" provable rather than asserted.
+**vicinity's scalability claim hinges on smart anchor selection.** This document explains how anchors are chosen, density constraints, and memory budgets that make "scales to nationwide cheaply" provable rather than asserted.
 
 ### Core Principle: Matrix Factorization
 

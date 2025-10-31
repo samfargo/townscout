@@ -1,5 +1,5 @@
 services:
-  townscout:
+  vicinity:
     build: .
     ports:
       - "8080:8080"

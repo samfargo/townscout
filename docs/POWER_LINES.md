@@ -1,4 +1,4 @@
-We’re adding a new livability filter to Townscout: “Avoid power lines (high-voltage transmission corridors)”.
+We’re adding a new livability filter to vicinity: “Avoid power lines (high-voltage transmission corridors)”.
 
 User behavior
 	•	Add a toggle in the UI called “Avoid power lines (high-voltage transmission corridors)”.

@@ -18,7 +18,7 @@ DEFAULT_RESOLUTION = "4km"
 DEFAULT_PERIOD = "2020_avg_30y"  # PRISM normals (1991-2020)
 TIMEOUT_SECONDS = 300
 
-LOGGER = logging.getLogger("townscout.prism_fetch")
+LOGGER = logging.getLogger("vicinity.prism_fetch")
 MONTH_IDS = ("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12")
 
 

@@ -1,1 +1,1 @@
-# TownScout source package 
+# vicinity source package 

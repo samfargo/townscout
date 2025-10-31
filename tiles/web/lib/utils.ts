@@ -1,4 +1,4 @@
-// Utility functions for the TownScout application
+// Utility functions for the vicinity application
 
 // ==================== CLASS NAME UTILITIES ====================
 

@@ -1,12 +1,12 @@
-# TownScout: System Overview & LLM Implementation Spec
+# vicinity: System Overview & LLM Implementation Spec
 
 > Architectural map: `docs/ARCHITECTURE_OVERVIEW.md`
 
 ## 1) Purpose, Context, Goals
 
-**Purpose.** TownScout helps a user answer: *"Where should I live given my criteria?"* by computing travel‑time proximity to things that matter (Chipotle, Costco, airports, schools, etc.) and rendering results as a fast, interactive map.
+**Purpose.** vicinity helps a user answer: *"Where should I live given my criteria?"* by computing travel‑time proximity to things that matter (Chipotle, Costco, airports, schools, etc.) and rendering results as a fast, interactive map.
 
-**Context.** Instead of precomputing every hex→category path, TownScout factorizes the problem into **hex→anchor** and **anchor→category/brand** legs. The frontend combines these in real time with GPU expressions using per‑anchor seconds stored in tiles and per‑anchor category/brand seconds served by the API. This keeps costs near‑zero and makes adding thousands of POIs (brands and categories) cheap.
+**Context.** Instead of precomputing every hex→category path, vicinity factorizes the problem into **hex→anchor** and **anchor→category/brand** legs. The frontend combines these in real time with GPU expressions using per‑anchor seconds stored in tiles and per‑anchor category/brand seconds served by the API. This keeps costs near‑zero and makes adding thousands of POIs (brands and categories) cheap.
 
 **Primary Goals.**
 
@@ -18,7 +18,7 @@
 
 **Non‑Goals.** Live traffic, multimodal chaining (walk→transit→drive), and route turn‑by‑turn.
 
-**Important Limitation.** TownScout uses a matrix factorization approach (`hex→anchor + anchor→POI`) that can violate triangle inequality in complex road networks. This may produce routing approximations that differ significantly from true shortest paths, especially in suburban/rural areas. See `docs/ARCHITECTURE_OVERVIEW.md` for details and proposed mitigation strategies.
+**Important Limitation.** vicinity uses a matrix factorization approach (`hex→anchor + anchor→POI`) that can violate triangle inequality in complex road networks. This may produce routing approximations that differ significantly from true shortest paths, especially in suburban/rural areas. See `docs/ARCHITECTURE_OVERVIEW.md` for details and proposed mitigation strategies.
 
 ---
 
@@ -36,7 +36,7 @@ For detailed implementation status, technical specifications, and data contracts
 
 ## Core Model: Matrix Factorization
 
-TownScout uses a two-stage approach to compute travel times:
+vicinity uses a two-stage approach to compute travel times:
 
 ```
 Total Travel Time = T_hex[hex→anchor] + D_anchor[anchor→category]
@@ -48,7 +48,7 @@ This factorization enables efficient real-time filtering by precomputing hex-to-
 
 ## Data Sources
 
-TownScout combines multiple data sources for comprehensive POI coverage:
+vicinity combines multiple data sources for comprehensive POI coverage:
 - **OSM** for road networks and civic/natural POIs
 - **Overture Places** for commercial brands and businesses  
 - **Curated CSVs** for specialized data (airports, trauma centers)
@@ -61,7 +61,7 @@ The hybrid approach provides better coverage than any single source alone.
 
 The system consists of four main layers:
 1. **Data pipeline** (`src/`) - Ingests data, builds road graphs, computes travel times
-2. **Native kernels** (`townscout_native/`) - High-performance Rust algorithms
+2. **Native kernels** (`vicinity_native/`) - High-performance Rust algorithms
 3. **API service** (`api/`) - Serves D_anchor lookups and metadata
 4. **Frontend** (`tiles/web/`) - Interactive map with real-time filtering
 
@@ -83,9 +83,9 @@ For detailed data contracts and technical specifications, see `docs/ARCHITECTURE
 ## POI Module Architecture
 
 The system uses a modular architecture for POI processing:
-- **Shared POI logic** in `townscout/poi/` for ingestion, normalization, and conflation
-- **Domain-specific handlers** in `townscout/domains_poi/` for specialized POI types
-- **Overlay computation** in `townscout/domains_overlay/` for non-routable hex enrichment:
+- **Shared POI logic** in `vicinity/poi/` for ingestion, normalization, and conflation
+- **Domain-specific handlers** in `vicinity/domains_poi/` for specialized POI types
+- **Overlay computation** in `vicinity/domains_overlay/` for non-routable hex enrichment:
   - **Climate** - Temperature and precipitation metrics from PRISM normals
   - **Power corridors** - High-voltage transmission line proximity flags
   - **Political lean** - County-level 2024 presidential election results mapped to H3 cells
@@ -115,7 +115,7 @@ For detailed module structure and implementation, see the architecture overview.
 - Merge + summarize, build tiles, and bring up the stack:
   - `make merge tiles` then `make serve` (FastAPI on `http://127.0.0.1:5173`)
   - In a new terminal: `cd tiles/web && npm install && npm run dev`
-  - Visit `http://localhost:3000` (Next.js) — the app will call back to the FastAPI service on port 5173 unless you override `NEXT_PUBLIC_TOWNSCOUT_API_BASE_URL`
+  - Visit `http://localhost:3000` (Next.js) — the app will call back to the FastAPI service on port 5173 unless you override `NEXT_PUBLIC_vicinity_API_BASE_URL`
 
 ### Full Pipeline Command
 ```bash
@@ -134,7 +134,7 @@ For maximum POI coverage (especially dense brands):
 3. Increase K-best parameters (`--k-best 20+`) for dense urban areas if needed
 
 API:
-- Run: `uvicorn api.main:app --reload --host 0.0.0.0 --port 5173` (or expose the same base URL you pass via `NEXT_PUBLIC_TOWNSCOUT_API_BASE_URL`)
+- Run: `uvicorn api.main:app --reload --host 0.0.0.0 --port 5173` (or expose the same base URL you pass via `NEXT_PUBLIC_vicinity_API_BASE_URL`)
 - Categories: `GET /api/categories?mode=drive`
 - D_anchor slice: `GET /api/d_anchor?category=<id>&mode=drive`
 - D_anchor brand slice: `GET /api/d_anchor_brand?brand=<id or alias>&mode=drive`
@@ -152,7 +152,7 @@ PRISM-derived climate metrics are stored as quantized integers to keep parquet a
 - `*_mm_q`: Precipitation totals in tenths of millimetres. Decode with `value / 10`.
 - `*_in_q`: Precipitation totals in tenths of inches. Decode with `value / 10`.
 
-The scale factors are also recorded in the `out/climate/hex_climate.parquet` metadata under the `townscout_prism` key for downstream analytics.
+The scale factors are also recorded in the `out/climate/hex_climate.parquet` metadata under the `vicinity_prism` key for downstream analytics.
 
 ### Climate Data Validation
 

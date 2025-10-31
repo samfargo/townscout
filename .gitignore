@@ -73,7 +73,7 @@ dump.rdb
 *.rlib
 *.rmeta
 *.json
-townscout_native/target/debug
-townscout_native/target/release
+vicinity_native/target/debug
+vicinity_native/target/release
 *.npy
 *.tif

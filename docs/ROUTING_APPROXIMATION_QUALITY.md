@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-TownScout's anchor-based routing system uses the approximation:
+vicinity's anchor-based routing system uses the approximation:
 
 ```
 Total Travel Time ≈ T_hex[hex→anchor] + D_anchor[anchor→POI]

@@ -28,7 +28,7 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from config import STATE_BOUNDING_BOXES
-from townscout.poi.schema import create_empty_poi_dataframe, CANONICAL_POI_SCHEMA
+from vicinity.poi.schema import create_empty_poi_dataframe, CANONICAL_POI_SCHEMA
 from .schema import (
     TRAUMA_CLASS, TRAUMA_CATEGORY, LEVEL_MAP,
     ACS_TRAUMA_SCHEMA, ACS_API_URL
@@ -58,7 +58,7 @@ def round5(x: float) -> float:
 
 
 def make_poi_id(ext_id: str, lon: float, lat: float, trauma_level: str) -> str:
-    ns = uuid.uuid5(uuid.NAMESPACE_URL, "townscout:acs")
+    ns = uuid.uuid5(uuid.NAMESPACE_URL, "vicinity:acs")
     seed = f"acs|{ext_id}|{round5(lon)}|{round5(lat)}|{trauma_level}"
     return str(uuid.uuid5(ns, seed))
 
@@ -215,7 +215,7 @@ def iter_results_from_acs_api(
                 "Content-Type": "application/json",
                 "Origin": "https://www.facs.org",
                 "Referer": "https://www.facs.org/find-a-hospital/?nearMe=off&orderBy=a-z",
-                "User-Agent": "TownScout/acs-ingest (requests)",
+                "User-Agent": "vicinity/acs-ingest (requests)",
             },
             timeout=60,
         )

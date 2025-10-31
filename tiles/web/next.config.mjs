@@ -1,4 +1,4 @@
-// Next.js configuration for the TownScout frontend.
+// Next.js configuration for the vicinity frontend.
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,

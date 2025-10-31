@@ -1,4 +1,4 @@
-// Reference data for TownScout climate typology.
+// Reference data for vicinity climate typology.
 
 export type ClimateTypologyEntry = {
   label: string;

@@ -1,4 +1,4 @@
-// API services for fetching data from the TownScout backend
+// API services for fetching data from the vicinity backend
 
 // ==================== BASE API UTILITIES ====================
 

@@ -1,5 +1,5 @@
 """
-townscout.poi - Shared POI ingestion, normalization, and conflation logic.
+vicinity.poi - Shared POI ingestion, normalization, and conflation logic.
 
 This module provides the core functionality for handling POIs from multiple sources
 (Overture, OSM, CSV) and normalizing them into a canonical schema.

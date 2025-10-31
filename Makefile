@@ -20,7 +20,7 @@ DANCHOR_CATEGORY_FINGERPRINT_DIR := build/d_anchor_category_hash
 	d_anchor_category_force d_anchor_brand_force merge climate power_corridors
 
 help:  ## Show this help message
-	@echo "TownScout Data Pipeline - Available targets:"
+	@echo "vicinity Data Pipeline - Available targets:"
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 init:  ## Initialize virtual environment with Python 3.11 and install dependencies
@@ -35,7 +35,7 @@ init:  ## Initialize virtual environment with Python 3.11 and install dependenci
 # --- Native build (stamp to avoid triggering rebuilds) ---
 build/native.stamp:
 	@mkdir -p build
-	.venv/bin/maturin develop --release --manifest-path townscout_native/Cargo.toml
+	.venv/bin/maturin develop --release --manifest-path vicinity_native/Cargo.toml
 	@touch $@
 
 native: build/native.stamp ## Build the native Rust extension (release optimized)
@@ -101,7 +101,7 @@ power_corridors: $(POWER_CORRIDOR_FILES) ## Build high-voltage corridor avoidanc
 
 data/power_corridors/%_near_power_corridor.parquet: data/osm/%.osm.pbf src/config.py
 	@mkdir -p $(dir $@)
-	$(PY) townscout/domains_overlay/power_corridors/osm_to_hex.py \
+	$(PY) vicinity/domains_overlay/power_corridors/osm_to_hex.py \
 		--state $* \
 		--pbf data/osm/$*.osm.pbf \
 		--out $@
@@ -222,7 +222,7 @@ CLIMATE_PARQUET := out/climate/hex_climate.parquet
 
 $(CLIMATE_PARQUET): $(MINUTE_FILES)
 	@mkdir -p $(dir $@)
-	$(PY) townscout/domains_overlay/climate/prism_to_hex.py
+	$(PY) vicinity/domains_overlay/climate/prism_to_hex.py
 
 climate: $(CLIMATE_PARQUET) ## Build PRISM climate parquet for r7 + r8
 	@echo "[ok] Climate parquet ready at $(CLIMATE_PARQUET)"
@@ -314,4 +314,4 @@ clean:  ## Clean all generated data files
 
 serve: ## Serve the frontend + tiles via FastAPI (supports HTTP Range)
 	@echo "Serving API + tiles at http://localhost:5173 (start Next.js separately: npm run dev in tiles/web)"
-	.venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 5173 --reload --env-file .env
+	.venv/bin/python -m uvicorn api.main:app --host 0.0.0.0 --port 5173 --reload --env-file .env

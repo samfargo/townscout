@@ -9,7 +9,7 @@ import uuid
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
-from townscout.poi.schema import create_empty_poi_dataframe
+from vicinity.poi.schema import create_empty_poi_dataframe
 from .schema import AIRPORT_CLASS, AIRPORT_CATEGORY, AIRPORT_SUBCAT
 
 

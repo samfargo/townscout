@@ -24,8 +24,8 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from geometry_utils import clean_geoms
-from townscout.poi.schema import create_empty_poi_dataframe
-from townscout.osm.pyrosm_utils import get_osm_data
+from vicinity.poi.schema import create_empty_poi_dataframe
+from vicinity.osm.pyrosm_utils import get_osm_data
 from .schema import (
     BEACH_CLASS, BEACH_TYPES,
     DISTANCE_OCEAN_M, DISTANCE_LAKE_M, DISTANCE_RIVER_M,

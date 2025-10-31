@@ -69,7 +69,7 @@ def round5(x: float) -> float:
     return round(float(x), 5)
 
 def make_poi_id(ext_id: str, lon: float, lat: float, trauma_level: str) -> str:
-    ns = uuid.uuid5(uuid.NAMESPACE_URL, "townscout:acs")
+    ns = uuid.uuid5(uuid.NAMESPACE_URL, "vicinity:acs")
     seed = f"acs|{ext_id}|{round5(lon)}|{round5(lat)}|{trauma_level}"
     return str(uuid.uuid5(ns, seed))
 
@@ -219,7 +219,7 @@ def iter_results_from_acs_api(
                 "Content-Type": "application/json",
                 "Origin": "https://www.facs.org",
                 "Referer": "https://www.facs.org/find-a-hospital/?nearMe=off&orderBy=a-z",
-                "User-Agent": "TownScout/acs-ingest (requests)",
+                "User-Agent": "vicinity/acs-ingest (requests)",
             },
             timeout=60,
         )
@@ -277,7 +277,7 @@ def main():
       python3 src/ingest/acs_trauma_to_parquet.py "https://www.facs.org/umbraco/surface/institutionsearchsurface/search"
     """
     source = sys.argv[1] if len(sys.argv) > 1 else None
-    out_dir = "/Users/sam/townscout/out/level1_trauma"
+    out_dir = "/Users/sam/vicinity/out/level1_trauma"
     os.makedirs(out_dir, exist_ok=True)
     out_parquet = os.path.join(out_dir, "acs_trauma.parquet")
 

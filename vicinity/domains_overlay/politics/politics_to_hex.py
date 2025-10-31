@@ -4,13 +4,13 @@ Compute per-hex political lean flags based on 2024 US Presidential election resu
 
 Usage:
 
-    PYTHONPATH=. python townscout/domains_overlay/politics/politics_to_hex.py \
-        --csv townscout/domains_overlay/politics/countypres_2000-2024.csv \
+    PYTHONPATH=. python vicinity/domains_overlay/politics/politics_to_hex.py \
+        --csv vicinity/domains_overlay/politics/countypres_2000-2024.csv \
         --out data/politics/political_lean.parquet
 
     # For state-specific processing:
-    PYTHONPATH=. python townscout/domains_overlay/politics/politics_to_hex.py \
-        --csv townscout/domains_overlay/politics/countypres_2000-2024.csv \
+    PYTHONPATH=. python vicinity/domains_overlay/politics/politics_to_hex.py \
+        --csv vicinity/domains_overlay/politics/countypres_2000-2024.csv \
         --out data/politics/massachusetts_political_lean.parquet \
         --state Massachusetts
 
@@ -22,7 +22,7 @@ The output parquet contains columns:
     - county_fips (str): County FIPS code
     - county_name (str): County name
 
-This is a thin wrapper around the townscout.domains_overlay.politics module.
+This is a thin wrapper around the vicinity.domains_overlay.politics module.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-# Add project root to path to import townscout and config
+# Add project root to path to import vicinity and config
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -43,8 +43,8 @@ if str(src_path) not in sys.path:
 
 from config import H3_RES_LOW, H3_RES_HIGH
 
-# Import from the townscout.domains_overlay.politics module
-from townscout.domains_overlay.politics import compute_political_lean_flags
+# Import from the vicinity.domains_overlay.politics module
+from vicinity.domains_overlay.politics import compute_political_lean_flags
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:

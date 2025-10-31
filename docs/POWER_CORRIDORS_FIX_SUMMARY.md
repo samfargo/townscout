@@ -29,7 +29,7 @@ All hexes were incorrectly marked as `near_power_corridor=False` despite 2,582 h
 ## Solutions Implemented
 
 ### 1. Replaced Pyrosm with GeoPandas OSM Driver
-**File**: `townscout/domains_overlay/power_corridors/build_corridor_overlay.py`
+**File**: `vicinity/domains_overlay/power_corridors/build_corridor_overlay.py`
 
 - Switched from `get_osm_data()` (pyrosm) to `gpd.read_file(pbf_path, layer='lines')`
 - Added `_parse_osm_tag()` function to extract power and voltage from `other_tags` column
@@ -47,7 +47,7 @@ def _load_power_lines(pbf_path: str) -> gpd.GeoDataFrame:
 ```
 
 ### 2. Iterative Union for Geometry Dissolution
-**File**: `townscout/domains_overlay/power_corridors/build_corridor_overlay.py`
+**File**: `vicinity/domains_overlay/power_corridors/build_corridor_overlay.py`
 
 - Replaced `union_all()` / `unary_union()` with iterative `.union()` approach
 - Buffers each line individually first, then dissolves incrementally
@@ -66,7 +66,7 @@ def _dissolve_and_buffer(lines: gpd.GeoDataFrame, buffer_meters: float):
 ```
 
 ### 3. Vectorized Flag Assignment
-**File**: `townscout/domains_overlay/power_corridors/build_corridor_overlay.py`
+**File**: `vicinity/domains_overlay/power_corridors/build_corridor_overlay.py`
 
 - Replaced `base.apply(is_hit, axis=1)` with vectorized pandas operations
 - Uses `.isin()` and boolean masking for reliable flag assignment
@@ -80,7 +80,7 @@ for res, hit_set in all_hits.items():
 ```
 
 ### 4. Enhanced pyrosm_utils.py
-**File**: `townscout/osm/pyrosm_utils.py`
+**File**: `vicinity/osm/pyrosm_utils.py`
 
 - Added logic to ensure all requested `tags_as_columns` are present in results
 - Works across multiple pyrosm API fallbacks
@@ -107,10 +107,10 @@ Percentage flagged: 2.06%
 
 ## Files Modified
 
-1. `townscout/domains_overlay/power_corridors/build_corridor_overlay.py` - Main processing logic
-2. `townscout/osm/pyrosm_utils.py` - Created new shared OSM utilities module
-3. `townscout/poi/ingest_osm.py` - Updated to use new pyrosm_utils module
-4. `townscout/domains_poi/beaches/classify_beaches.py` - Updated to use pyrosm_utils
+1. `vicinity/domains_overlay/power_corridors/build_corridor_overlay.py` - Main processing logic
+2. `vicinity/osm/pyrosm_utils.py` - Created new shared OSM utilities module
+3. `vicinity/poi/ingest_osm.py` - Updated to use new pyrosm_utils module
+4. `vicinity/domains_poi/beaches/classify_beaches.py` - Updated to use pyrosm_utils
 5. `Makefile` - No changes needed, existing targets work correctly
 6. `docs/ARCHITECTURE_OVERVIEW.md` - Documented the fix and approach
 

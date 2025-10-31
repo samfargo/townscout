@@ -14,11 +14,15 @@ Notes:
 - Snap radius comes from config.
 """
 import os
+import sys
 import argparse
 import pandas as pd
 import geopandas as gpd
 import numpy as np
 from scipy.spatial import cKDTree
+
+# Add data/taxonomy to path for taxonomy module
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "data", "taxonomy"))
 
 from graph.pyrosm_csr import load_or_build_csr
 import config
@@ -76,6 +80,8 @@ def build_anchor_sites_from_nodes(
     node_lons: np.ndarray,
     mode: str,
     indptr: np.ndarray = None,
+    indices: np.ndarray = None,
+    w_sec: np.ndarray = None,
 ) -> pd.DataFrame:
     print(f"--- Building anchor sites for {mode} mode ---")
     if canonical_pois.empty or node_ids.size == 0:
@@ -112,13 +118,15 @@ def build_anchor_sites_from_nodes(
         canonical_pois.geometry.y.to_numpy() * m_per_deg,
     ]
     
-    # Compute node connectivity (number of outgoing edges per node)
-    # indptr is loaded via load_or_build_csr, but we need it here
-    # For now, we'll use a heuristic: query k nearest neighbors and pick the best-connected one
-    # that's within a reasonable distance factor (e.g., 2x the nearest)
+    # Compute node connectivity (number of outgoing AND incoming edges per node)
+    # For T_hex computation, we route FROM anchors TO hexes using the reverse graph,
+    # so we need good INCOMING connectivity (reverse edges) for anchors.
+    # For D_anchor computation, we route FROM anchors TO other anchors using forward graph,
+    # so we need good OUTGOING connectivity (forward edges).
+    # Solution: Check BOTH and prefer nodes with good bidirectional connectivity.
     K_CANDIDATES = 10  # Consider up to 10 nearest nodes
     MAX_DISTANCE_FACTOR = 2.0  # Accept nodes up to 2x the nearest distance
-    MIN_ACCEPTABLE_EDGES = 2  # Prefer nodes with at least 2 edges
+    MIN_ACCEPTABLE_EDGES = 2  # Prefer nodes with at least 2 edges in BOTH directions
     
     # Query k nearest neighbors for each POI
     dists_k, indices_k = tree.query(poi_coords, k=K_CANDIDATES)
@@ -127,11 +135,17 @@ def build_anchor_sites_from_nodes(
     selected_indices = np.zeros(len(canonical_pois), dtype=np.int64)
     selected_dists = np.zeros(len(canonical_pois), dtype=np.float64)
     
-    # Compute node connectivity if indptr is available
+    # Compute node connectivity if graph data is available
+    node_out_counts = None
+    node_in_counts = None
     if indptr is not None:
-        node_edge_counts = np.diff(indptr).astype(np.int32)
-    else:
-        node_edge_counts = None
+        node_out_counts = np.diff(indptr).astype(np.int32)
+        # Also compute incoming edge counts from reverse graph
+        if indices is not None and w_sec is not None:
+            print(f"[info] Building reverse graph to check incoming connectivity...")
+            from graph.csr_utils import build_rev_csr
+            indptr_rev, _, _ = build_rev_csr(indptr, indices, w_sec)
+            node_in_counts = np.diff(indptr_rev).astype(np.int32)
     
     improved_snaps = 0  # Track how many POIs got better-connected nodes
     
@@ -147,20 +161,26 @@ def build_anchor_sites_from_nodes(
         valid_dists = candidates_dists[valid_mask]
         valid_indices = candidates_indices[valid_mask]
         
-        if node_edge_counts is not None and len(valid_indices) > 1:
-            # Connectivity-aware selection: prefer nodes with more edges
+        if (node_out_counts is not None or node_in_counts is not None) and len(valid_indices) > 1:
+            # Connectivity-aware selection: prefer nodes with good bidirectional connectivity
             # Get edge counts for all valid candidates
-            valid_edge_counts = node_edge_counts[valid_indices]
-            nearest_edge_count = valid_edge_counts[0]
+            valid_out_counts = node_out_counts[valid_indices] if node_out_counts is not None else np.ones(len(valid_indices), dtype=np.int32) * 999
+            valid_in_counts = node_in_counts[valid_indices] if node_in_counts is not None else np.ones(len(valid_indices), dtype=np.int32) * 999
             
-            # If the nearest node has only 1 edge, try to find a better-connected alternative
-            if nearest_edge_count == 1 and np.max(valid_edge_counts) >= MIN_ACCEPTABLE_EDGES:
-                # Find the best-connected node among candidates with at least MIN_ACCEPTABLE_EDGES
-                better_mask = valid_edge_counts >= MIN_ACCEPTABLE_EDGES
+            # Use minimum of incoming and outgoing as connectivity score
+            # (a node is only as well-connected as its weakest direction)
+            valid_connectivity_scores = np.minimum(valid_out_counts, valid_in_counts)
+            nearest_connectivity = valid_connectivity_scores[0]
+            
+            # If the nearest node has poor connectivity (< MIN_ACCEPTABLE_EDGES in either direction),
+            # try to find a better-connected alternative
+            if nearest_connectivity < MIN_ACCEPTABLE_EDGES and np.max(valid_connectivity_scores) >= MIN_ACCEPTABLE_EDGES:
+                # Find nodes with good bidirectional connectivity
+                better_mask = valid_connectivity_scores >= MIN_ACCEPTABLE_EDGES
                 if np.any(better_mask):
                     better_indices = np.where(better_mask)[0]
-                    # Among better-connected nodes, pick the one with most edges (breaking ties by distance)
-                    best_idx = better_indices[np.argmax(valid_edge_counts[better_mask])]
+                    # Among better-connected nodes, pick the one with best connectivity (breaking ties by distance)
+                    best_idx = better_indices[np.argmax(valid_connectivity_scores[better_mask])]
                     selected_indices[i] = valid_indices[best_idx]
                     selected_dists[i] = valid_dists[best_idx]
                     improved_snaps += 1
@@ -258,8 +278,8 @@ def main():
         args.pbf, args.mode, [7, 8], False
     )
 
-    # Build sites (with connectivity-aware snapping)
-    sites = build_anchor_sites_from_nodes(gdf, node_ids, node_lats, node_lons, args.mode, indptr)
+    # Build sites (with bidirectional connectivity-aware snapping)
+    sites = build_anchor_sites_from_nodes(gdf, node_ids, node_lats, node_lons, args.mode, indptr, indices, w_sec)
     if sites.empty:
         raise SystemExit("No anchor sites built. Check inputs.")
 

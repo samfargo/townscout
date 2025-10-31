@@ -39,7 +39,7 @@ try:
 except Exception:
     load_or_build_ch = None  # type: ignore
 
-APP_NAME = "TownScout D_anchor API"
+APP_NAME = "vicinity D_anchor API"
 
 _TRAUMA_CATEGORY_LABELS = {
     "Level 1 Trauma (Adults)",
@@ -53,7 +53,7 @@ STATE = os.environ.get("TS_STATE", "massachusetts")
 _DANCHOR_CATEGORY_DIR = os.environ.get("TS_DANCHOR_CATEGORY_DIR", os.path.join("data", "d_anchor_category"))
 _DANCHOR_BRAND_DIR = os.environ.get("TS_DANCHOR_BRAND_DIR", os.path.join("data", "d_anchor_brand"))
 
-_FRONTEND_ENV = (os.environ.get("TS_FRONTEND_ORIGIN") or os.environ.get("TOWNSCOUT_FRONTEND_ORIGIN") or "").strip()
+_FRONTEND_ENV = (os.environ.get("TS_FRONTEND_ORIGIN") or os.environ.get("vicinity_FRONTEND_ORIGIN") or "").strip()
 _DEFAULT_FRONTEND_ORIGIN = os.environ.get("TS_DEFAULT_FRONTEND_ORIGIN", "http://localhost:3000").strip() or None
 _FRONTEND_ORIGIN = _FRONTEND_ENV or _DEFAULT_FRONTEND_ORIGIN
 
@@ -1528,7 +1528,7 @@ async def serve_pmtiles(file_path: str, request: Request):
 if __name__ == "__main__":
     # For local dev, allow overriding the port
     port = int(os.environ.get("PORT", 5174)) # Default to 5174 to avoid conflict with frontend
-    print(f"Starting TownScout D_anchor server on http://0.0.0.0:{port}")
+    print(f"Starting vicinity D_anchor server on http://0.0.0.0:{port}")
     print(f"Using STATE={STATE}")
     # Pass app directly instead of module path to avoid import issues
     uvicorn.run(app, host="0.0.0.0", port=port, reload=False)

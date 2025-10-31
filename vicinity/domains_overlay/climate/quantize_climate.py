@@ -505,7 +505,7 @@ def process_climate_data(
     existing_meta = dict(table.schema.metadata or {})
     generated_ts = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     climate_meta = {
-        "townscout_prism": json.dumps(
+        "vicinity_prism": json.dumps(
             {
                 "source": "PRISM Normals 1991-2020",
                 "temp_scale": TEMP_SCALE,
