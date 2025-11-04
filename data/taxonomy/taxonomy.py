@@ -103,26 +103,8 @@ TAXONOMY = {
 # --- Brand Registry ---
 # Provides a mapping from various name aliases to a canonical brand ID and name.
 # This helps in deduplicating brands that appear with slightly different names.
-BRAND_REGISTRY = {
-    # Canonical Brand ID: (Canonical Name, [Aliases])
-    "chipotle": ("Chipotle Mexican Grill", ["chipotle"]),
-    "costco": ("Costco", ["costco wholesale"]),
-    "starbucks": ("Starbucks", ["starbucks coffee", "starbucks reserve"]),
-    "mcdonalds": ("McDonald's", ["mcdonalds", "mcdonald's"]),
-    "dunkin": ("Dunkin'", ["dunkin donuts", "dunkin'"]),
-    "whole_foods": ("Whole Foods Market", ["whole foods", "wholefoods"]),
-    "trader_joes": ("Trader Joe's", ["trader joes", "trader joe's"]),
-    "wegmans": ("Wegmans", []),
-    "walmart": ("Walmart", ["wal-mart"]),
-    "target": ("Target", []),
-    "home_depot": ("The Home Depot", ["home depot"]),
-    "lowes": ("Lowe's", ["lowe's", "lowes home improvement"]),
-    "cvs": ("CVS Pharmacy", ["cvs", "cvs/pharmacy", "cvs health"]),
-    "walgreens": ("Walgreens", ["walgreen"]),
-    "rite_aid": ("Rite Aid", ["riteaid"]),
-    "sams_club": ("Sam's Club", ["sams club"]),
-    "panera": ("Panera Bread", ["panera"]),
-}
+# NOTE: This registry is populated from POI_brand_registry.csv below.
+BRAND_REGISTRY = {}
 
 
 def _load_brand_registry_csv(path: str) -> Dict[str, Tuple[str, List[str]]]:
@@ -358,6 +340,9 @@ OSM_TAG_MAP = {
     ("leisure", "park"): ("recreation", "park", "park"),
     ("leisure", "playground"): ("recreation", "playground", "playground"),
     ("leisure", "sports_centre"): ("recreation", "sports_centre", "sports_centre"),
+    ("leisure", "fitness_centre"): ("recreation", "gym", "fitness_centre"),
+    ("leisure", "fitness_center"): ("recreation", "gym", "fitness_center"),
+    ("amenity", "gym"): ("recreation", "gym", "gym"),
     ("leisure", "swimming_pool"): ("recreation", "swimming_pool", "swimming_pool"),
     ("leisure", "golf_course"): ("recreation", "golf_course", "golf_course"),
     ("amenity", "cinema"): ("recreation", "cinema", "cinema"),
