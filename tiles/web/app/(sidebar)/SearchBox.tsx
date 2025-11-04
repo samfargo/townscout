@@ -289,17 +289,21 @@ export default function SearchBox() {
     return `Climate (${climateSelections.length})`;
   }, [climateSelections.length]);
 
-  const politicalDropdownLabel = React.useMemo(() => {
-    if (!politicalLeanRange) return 'Political views';
-    const [min, max] = politicalLeanRange;
-    if (min <= 0 && max >= 4) {
-      return 'Political views (All)';
+  const politicalRangeValue = React.useMemo<[number, number]>(
+    () => (politicalLeanRange ? politicalLeanRange : [0, 4]),
+    [politicalLeanRange]
+  );
+
+  const miscDropdownLabel = React.useMemo(() => {
+    let activeCount = 0;
+    if (politicalLeanRange) {
+      activeCount += 1;
     }
-    if (min === max) {
-      return `Political views (${POLITICAL_LEAN_LABELS[min]})`;
+    if (avoidPowerLines) {
+      activeCount += 1;
     }
-    return `Political views (${POLITICAL_LEAN_LABELS[min]}–${POLITICAL_LEAN_LABELS[max]})`;
-  }, [politicalLeanRange]);
+    return activeCount ? `Miscellaneous (${activeCount})` : 'Miscellaneous';
+  }, [avoidPowerLines, politicalLeanRange]);
 
   const handlePoliticalRangeChange = React.useCallback((values: number[]) => {
     if (!Array.isArray(values) || values.length !== 2) {
@@ -322,7 +326,7 @@ export default function SearchBox() {
         </p>
       </CardHeader>
       <CardContent className="space-y-4 px-5 pb-5 pt-4 text-sm text-stone-700">
-        <div className="space-y-2">
+        <div className="-mx-2 space-y-2 sm:-mx-3">
           <DropdownSection label={pointsLabel}>
             {!catalog?.loaded && (
               <p className="px-1 text-xs text-stone-500">Loading catalog…</p>
@@ -503,74 +507,69 @@ export default function SearchBox() {
               </Button>
             </div>
           </DropdownSection>
-          <DropdownSection label={politicalDropdownLabel}>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold text-stone-900">Political views filter</span>
-                {politicalLeanRange && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-6 px-2 text-xs text-stone-600 transition-colors hover:text-amber-900"
-                    onClick={() => clearPoliticalLeanRange()}
-                  >
-                    Clear
-                  </Button>
-                )}
-              </div>
-              {politicalLeanRange ? (
-                <>
-                  <Slider
-                    min={0}
-                    max={4}
-                    step={1}
-                    minStepsBetweenThumbs={0}
-                    value={politicalLeanRange}
-                    onValueChange={handlePoliticalRangeChange}
-                    aria-label="Political lean range"
-                  />
-                  <div className="flex justify-between text-[10px] text-stone-500">
-                    {POLITICAL_LEAN_LABELS.map((label) => (
-                      <span key={label}>{label}</span>
-                    ))}
-                  </div>
-                  <p className="text-xs text-stone-600">
-                    Showing counties from {POLITICAL_LEAN_LABELS[politicalLeanRange[0]]} to {POLITICAL_LEAN_LABELS[politicalLeanRange[1]]}
-                  </p>
-                  <p className="text-[11px] leading-snug text-stone-500">
-                    Hexes without election data hide when you narrow this range.
-                  </p>
-                </>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full border-amber-700 text-amber-900 transition-colors hover:bg-amber-50"
-                  onClick={() => setPoliticalLeanRange([0, 4])}
-                >
-                  Enable Political Filter
-                </Button>
-              )}
-            </div>
-          </DropdownSection>
-          <div className="rounded-2xl border border-stone-300 bg-[#f2ebd9] px-4 py-3 shadow-inner">
-            <label className="flex items-start gap-3">
-              <input
-                type="checkbox"
-                className="mt-1 h-4 w-4 accent-amber-700"
-                checked={avoidPowerLines}
-                onChange={(event) => setAvoidPowerLines(event.target.checked)}
-              />
-              <div className="space-y-1">
-                <span className="text-sm font-semibold text-stone-900">
-                  Avoid power lines (high-voltage transmission corridors)
-                </span>
-                <p className="text-xs leading-snug text-stone-600">
-                  Hide hexes within 200m of major overhead transmission lines.
+          <DropdownSection label={miscDropdownLabel}>
+            <div className="space-y-4">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-stone-900">Political views filter</span>
+                  {politicalLeanRange && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-xs text-stone-600 transition-colors hover:text-amber-900"
+                      onClick={() => clearPoliticalLeanRange()}
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
+                <Slider
+                  min={0}
+                  max={4}
+                  step={1}
+                  minStepsBetweenThumbs={0}
+                  value={politicalRangeValue}
+                  onValueChange={handlePoliticalRangeChange}
+                  aria-label="Political lean range"
+                />
+                <div className="flex justify-between text-[10px] text-stone-500">
+                  {POLITICAL_LEAN_LABELS.map((label) => (
+                    <span key={label}>{label}</span>
+                  ))}
+                </div>
+                <p className="text-xs text-stone-600">
+                  {politicalLeanRange
+                    ? `Showing counties from ${POLITICAL_LEAN_LABELS[politicalLeanRange[0]]} to ${POLITICAL_LEAN_LABELS[politicalLeanRange[1]]}`
+                    : 'Adjust the slider to focus on a political leaning range.'}
+                </p>
+                <p className="text-[11px] leading-snug text-stone-500">
+                  Hexes without election data hide when you narrow this range.
                 </p>
               </div>
-            </label>
-          </div>
+              <Separator className="bg-stone-200" />
+              <div className="space-y-2">
+                <span className="text-sm font-semibold text-stone-900">Power lines filter</span>
+                <div className="rounded-2xl border border-stone-300 bg-[#f2ebd9] px-4 py-3 shadow-inner">
+                  <label className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 accent-amber-700"
+                      checked={avoidPowerLines}
+                      onChange={(event) => setAvoidPowerLines(event.target.checked)}
+                    />
+                    <div className="space-y-1">
+                      <span className="text-sm font-medium text-stone-900">
+                        Avoid power lines (high-voltage transmission corridors)
+                      </span>
+                      <p className="text-xs leading-snug text-stone-600">
+                        Hide hexes within 200m of major overhead transmission lines.
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </DropdownSection>
         </div>
         <Separator className="bg-stone-300/80" />
         <div className="space-y-3">
@@ -654,11 +653,11 @@ function CatalogRow({ title, children }: { title: string; children: React.ReactN
 
 function DropdownSection({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <details className="rounded-2xl border border-stone-300 bg-[#f2ebd9] shadow-inner">
-      <summary className="cursor-pointer select-none rounded-2xl px-3 py-2 text-sm font-semibold text-stone-700 transition-colors hover:bg-[#ebdfc3]">
+    <details className="block w-full overflow-hidden rounded-2xl border border-stone-300 bg-[#f2ebd9] shadow-inner">
+      <summary className="cursor-pointer select-none rounded-2xl px-4 py-3 text-sm font-semibold text-stone-700 transition-colors hover:bg-[#ebdfc3]">
         {label}
       </summary>
-      <div className="max-h-60 space-y-2 overflow-y-auto border-t border-stone-200 bg-[#fbf7ec] px-3 py-3">
+      <div className="max-h-60 space-y-2 overflow-y-auto border-t border-stone-200 bg-[#fbf7ec] px-4 py-3">
         {children}
       </div>
     </details>
