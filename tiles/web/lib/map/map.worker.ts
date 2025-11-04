@@ -149,13 +149,16 @@ function buildAvoidPowerLinesExpression(enabled: boolean): any | null {
 function buildPoliticalLeanFilterExpression(range: [number, number] | null): any | null {
   if (!range) return null;
   const [min, max] = range;
-  // Filter: political_lean >= min AND political_lean <= max
-  // Handle null values (hexes without political data like water/unpopulated areas)
+  if (min <= 0 && max >= 4) {
+    return null;
+  }
+  const leanValue: any = ['coalesce', ['get', 'political_lean'], -1];
+  // Filter: political_lean >= min AND political_lean <= max, ignoring missing values
   return [
     'all',
-    ['has', 'political_lean'],
-    ['>=', ['get', 'political_lean'], min],
-    ['<=', ['get', 'political_lean'], max]
+    ['!=', leanValue, -1],
+    ['>=', leanValue, min],
+    ['<=', leanValue, max]
   ];
 }
 

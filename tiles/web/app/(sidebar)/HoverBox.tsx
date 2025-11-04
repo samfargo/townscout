@@ -79,10 +79,9 @@ export default function HoverBox() {
           <div className="space-y-1 rounded-xl border border-stone-200 bg-[#fbf7ec] px-3 py-2">
             <p className="text-[11px] uppercase tracking-wide text-stone-500">Location pin</p>
             <p className="text-sm font-semibold text-stone-800">{pinHover.name}</p>
-            <p className="text-xs text-stone-600">{pinHover.address}</p>
-            <p className="text-[11px] text-stone-500">
-              {pinHover.coordinates[1].toFixed(4)}°, {pinHover.coordinates[0].toFixed(4)}°
-            </p>
+            {pinHover.address && (
+              <p className="text-xs text-stone-600">{pinHover.address}</p>
+            )}
           </div>
         )}
         {hexProps && nearPowerCorridor && (

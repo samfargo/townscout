@@ -37,8 +37,20 @@ type PinRecord = {
   isCustom: boolean;
 };
 
-function formatCoordinates([lon, lat]: [number, number]): string {
-  return `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+function looksLikeCoordinate(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (trimmed.includes('°')) return true;
+  const coordRegex = /^[+-]?\d+(\.\d+)?\s*,\s*[+-]?\d+(\.\d+)?$/;
+  return coordRegex.test(trimmed);
+}
+
+function sanitizeAddress(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  if (looksLikeCoordinate(trimmed)) return '';
+  return trimmed;
 }
 
 function sanitizeLayerKey(value: string): string {
@@ -606,6 +618,7 @@ export class MapController {
       console.warn('[MapController] Custom POI missing coordinates, skipping pin render.');
       return;
     }
+    const sanitizedAddress = sanitizeAddress(poi.formattedAddress);
     const feature: PinFeatureCollection = {
       type: 'FeatureCollection',
       features: [
@@ -617,13 +630,15 @@ export class MapController {
           },
           properties: {
             name: poi.label,
-            address: poi.formattedAddress ?? formatCoordinates([poi.lon, poi.lat]),
             poi_id: poi.id,
             source_type: poi.type
           }
         }
       ]
     };
+    if (sanitizedAddress) {
+      (feature.features[0].properties as PinFeatureProperties).address = sanitizedAddress;
+    }
     this.removePinLayers(record);
     this.map.addSource(record.sourceId, {
       type: 'geojson',
@@ -657,13 +672,20 @@ export class MapController {
       clone.properties.name = poi.label;
     }
     if (feature.geometry?.type === 'Point') {
-      const coords = feature.geometry.coordinates as [number, number];
-      if (!clone.properties.address || !String(clone.properties.address).trim()) {
-        const approx = clone.properties.approx_address;
-        clone.properties.address =
-          typeof approx === 'string' && approx.trim().length
-            ? approx
-            : formatCoordinates(coords);
+      const currentAddress = sanitizeAddress(clone.properties.address);
+      const approx = sanitizeAddress(clone.properties.approx_address);
+      if (currentAddress) {
+        clone.properties.address = currentAddress;
+      } else if ('address' in clone.properties) {
+        delete clone.properties.address;
+      }
+      if (approx) {
+        clone.properties.approx_address = approx;
+        if (!currentAddress) {
+          clone.properties.address = approx;
+        }
+      } else if ('approx_address' in clone.properties) {
+        delete clone.properties.approx_address;
       }
     }
     return clone;
@@ -745,15 +767,16 @@ export class MapController {
     };
   }
 
-  private resolvePinAddress(props: Record<string, unknown>, coordinates: [number, number]): string {
+  private resolvePinAddress(props: Record<string, unknown>, _coordinates: [number, number]): string {
     const candidates = ['address', 'approx_address'];
     for (const key of candidates) {
       const value = props[key];
-      if (typeof value === 'string' && value.trim().length) {
-        return value;
+      const cleaned = sanitizeAddress(typeof value === 'string' ? value : undefined);
+      if (cleaned) {
+        return cleaned;
       }
     }
-    return formatCoordinates(coordinates);
+    return '';
   }
 
   private getCurrentBounds():

@@ -1359,9 +1359,7 @@ def poi_points(
         elif approx and approx.strip():
             props["approx_address"] = approx.strip()
         else:
-            fallback = f"{lat:.4f}°, {lon:.4f}°"
-            props["address"] = fallback
-            props["approx_address"] = fallback
+            props["address"] = ""
         feats.append({
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [lon, lat]},
