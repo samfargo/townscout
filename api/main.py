@@ -45,6 +45,11 @@ _TRAUMA_CATEGORY_LABELS = {
     "Level 1 Trauma (Adults)",
     "Level 1 Trauma (Pediatric)",
 }
+_TRAUMA_CATEGORY_SLUGS = {"trauma_level_1_adult", "trauma_level_1_pediatric"}
+_TRAUMA_SLUG_TO_LEVEL = {
+    "trauma_level_1_adult": "adult",
+    "trauma_level_1_pediatric": "pediatric",
+}
 
 # ---------- Config ----------
 # Paths
@@ -1309,10 +1314,27 @@ def poi_points(
         else:
             sub = sub[sub["brand_id"].isin(brand_list)]
     if category_slug:
-        if "category" not in sub.columns:
-            sub = sub.iloc[0:0]
+        if category_slug in _TRAUMA_CATEGORY_SLUGS:
+            mask = pd.Series(False, index=sub.index)
+            if "category" in sub.columns:
+                mask = mask | (sub["category"].astype(str).str.strip() == category_slug)
+            if "subcat" in sub.columns:
+                mask = mask | (sub["subcat"].astype(str).str.strip() == category_slug)
+            trauma_level = _TRAUMA_SLUG_TO_LEVEL.get(category_slug)
+            if trauma_level and "trauma_level" in sub.columns:
+                mask = mask | (
+                    sub["trauma_level"]
+                    .astype(str)
+                    .str.strip()
+                    .str.lower()
+                    .eq(trauma_level)
+                )
+            sub = sub[mask]
         else:
-            sub = sub[sub["category"].astype(str).str.strip() == category_slug]
+            if "category" not in sub.columns:
+                sub = sub.iloc[0:0]
+            else:
+                sub = sub[sub["category"].astype(str).str.strip() == category_slug]
 
     if sub.empty or "lon" not in sub.columns or "lat" not in sub.columns:
         return {"type": "FeatureCollection", "features": []}

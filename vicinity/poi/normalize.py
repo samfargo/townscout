@@ -52,6 +52,34 @@ def normalize_overture_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         # Category mapping
         primary_cat = row['categories']['primary'] if row['categories'] and 'primary' in row['categories'] else None
         ts_class, ts_cat, ts_subcat = OVERTURE_CATEGORY_MAP.get(primary_cat, (None, None, None))
+
+        # Special handling for hospitals in Overture: filter out non-hospitals
+        if ts_cat == 'hospital':
+            poi_name = row['names']['primary'] if row['names'] and 'primary' in row['names'] else ""
+            poi_name_lower = str(poi_name).lower()
+            
+            # Overture's "hospital" category is overly broad and includes many non-hospitals.
+            # Only accept facilities that explicitly contain "hospital" or "medical center" in the name
+            # to ensure we're only capturing actual hospitals.
+            is_likely_hospital = any(term in poi_name_lower for term in [
+                'hospital', 'medical center', 'medical centre'
+            ])
+            
+            # Exclude non-hospital medical facilities even if they contain "hospital" in name
+            exclude_keywords = [
+                'urgent care', 'urgent_care', 'express care', 'quick care',
+                'facial', 'cosmetic', 'plastic surgery', 'dermatology', 'spa', 'aesthetic', 'rejuvenation',
+                'allergy', 'asthma', 'nutrition', 'wellness', 'office building',
+                'sleep', 'med docs', 'concierge', 'consults',
+                ' supply', 'supplies', 'equipment', ' at ', 'center at', 'surgery at'
+            ]
+            
+            has_exclusion = any(keyword in poi_name_lower for keyword in exclude_keywords)
+            
+            if not is_likely_hospital or has_exclusion:
+                # Reclassify as clinic instead
+                ts_class, ts_cat, ts_subcat = ("health", "clinic", "clinic")
+        
         
         # Handle place_of_worship religion mapping for Overture as well (if present)
         if primary_cat and 'place_of_worship' in str(primary_cat).lower():
@@ -155,7 +183,22 @@ def normalize_osm_pois(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             tag_value = row.get(tag_key)
             if tag_value and (tag_key, tag_value) in OSM_TAG_MAP:
                 ts_class, ts_cat, ts_subcat = OSM_TAG_MAP[(tag_key, tag_value)]
-                
+
+                # Special handling for hospitals: filter out cosmetic/urgent care centers
+                if tag_value == 'hospital':
+                    poi_name = row.get('name', '')
+                    name_lower = str(poi_name).lower() if poi_name else ''
+                    
+                    # Exclude cosmetic surgery centers and urgent care facilities
+                    exclude_keywords = [
+                        'urgent care', 'urgent_care', 'afc urgent', 'express care', 'quick care',
+                        'facial', 'cosmetic', 'plastic surgery', 'dermatology', 'spa', 'aesthetic', 'rejuvenation'
+                    ]
+                    if any(keyword in name_lower for keyword in exclude_keywords):
+                        # Reclassify as clinic instead
+                        ts_class, ts_cat, ts_subcat = ("health", "clinic", "clinic")
+                        break
+
                 # Special handling for place_of_worship: map religion to worship type
                 if tag_value == 'place_of_worship':
                     religion = row.get('religion')

@@ -214,8 +214,7 @@ The web client is a Next.js 13+ App Router project that renders a full-height ma
 
 ### Sidebar & UI Components
 
-- `app/(sidebar)/SearchBox.tsx` fetches catalog data and Google Places suggestions (using TanStack Query), dispatches add actions, and exposes the climate typology dropdown, "Avoid power lines" toggle, and Political Views range slider (0-4: Strong Democrat to Strong Republican).
-- `app/(sidebar)/FiltersPanel.tsx` renders sliders per active POI, debouncing updates before invoking `updateSlider`.
+- `app/(sidebar)/SearchBox.tsx` fetches catalog data and Google Places suggestions (using TanStack Query), dispatches add actions, surfaces the livable-area summary, manages the active-filter pill list (sliders, pin toggles, and travel-mode switches), and exposes the climate typology dropdown, "Avoid power lines" toggle, and Political Views range slider (0-4: Strong Democrat to Strong Republican).
 - `app/(sidebar)/HoverBox.tsx` summarizes hover details: travel times computed client-side using the same anchor combination logic, decoded climate stats, and a callout when the hovered hex lies within a buffered power corridor.
 - Shared UI primitives live in `components/ui/` (Tailwind + Radix-inspired shorthands).
 

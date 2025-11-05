@@ -26,41 +26,15 @@ except Exception:
 TAXONOMY = {
     "food_and_drink": {
         "supermarket": ["supermarket", "grocery", "hypermarket"],
-        "convenience_store": ["convenience"],
-        "restaurant": ["restaurant"],
         "fast_food": ["fast_food"],
         "cafe": ["cafe", "coffee_shop"],
-        "bakery": ["bakery"],
-        "pizza": ["pizza"],
-        "ice_cream": ["ice_cream"],
-        "bar": ["bar", "pub", "biergarten"],
-    },
-    "retail": {
-        "department_store": ["department_store"],
-        "shopping_mall": ["mall", "shopping_centre", "shopping_center"],
-        "hardware_store": ["hardware", "doityourself", "home_improvement"],
-        "electronics_store": ["electronics"],
-        "furniture_store": ["furniture"],
-        "warehouse_club": ["warehouse_club"],
     },
     "health": {
         "hospital": ["hospital"],
         "pharmacy": ["pharmacy"],
-        "clinic": ["clinic", "urgent_care", "doctors"],
-        "dentist": ["dentist"],
-    },
-    "education": {
-        "school": ["school", "kindergarten"],
-        "university": ["university", "college"],
-        "preschool": ["preschool"],
     },
     "civic": {
         "library": ["library"],
-        "post_office": ["post_office"],
-        "town_hall": ["townhall"],
-        "courthouse": ["courthouse"],
-        "police": ["police"],
-        "fire_station": ["fire_station"],
     },
     "religious": {
         "place_of_worship_church": ["church", "christian"],
@@ -70,32 +44,16 @@ TAXONOMY = {
     },
     "recreation": {
         "park": ["park"],
-        "playground": ["playground"],
-        "sports_centre": ["sports_centre", "sport_centre"],
         "gym": ["gym", "fitness_centre", "fitness_center"],
-        "swimming_pool": ["swimming_pool"],
-        "golf_course": ["golf_course"],
-        "cinema": ["cinema", "theatre", "theater"],
-        "community_center": ["community_centre", "community_center"],
     },
     "transport": {
         "railway_station": ["railway_station", "train_station"],
         "bus_station": ["bus_station"],
-        "bus_stop": ["bus_stop"],
-        "subway_station": ["subway_station", "metro_station"],
-        "light_rail_station": ["light_rail_station"],
         "airport": ["airport", "aerodrome"],
-        "ferry_terminal": ["ferry_terminal"],
-        "park_and_ride": ["park_and_ride"],
-        "fuel": ["fuel", "charging_station"],
     },
     "natural": {
         "beach_ocean": ["ocean"],
         "beach_lake": ["lake"],
-        "beach_river": ["river"],
-        "beach_other": ["other"],
-        "trailhead": ["trailhead"],
-        "nature_reserve": ["nature_reserve"],
     },
 }
 
@@ -237,35 +195,13 @@ OVERTURE_CATEGORY_MAP = {
     "supermarket": ("food_and_drink", "supermarket", "supermarket"),
     "supermarkets": ("food_and_drink", "supermarket", "supermarket"),
     "grocery_store": ("food_and_drink", "supermarket", "grocery"),
-    "convenience_store": ("food_and_drink", "convenience_store", "convenience"),
-    "restaurants": ("food_and_drink", "restaurant", "restaurant"),
     "fast_food_restaurant": ("food_and_drink", "fast_food", "fast_food"),
     "cafe": ("food_and_drink", "cafe", "cafe"),
-    "bakery": ("food_and_drink", "bakery", "bakery"),
-    "pizza_restaurant": ("food_and_drink", "pizza", "pizza"),
-    "ice_cream_shop": ("food_and_drink", "ice_cream", "ice_cream"),
-    # Retail
-    "department_store": ("retail", "department_store", "department_store"),
-    "shopping_center": ("retail", "shopping_mall", "shopping_center"),
-    "hardware_store": ("retail", "hardware_store", "hardware"),
-    "home_improvement_store": ("retail", "hardware_store", "home_improvement"),
-    "electronics_store": ("retail", "electronics_store", "electronics"),
-    "furniture_store": ("retail", "furniture_store", "furniture"),
     # Health
     "hospital": ("health", "hospital", "hospital"),
     "pharmacy": ("health", "pharmacy", "pharmacy"),
-    "clinic": ("health", "clinic", "clinic"),
-    "urgent_care": ("health", "clinic", "urgent_care"),
-    "dentist": ("health", "dentist", "dentist"),
-    # Education
-    "school": ("education", "school", "school"),
-    "university": ("education", "university", "university"),
-    "college": ("education", "university", "college"),
     # Civic
     "library": ("civic", "library", "library"),
-    "post_office": ("civic", "post_office", "post_office"),
-    "town_hall": ("civic", "town_hall", "town_hall"),
-    "courthouse": ("civic", "courthouse", "courthouse"),
     # Religious / Places of Worship
     "place_of_worship": ("religious", "place_of_worship_church", "church"),  # fallback if no religion specified
     "church": ("religious", "place_of_worship_church", "church"),
@@ -274,20 +210,13 @@ OVERTURE_CATEGORY_MAP = {
     "mosque": ("religious", "place_of_worship_mosque", "mosque"),
     # Recreation
     "park": ("recreation", "park", "park"),
-    "playground": ("recreation", "playground", "playground"),
     "fitness_center": ("recreation", "gym", "fitness_center"),
     "gym": ("recreation", "gym", "gym"),
-    "swimming_pool": ("recreation", "swimming_pool", "swimming_pool"),
-    "golf_course": ("recreation", "golf_course", "golf_course"),
-    "cinema": ("recreation", "cinema", "cinema"),
     # Transport
     "airport": ("transport", "airport", "airport"),
     "train_station": ("transport", "railway_station", "train_station"),
     "railway_station": ("transport", "railway_station", "railway_station"),
     "bus_station": ("transport", "bus_station", "bus_station"),
-    "bus_stop": ("transport", "bus_stop", "bus_stop"),
-    "subway_station": ("transport", "subway_station", "subway_station"),
-    "ferry_terminal": ("transport", "ferry_terminal", "ferry_terminal"),
 }
 
 
@@ -298,81 +227,33 @@ OVERTURE_CATEGORY_MAP = {
 OSM_TAG_MAP = {
     # Food & drink
     ("shop", "supermarket"): ("food_and_drink", "supermarket", "supermarket"),
-    ("shop", "convenience"): ("food_and_drink", "convenience_store", "convenience"),
-    ("shop", "bakery"): ("food_and_drink", "bakery", "bakery"),
-    ("amenity", "restaurant"): ("food_and_drink", "restaurant", "restaurant"),
     ("amenity", "fast_food"): ("food_and_drink", "fast_food", "fast_food"),
     ("amenity", "cafe"): ("food_and_drink", "cafe", "cafe"),
-    ("amenity", "bar"): ("food_and_drink", "bar", "bar"),
-    ("amenity", "pub"): ("food_and_drink", "bar", "pub"),
-    ("amenity", "biergarten"): ("food_and_drink", "bar", "biergarten"),
-    ("cuisine", "pizza"): ("food_and_drink", "pizza", "pizza"),
-    ("amenity", "ice_cream"): ("food_and_drink", "ice_cream", "ice_cream"),
-
-    # Retail
-    ("shop", "department_store"): ("retail", "department_store", "department_store"),
-    ("shop", "mall"): ("retail", "shopping_mall", "mall"),
-    ("shop", "hardware"): ("retail", "hardware_store", "hardware"),
-    ("shop", "doityourself"): ("retail", "hardware_store", "doityourself"),
-    ("shop", "electronics"): ("retail", "electronics_store", "electronics"),
-    ("shop", "furniture"): ("retail", "furniture_store", "furniture"),
 
     # Health
     ("amenity", "hospital"): ("health", "hospital", "hospital"),
     ("amenity", "pharmacy"): ("health", "pharmacy", "pharmacy"),
-    ("amenity", "clinic"): ("health", "clinic", "clinic"),
-    ("amenity", "doctors"): ("health", "clinic", "doctors"),
-    ("amenity", "dentist"): ("health", "dentist", "dentist"),
-
-    # Education
-    ("amenity", "school"): ("education", "school", "school"),
-    ("amenity", "kindergarten"): ("education", "school", "kindergarten"),
 
     # Civic
     ("amenity", "library"): ("civic", "library", "library"),
-    ("amenity", "post_office"): ("civic", "post_office", "post_office"),
-    ("amenity", "townhall"): ("civic", "town_hall", "townhall"),
-    ("amenity", "courthouse"): ("civic", "courthouse", "courthouse"),
-    ("amenity", "police"): ("civic", "police", "police"),
-    ("amenity", "fire_station"): ("civic", "fire_station", "fire_station"),
 
     # Recreation
     ("leisure", "park"): ("recreation", "park", "park"),
-    ("leisure", "playground"): ("recreation", "playground", "playground"),
-    ("leisure", "sports_centre"): ("recreation", "sports_centre", "sports_centre"),
     ("leisure", "fitness_centre"): ("recreation", "gym", "fitness_centre"),
     ("leisure", "fitness_center"): ("recreation", "gym", "fitness_center"),
     ("amenity", "gym"): ("recreation", "gym", "gym"),
-    ("leisure", "swimming_pool"): ("recreation", "swimming_pool", "swimming_pool"),
-    ("leisure", "golf_course"): ("recreation", "golf_course", "golf_course"),
-    ("amenity", "cinema"): ("recreation", "cinema", "cinema"),
 
     # Transport
     ("aeroway", "aerodrome"): ("transport", "airport", "aerodrome"),
     ("aeroway", "terminal"): ("transport", "airport", "terminal"),
     ("railway", "station"): ("transport", "railway_station", "station"),
     ("public_transport", "station"): ("transport", "railway_station", "station"),
-    ("highway", "bus_stop"): ("transport", "bus_stop", "bus_stop"),
     ("amenity", "bus_station"): ("transport", "bus_station", "bus_station"),
-    ("amenity", "ferry_terminal"): ("transport", "ferry_terminal", "ferry_terminal"),
-    ("amenity", "fuel"): ("transport", "fuel", "fuel"),
-    ("amenity", "charging_station"): ("transport", "fuel", "charging_station"),
 
     # Religious / Places of Worship
     # Note: The classification by religion type is handled in the normalization script
     # based on the "religion" tag in OSM
     ("amenity", "place_of_worship"): ("religious", "place_of_worship_church", "church"),  # fallback
-
-    # Natural features
-    # Note: Beaches are handled specially via osm_beaches.py build_beach_pois_for_state()
-    # which classifies them into beach_ocean, beach_lake, beach_river, beach_other
-    # based on proximity to coastlines and water bodies. The mappings below are
-    # fallbacks if the classification system is bypassed.
-    ("natural", "beach"): ("natural", "beach_other", "other"),
-
-    # Natural / Recreation (overture) - beaches from Overture (if any)
-    ("amenity", "beach"): ("natural", "beach_other", "other"),
-    ("amenity", "beach_access"): ("natural", "beach_other", "other"),
     }
 
 # --- Optional external config overrides ---

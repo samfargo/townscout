@@ -53,7 +53,7 @@ def load_osm_pois(state: str, pbf_path: str = None) -> gpd.GeoDataFrame:
         custom_filter["religion"] = True
 
     # Keep common tag columns used by normalization.
-    tag_cols = ["name", "brand", "operator", "amenity", "shop", "leisure", "tourism", "religion"]
+    tag_cols = ["name", "brand", "operator", "amenity", "shop", "leisure", "tourism", "religion", "emergency", "healthcare"]
     
     gdf = get_osm_data(
         pbf_path,
