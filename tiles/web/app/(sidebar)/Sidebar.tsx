@@ -6,7 +6,6 @@ import Image from 'next/image';
 
 import { Separator } from '@/components/ui/separator';
 import HoverBox from '@/app/(sidebar)/HoverBox';
-import FiltersPanel from '@/app/(sidebar)/FiltersPanel';
 import SearchBox from '@/app/(sidebar)/SearchBox';
 import ShareButton from '@/app/(shared)/ShareButton';
 
@@ -16,7 +15,6 @@ export default function Sidebar() {
       <div className="flex flex-1 flex-col gap-6 overflow-y-auto px-7 py-8">
         <Header />
         <SearchBox />
-        <FiltersPanel />
         <HoverBox />
         <Separator className="bg-stone-300/70" />
         <ShareButton />
