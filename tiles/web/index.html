@@ -781,9 +781,18 @@
   // ---------- Hover Box ----------
   function updateHoverBox(feature) {
     const contentEl = document.getElementById('hover-content');
-    // In anchor mode, the mousemove handler renders hover content;
-    // for no-feature cases or non-anchor fallback, show a simple hint.
-    contentEl.innerHTML = '<span class="muted">Move cursor over a hex</span>';
+    if (!contentEl) return;
+    if (!feature) {
+      contentEl.innerHTML = '<span class="muted">Move cursor over a hex</span>';
+      return;
+    }
+    const props = feature.properties || {};
+    const hexId = props.h3_id || props.hex_id || props.hex || props.h3;
+    if (hexId) {
+      contentEl.innerHTML = `<div class="kv"><span>Hex ID</span><span>${String(hexId)}</span></div>`;
+      return;
+    }
+    contentEl.innerHTML = '<span class="muted">Hex details unavailable</span>';
   }
   
   // ---------- Filter Logic ----------
@@ -1923,7 +1932,14 @@
         if (ANCHOR_MODE) {
           // Build hover details for selected categories and brands
           const props = f.properties || {};
-          let html = '';
+          const contentEl = document.getElementById('hover-content');
+          if (!contentEl) return;
+          const rows = [];
+          const hexId = props.h3_id || props.hex_id || props.hex || props.h3;
+          if (hexId) {
+            rows.push(`<div class="kv"><span>Hex ID</span><span>${String(hexId)}</span></div>`);
+          }
+          let hasPoiRows = false;
           selectedPOIs.forEach((p) => {
             if (p.type === 'category') {
               const UNREACH = 65535;
@@ -1937,7 +1953,8 @@
                 if (tot < minsSec) minsSec = tot;
               }
               const mins = (minsSec >= UNREACH) ? 'N/A' : Math.ceil(minsSec / 60) + ' min';
-              html += `<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`;
+              rows.push(`<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`);
+              hasPoiRows = true;
             } else if (p.type === 'brand') {
               const UNREACH = 65535;
               let minsSec = UNREACH;
@@ -1950,7 +1967,8 @@
                 if (tot < minsSec) minsSec = tot;
               }
               const mins = (minsSec >= UNREACH) ? 'N/A' : Math.ceil(minsSec / 60) + ' min';
-              html += `<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`;
+              rows.push(`<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`);
+              hasPoiRows = true;
             } else if (p.type === 'custom') {
               const UNREACH = 65535;
               let minsSec = UNREACH;
@@ -1963,10 +1981,19 @@
                 if (tot < minsSec) minsSec = tot;
               }
               const mins = (minsSec >= UNREACH) ? 'N/A' : Math.ceil(minsSec / 60) + ' min';
-              html += `<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`;
+              rows.push(`<div class="kv"><span>${p.label}</span><span>${mins}</span></div>`);
+              hasPoiRows = true;
             }
           });
-          document.getElementById('hover-content').innerHTML = html || '<span class="muted">Select a category, brand, or custom location</span>';
+          if (!hexId && !hasPoiRows) {
+            contentEl.innerHTML = '<span class="muted">Select a category, brand, or custom location</span>';
+            return;
+          }
+          let html = rows.join('');
+          if (!hasPoiRows) {
+            html += '<div class="muted">Select a category, brand, or custom location</div>';
+          }
+          contentEl.innerHTML = html;
         } else {
           updateHoverBox(f);
         }

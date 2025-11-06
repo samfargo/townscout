@@ -3,10 +3,9 @@
 
 import React from 'react';
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Sparkline } from '@/components/ui/sparkline';
 import { useStore, type Mode } from '@/lib/state/store';
-import type { POI } from '@/lib/state/store';
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
@@ -18,7 +17,7 @@ export default function HoverBox() {
   const defaultMode = useStore((state) => state.mode);
   const hexProps = hover?.kind === 'hex' ? hover.properties : null;
   const pinHover = hover?.kind === 'pin' ? hover : null;
-  const nearPowerCorridor = Boolean(hexProps?.near_power_corridor);
+  const hexId = React.useMemo(() => (hexProps ? extractHexId(hexProps) : null), [hexProps]);
 
   const climateSummary = React.useMemo(() => {
     if (!hexProps) return null;
@@ -67,66 +66,62 @@ export default function HoverBox() {
   }, [hexProps, pois, cache, poiModes, defaultMode]);
 
   return (
-    <Card className="border-stone-300 bg-[#fbf7ec] p-0 shadow-[0_18px_30px_-26px_rgba(76,54,33,0.22)]">
-      <CardHeader className="mb-0 rounded-2xl rounded-b-none border-b border-stone-200 bg-[#f2ebd9] px-4 py-3">
-        <CardTitle className="font-serif text-stone-900">Hover details</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3 px-4 pb-4 pt-3 text-sm text-stone-700">
+    <Card className="pointer-events-auto w-fit max-w-[min(240px,calc(100vw-2rem))] border border-stone-200/70 bg-white/95 px-2 pb-2 text-stone-700 shadow-sm shadow-stone-900/10 backdrop-blur-sm">
+      <CardContent className="space-y-1.5 p-0 text-[11px] leading-tight">
+        <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-stone-500">Hover details</p>
         {!hover && (
-          <p className="text-sm text-stone-500">Hover over the map to view details.</p>
+          <p className="text-[10px] text-stone-500">Hover over the map to view details.</p>
         )}
         {pinHover && (
-          <div className="space-y-1 rounded-xl border border-stone-200 bg-[#fbf7ec] px-3 py-2">
-            <p className="text-[11px] uppercase tracking-wide text-stone-500">Location pin</p>
-            <p className="text-sm font-semibold text-stone-800">{pinHover.name}</p>
-            {pinHover.address && (
-              <p className="text-xs text-stone-600">{pinHover.address}</p>
-            )}
+          <div className="space-y-0.5">
+            <p className="text-[9px] uppercase tracking-wide text-stone-400">Location pin</p>
+            <p className="text-[11px] font-semibold text-stone-800">{pinHover.name}</p>
+            {pinHover.address && <p className="text-[10px] text-stone-500">{pinHover.address}</p>}
           </div>
         )}
-        {hexProps && nearPowerCorridor && (
-          <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
-            <p className="font-semibold uppercase tracking-wide">Near power corridor</p>
-            <p className="text-xs text-amber-800">Within 200m of a high-voltage transmission line.</p>
+        {hexProps && hexId && (
+          <div className="space-y-0.5">
+            <p className="text-[9px] uppercase tracking-wide text-stone-400">Hex ID</p>
+            <p className="font-mono text-[10px] font-medium text-stone-700">{hexId}</p>
           </div>
         )}
         {hexProps && climateSummary && (
-          <div className="space-y-2 rounded-xl border border-stone-200 bg-[#fbf7ec] px-3 py-2">
-            <p className="text-[11px] uppercase tracking-wide text-stone-500">Climate typology</p>
-            <p className="text-sm font-semibold text-stone-800">
+          <div className="space-y-1">
+            <p className="text-[9px] uppercase tracking-wide text-stone-400">Climate typology</p>
+            <p className="text-[11px] font-semibold text-stone-800">
               {climateSummary.label ?? 'Unclassified'}
             </p>
-            <dl className="mt-1 grid grid-cols-3 gap-2 text-[11px] text-stone-600">
+            <dl className="grid grid-cols-3 gap-1 text-[9px] text-stone-500">
               <div className="space-y-0.5">
-                <dt className="uppercase tracking-wide text-stone-400">Summer avg</dt>
-                <dd className="text-sm font-medium text-stone-800">
+                <dt className="uppercase tracking-wide text-stone-400">Summer</dt>
+                <dd className="text-[11px] font-medium text-stone-800">
                   {formatTemperature(climateSummary.summer)}
                 </dd>
               </div>
               <div className="space-y-0.5">
-                <dt className="uppercase tracking-wide text-stone-400">Winter avg</dt>
-                <dd className="text-sm font-medium text-stone-800">
+                <dt className="uppercase tracking-wide text-stone-400">Winter</dt>
+                <dd className="text-[11px] font-medium text-stone-800">
                   {formatTemperature(climateSummary.winter)}
                 </dd>
               </div>
               <div className="space-y-0.5">
-                <dt className="uppercase tracking-wide text-stone-400">Annual precip</dt>
-                <dd className="text-sm font-medium text-stone-800">
+                <dt className="uppercase tracking-wide text-stone-400">Precip</dt>
+                <dd className="text-[11px] font-medium text-stone-800">
                   {formatPrecip(climateSummary.precip)}
                 </dd>
               </div>
             </dl>
             {(climateSummary.monthlyTemp || climateSummary.monthlyPrecip) && (
-              <div className="mt-2 space-y-1 border-t border-stone-200 pt-2">
+              <div className="space-y-0.5">
                 {climateSummary.monthlyTemp && (
                   <div className="space-y-0.5">
-                    <p className="text-[10px] uppercase tracking-wide text-stone-400">
+                    <p className="text-[9px] uppercase tracking-wide text-stone-400">
                       Monthly Temperature (°F)
                     </p>
                     <Sparkline
                       data={climateSummary.monthlyTemp}
-                      width={220}
-                      height={28}
+                      width={184}
+                      height={20}
                       color="#dc2626"
                       fillColor="#fca5a5"
                       type="line"
@@ -134,14 +129,14 @@ export default function HoverBox() {
                   </div>
                 )}
                 {climateSummary.monthlyPrecip && (
-                  <div className="mt-1 space-y-0.5">
-                    <p className="text-[10px] uppercase tracking-wide text-stone-400">
+                  <div className="space-y-0.5">
+                    <p className="text-[9px] uppercase tracking-wide text-stone-400">
                       Monthly Precipitation (in)
                     </p>
                     <Sparkline
                       data={climateSummary.monthlyPrecip}
-                      width={220}
-                      height={28}
+                      width={184}
+                      height={20}
                       color="#2563eb"
                       fillColor="#93c5fd"
                       type="bar"
@@ -154,21 +149,19 @@ export default function HoverBox() {
           </div>
         )}
         {hexProps && travelTimes.length === 0 && !climateSummary && (
-          <p className="text-sm text-stone-500">
-            Add filters to see travel times from this hex.
-          </p>
+          <p className="text-[10px] text-stone-500">Add filters to see travel times from this hex.</p>
         )}
         {hexProps && travelTimes.length > 0 && (
-          <dl className="space-y-2">
+          <dl className="space-y-0.5">
             {travelTimes.map(({ label, minutes, mode }) => (
-              <div key={label} className="flex items-center justify-between gap-3">
-                <dt className="flex items-center gap-2 text-xs text-stone-700">
+              <div key={label} className="flex items-center justify-between gap-1">
+                <dt className="flex items-center gap-1 text-[9px] text-stone-600">
                   <span>{label}</span>
-                  <span className="rounded-full border border-stone-300 bg-[#f7f0de] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stone-600">
+                  <span className="rounded-full border border-stone-300 bg-white/80 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-stone-500">
                     {mode === 'drive' ? 'Drive' : 'Walk'}
                   </span>
                 </dt>
-                <dd className="text-sm font-semibold text-stone-800">
+                <dd className="text-[10px] font-semibold text-stone-800">
                   {minutes !== null ? `${minutes} min` : 'Unreachable'}
                 </dd>
               </div>
@@ -217,6 +210,31 @@ function decodeQuantized(value: unknown, scale: number): number | null {
     const parsed = Number.parseFloat(value);
     if (Number.isFinite(parsed)) {
       return parsed * scale;
+    }
+  }
+  return null;
+}
+
+function extractHexId(props: Record<string, any>): string | null {
+  const candidates = ['h3_id', 'hex_id', 'hex', 'h3', 'h3_address'];
+  for (const key of candidates) {
+    if (!(key in props)) continue;
+    const raw = props[key];
+    if (raw == null) continue;
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (trimmed) return trimmed;
+      continue;
+    }
+    if (typeof raw === 'bigint') {
+      return raw.toString(16);
+    }
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      const intValue = Math.trunc(raw);
+      if (!Number.isSafeInteger(intValue)) {
+        return raw.toString();
+      }
+      return intValue.toString(16);
     }
   }
   return null;
