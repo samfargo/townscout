@@ -82,14 +82,20 @@ Added cache validation to `load_or_build_csr()`:
 
 ## Impact Assessment
 
-### Affected Categories
-Likely **ALL non-branded categories** have similar D_anchor corruption:
-- railway_station (confirmed corrupted)
-- bus_station (likely corrupted)
-- airport (likely corrupted)  
-- hospital (needs verification)
-- library (needs verification)
-- park (needs verification)
+### Affected Categories (CONFIRMED - 2025-11-05)
+
+**ALL categories except railway_station** had corrupt Oct 29 snapshots:
+
+| Category | Corruption Evidence | Status |
+|----------|-------------------|--------|
+| **airport** | 0.0% <5min access (impossible - should be ~5-10% near Logan, TF Green, Bradley) | ❌ CORRUPT |
+| **park** | 94.9% <5min access (suspiciously high) | ⚠️ LIKELY CORRUPT |
+| **library** | 80.7% <5min access (suspiciously high) | ⚠️ LIKELY CORRUPT |
+| **hospital** | 77.8% <5min access (suspiciously high) | ⚠️ LIKELY CORRUPT |
+| **bus_station** | 33.2% <5min (should be similar to railway_station's 49%) | ⚠️ LIKELY CORRUPT |
+| **railway_station** | Rebuilt 2025-11-05, now 49% <5min (realistic for Boston metro) | ✅ FIXED |
+
+**All 17 other categories being rebuilt** (2025-11-05) with validated graph cache.
 
 ### User Experience Impact
 - **High**: Users see misleading drive-times for non-branded POIs
