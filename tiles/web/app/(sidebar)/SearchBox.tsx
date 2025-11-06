@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { Slider } from '@/components/ui/slider';
@@ -431,12 +431,6 @@ export default function SearchBox() {
 
   return (
     <Card className="border-stone-300 bg-[#fbf7ec] p-0 shadow-[0_20px_36px_-30px_rgba(76,54,33,0.28)]">
-      <CardHeader className="mb-0 flex flex-col gap-2 rounded-2xl rounded-b-none border-b border-stone-200 bg-[#f2ebd9] px-3 py-4">
-        <CardTitle className="font-serif text-sm font-semibold text-stone-900">Add filters</CardTitle>
-        <p className="text-xs text-stone-600">
-          Build your own livable area using the menus below.
-        </p>
-      </CardHeader>
       <CardContent className="space-y-6 px-3 pb-5 pt-4 text-sm text-stone-700">
         <LivableAreaSummary percent={livableAreaPercent} areaLabel="MA" />
         <ActiveFiltersSection
@@ -794,6 +788,7 @@ function ActiveFiltersSection({
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [modePending, setModePending] = React.useState<Record<string, boolean>>({});
   const [, setDraggingMap] = React.useState<Record<string, boolean>>({});
+  const prevPoiIdsRef = React.useRef<string[]>([]);
 
   React.useEffect(() => {
     setLocalValues((prev) => {
@@ -808,10 +803,25 @@ function ActiveFiltersSection({
   }, [sliders]);
 
   React.useEffect(() => {
-    if (expandedId && !pois.some((poi) => poi.id === expandedId)) {
-      setExpandedId(null);
-    }
-  }, [expandedId, pois]);
+    const prevIds = prevPoiIdsRef.current;
+    const nextIds = pois.map((poi) => poi.id);
+    const newlyAdded = nextIds.find((id) => !prevIds.includes(id)) ?? null;
+
+    setExpandedId((current) => {
+      if (newlyAdded) {
+        return newlyAdded;
+      }
+      if (!nextIds.length) {
+        return null;
+      }
+      if (current && nextIds.includes(current)) {
+        return current;
+      }
+      return nextIds[0];
+    });
+
+    prevPoiIdsRef.current = nextIds;
+  }, [pois]);
 
   const makeSliderValue = React.useCallback(
     (id: string) => localValues[id] ?? sliders[id] ?? 30,
