@@ -247,7 +247,38 @@ def load_csr_npy(cache_dir: str, res: list[int]) -> tuple:
 
 def load_or_build_csr(pbf_path: str, mode: str, resolutions: list[int], progress: bool = True):
     cache_dir = _csr_cache_dir(pbf_path, mode)
+    cache_valid = False
+    
     if os.path.isdir(cache_dir):
+        # Validate cache before loading
+        meta_path = os.path.join(cache_dir, "meta.json")
+        if os.path.exists(meta_path):
+            try:
+                import json
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                
+                # Check if PBF file has been modified since cache was created
+                pbf_mtime = os.path.getmtime(pbf_path)
+                cache_pbf_mtime = meta.get("pbf_mtime")
+                
+                if cache_pbf_mtime is not None:
+                    if pbf_mtime <= cache_pbf_mtime:
+                        cache_valid = True
+                    else:
+                        print(f"[graph cache] PBF modified ({pbf_mtime} > {cache_pbf_mtime}), invalidating cache for {mode}")
+                else:
+                    # Old cache format without pbf_mtime - treat as potentially stale
+                    print(f"[graph cache] WARNING: Cache missing pbf_mtime metadata, treating as stale. Rebuild recommended.")
+                    cache_valid = False
+            except Exception as e:
+                print(f"[graph cache] Failed to read/validate metadata: {e}, rebuilding cache")
+                cache_valid = False
+        else:
+            print(f"[graph cache] No metadata found, cannot validate cache age. Rebuilding.")
+            cache_valid = False
+    
+    if cache_valid:
         try:
             node_ids, indptr, indices, w_sec, lats, lons, h3_list = load_csr_npy(cache_dir, resolutions)
             # If any requested res missing, compute and save it
@@ -267,22 +298,30 @@ def load_or_build_csr(pbf_path: str, mode: str, resolutions: list[int], progress
                     h3_list[idx] = arr
             # Stack h3_by_res into [N,R]
             h3_by_res = np.column_stack(h3_list) if h3_list else np.empty((len(lats), 0), dtype=np.uint64)
+            print(f"[graph cache] Loaded validated cache for {mode}")
             return node_ids, indptr, indices, w_sec, lats, lons, h3_by_res, resolutions
-        except Exception:
+        except Exception as e:
+            print(f"[graph cache] Failed to load cache: {e}, rebuilding")
             pass
 
     # Build and cache anew
+    print(f"[graph cache] Building fresh CSR graph for {mode} from {os.path.basename(pbf_path)}")
     node_ids, indptr, indices, w_sec, lats, lons = build_csr_from_pbf(pbf_path, mode)
     # Precompute H3 for requested resolutions and save
     h3_ids = compute_h3_for_nodes(lats, lons, np.array(resolutions, dtype=np.int32), os.cpu_count(), bool(progress))
     h3_ids = np.asarray(h3_ids, dtype=np.uint64)
     h3_by_res = {int(r): h3_ids[:, i] for i, r in enumerate(resolutions)}
+    
+    # Save with enhanced metadata including PBF modification time
+    pbf_mtime = os.path.getmtime(pbf_path)
     save_csr_npy(
         cache_dir,
         node_ids, indptr, indices, w_sec, lats, lons, h3_by_res,
         meta={
             "pbf": os.path.basename(pbf_path),
             "mode": mode,
+            "pbf_mtime": pbf_mtime,
+            "cache_created": os.path.getmtime(cache_dir) if os.path.exists(cache_dir) else pbf_mtime,
         }
     )
     # Return stacked [N,R]

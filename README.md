@@ -96,8 +96,14 @@ The architecture supports both category-based (e.g., "supermarket") and brand-ba
 
 - [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md) - Complete system design
 - [Anchor Selection Strategy](docs/ANCHORS.md) - How anchors are chosen and scaled
+- [Railway Station Bug Analysis](docs/RAILWAY_STATION_BUG_ANALYSIS.md) - Graph cache vulnerability and fix (2025-11-05)
 
 For detailed module structure and implementation, see the architecture overview.
+
+## Known Issues & Fixes
+
+### Graph Cache Validation (Fixed 2025-11-05)
+A vulnerability in the graph cache loading mechanism allowed stale CSR graphs to be loaded when the source PBF file was updated, causing data corruption in D_anchor computations. This has been **fixed** with automatic cache validation based on PBF modification times. See `docs/RAILWAY_STATION_BUG_ANALYSIS.md` for details.
 
 ---
 

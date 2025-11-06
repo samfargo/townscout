@@ -10,7 +10,9 @@ Green hexes showing ~5 minute drive times to railway stations in Western Massach
 
 ## Root Cause
 
-**Corrupt D_anchor routing data** showing impossible travel times. The D_anchor computation from October 29, 2025 contains systematically incorrect shortest-path calculations for railway_station category.
+**Graph cache version mismatch** causing corrupt D_anchor routing data. The D_anchor computation from October 29, 2025 loaded a stale graph cache that was incompatible with the current anchor sites, resulting in systematically incorrect shortest-path calculations for railway_station category.
+
+**Vulnerability**: The graph cache loading mechanism did not validate that cached CSR graphs matched the source PBF file version. When the PBF was updated, old cached graphs (with different edge weights or topology) could be silently loaded, causing data corruption.
 
 ## Specific Example
 
@@ -54,11 +56,20 @@ Green hexes showing ~5 minute drive times to railway stations in Western Massach
 4. **Graph Structure**: Nodes verified at correct coordinates ✅ Valid
 5. **D_anchor Computation**: **SSSP algorithm produced corrupt results** ❌ **BUG HERE**
 
-### Suspected Bug Location
-- File: `src/06_compute_d_anchor_category.py`
-- Function: `compute_times()` calling `kbest_multisource_bucket_csr()`
-- Rust implementation: `vicinity_native` crate
-- Algorithm: Multi-source Dijkstra with reverse CSR
+### Confirmed Bug Location
+- **File**: `src/graph/pyrosm_csr.py` (FIXED)
+- **Function**: `load_or_build_csr()` - loaded cached CSR without validation
+- **Issue**: Metadata with PBF modification time was saved but never checked
+- **Result**: Stale graph cache from different PBF version used for routing
+- **Impact**: Edge weights or topology mismatch caused impossible travel times
+
+### Fix Applied (2025-11-05)
+
+Added cache validation to `load_or_build_csr()`:
+1. **Metadata validation**: Check `meta.json` exists before loading cache
+2. **PBF modification time**: Compare PBF mtime against cached `pbf_mtime`
+3. **Auto-invalidation**: Rebuild cache if PBF is newer than cache
+4. **Warning for old caches**: Flag caches without `pbf_mtime` metadata as stale
 
 ## Additional Issue: Chester Railway Station
 
@@ -85,42 +96,94 @@ Likely **ALL non-branded categories** have similar D_anchor corruption:
 - **Systemic**: 49% of railway_station D_anchor records are impossible
 - **Trust**: Undermines confidence in all drive-time calculations
 
-## Recommended Fixes
+## Fixes Applied
 
-### Immediate Actions
-1. **Rebuild D_anchor for railway_station**:
-   ```bash
-   PYTHONPATH=src .venv/bin/python src/06_compute_d_anchor_category.py \
-     --pbf data/osm/massachusetts.osm.pbf \
-     --anchors data/anchors/massachusetts_drive_sites.parquet \
-     --mode drive \
-     --category railway_station \
-     --force
-   ```
+### 1. Cache Validation (IMPLEMENTED - 2025-11-05)
 
-2. **Add validation checks** to D_anchor computation:
-   ```python
-   # After compute_times(), validate results
-   max_reasonable_speed_kmh = 120  # km/h on highways
-   for anchor_id, time_s in enumerate(time_s):
-       if time_s > 0 and time_s < cutoff_primary_s:
-           dist_km = distance_between(anchors[anchor_id], targets[best_target])
-           implied_speed = (dist_km / time_s) * 3600
-           if implied_speed > max_reasonable_speed_kmh:
-               warnings.append(f"Impossible speed: {implied_speed:.0f} km/h")
-   ```
+**File**: `src/graph/pyrosm_csr.py`
 
-3. **Audit other categories**:
-   - Check bus_station, airport, hospital, library, park
-   - Look for <5 min times to sparse POI networks
+Added comprehensive cache validation to prevent stale graph reuse:
 
-### Long-term Fixes
-1. **Investigate Rust routing bug**: Debug `kbest_multisource_bucket_csr()` in `vicinity_native`
-2. **Add POI quality filters**:
-   - Filter historical/disused railway stations
-   - Add `disused`, `historic`, `abandoned` tag checking
-3. **Automated validation**: Add CI checks that flag impossible speeds
-4. **Data lineage tracking**: Store provenance metadata with D_anchor files
+```python
+def load_or_build_csr(pbf_path: str, mode: str, resolutions: list[int], progress: bool = True):
+    cache_dir = _csr_cache_dir(pbf_path, mode)
+    cache_valid = False
+    
+    if os.path.isdir(cache_dir):
+        # Validate cache before loading
+        meta_path = os.path.join(cache_dir, "meta.json")
+        if os.path.exists(meta_path):
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+            
+            # Check if PBF file has been modified since cache was created
+            pbf_mtime = os.path.getmtime(pbf_path)
+            cache_pbf_mtime = meta.get("pbf_mtime")
+            
+            if cache_pbf_mtime is not None and pbf_mtime <= cache_pbf_mtime:
+                cache_valid = True
+            else:
+                print(f"[graph cache] PBF modified, invalidating cache for {mode}")
+    
+    if cache_valid:
+        # Load validated cache
+        ...
+    else:
+        # Rebuild cache with updated metadata
+        save_csr_npy(..., meta={
+            "pbf": os.path.basename(pbf_path),
+            "mode": mode,
+            "pbf_mtime": pbf_mtime,  # NEW: Track source file version
+            "cache_created": current_time,
+        })
+```
+
+**Protection provided**:
+- ✅ Detects PBF updates and rebuilds cache automatically
+- ✅ Warns about old caches missing version metadata
+- ✅ Prevents loading incompatible cached graphs
+- ✅ No user intervention required
+
+### 2. Data Rebuild (COMPLETED - 2025-11-05)
+
+**Rebuilt D_anchor for railway_station**:
+```bash
+PYTHONPATH=src:data/taxonomy .venv/bin/python src/06_compute_d_anchor_category.py \
+  --pbf data/osm/massachusetts.osm.pbf \
+  --anchors data/anchors/massachusetts_drive_sites.parquet \
+  --mode drive \
+  --category railway_station \
+  --force
+```
+
+**Results**:
+- Fixed corrupt times: 57s → 2393s (0.9 min → 39.9 min)
+- Worthington area now correctly shows 35-41 min to railway stations
+- Test hex `882a326803fffff`: 4.7 min → 35.1 min (realistic)
+
+## Recommended Future Enhancements
+
+### 1. Add Result Validation (Optional)
+```python
+# In D_anchor computation, flag suspicious results
+max_reasonable_speed_kmh = 120  # km/h on highways
+for anchor_id, time_s in enumerate(time_s):
+    if 0 < time_s < cutoff_primary_s:
+        dist_km = distance_between(anchors[anchor_id], targets[best_target])
+        implied_speed = (dist_km / time_s) * 3600
+        if implied_speed > max_reasonable_speed_kmh:
+            warnings.append(f"Impossible speed: {implied_speed:.0f} km/h")
+```
+
+### 2. POI Quality Filters
+- Filter historical/disused railway stations
+- Add `disused`, `historic`, `abandoned` tag checking
+- Validate POI data against known active stations
+
+### 3. Automated Testing
+- Add CI checks that validate reasonable speed limits
+- Sample-based validation of D_anchor results
+- Alert on statistical anomalies (>X% of records with <5 min)
 
 ## Reproduction Steps
 

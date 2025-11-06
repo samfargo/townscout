@@ -96,7 +96,7 @@ The existing pipeline scripts (`src/02_normalize_pois.py`) and overlay CLI entry
 
 Core graph helpers live in `src/graph/`:
 
-- `graph/pyrosm_csr.py` builds CSR representations of the road network (forward + cached reverse).
+- `graph/pyrosm_csr.py` builds CSR representations of the road network (forward + cached reverse). **Cache validation** (added 2025-11-05): automatically detects PBF updates and invalidates stale caches by comparing modification times. This prevents loading incompatible cached graphs that could cause data corruption (see `docs/RAILWAY_STATION_BUG_ANALYSIS.md`).
 - `graph/csr_utils.py` offers CSR transforms (transpose, connected components, etc.).
 - `graph/anchors.py` ensures stable `anchor_int_id` assignment and node mappings.
 - `graph/ch_cache.py` stores/loads contraction hierarchy caches (used when available).
