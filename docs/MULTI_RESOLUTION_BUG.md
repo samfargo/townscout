@@ -70,7 +70,7 @@ Users will still see flickering/changing coverage during the transition.
 
 ## Testing
 
-- Expand `tests/test_cross_resolution_consistency.py` with a regression that loads the long-format parquet (or melts the tiles back to long), derives parent IDs via a vectorized `cell_to_parent`, uses `groupby(["parent_h3", "anchor_int_id"]).min()` to get child minima, merges that onto r7 rows, and asserts `time_parent <= child_min` for every `(h3_id, anchor)` with data. This fails today and will pass once the mapping fix lands.
+- Expand `tests/test_cross_resolution_consistency.py` with a regression that loads the long-format parquet (or melts the tiles back to long), derives parent IDs via a vectorized `cell_to_parent`, uses `groupby(["parent_h3", "anchor_int_id"]).min()` to get child minima, merges that onto r7 rows, and asserts `time_parent >= child_min` for every `(h3_id, anchor)` with data. This fails today and will pass once the mapping fix lands.
 
 ## Priority
 

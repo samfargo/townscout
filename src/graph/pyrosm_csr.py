@@ -300,6 +300,17 @@ def load_or_build_csr(pbf_path: str, mode: str, resolutions: list[int], progress
                     _save_npy(arr, os.path.join(cache_dir, f"h3_r{int(r)}.npy"))
                     new_h3_list.append(arr)
                 h3_list = new_h3_list
+                # Update metadata to mark hierarchical H3 mapping
+                import json
+                meta_path = os.path.join(cache_dir, "meta.json")
+                try:
+                    with open(meta_path, "r") as f:
+                        meta = json.load(f)
+                    meta["hierarchical_h3"] = True
+                    with open(meta_path, "w") as f:
+                        json.dump(meta, f)
+                except Exception as e:
+                    print(f"[graph cache] Warning: Failed to update metadata: {e}")
             # Stack h3_by_res into [N,R]
             h3_by_res = np.column_stack(h3_list) if h3_list else np.empty((len(lats), 0), dtype=np.uint64)
             print(f"[graph cache] Loaded validated cache for {mode}")
