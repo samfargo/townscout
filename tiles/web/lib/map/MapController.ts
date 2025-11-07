@@ -93,14 +93,15 @@ function createBaseStyle(): StyleSpecification {
         type: 'fill',
         source: 't_hex_r8_drive',
         'source-layer': 't_hex_r8_drive',
-        minzoom: 8,
+        minzoom: 8,  // Start showing r8 at zoom 8
         maxzoom: 22,
         layout: {
           visibility: 'visible'
         },
         paint: {
           'fill-color': '#10b981',
-          'fill-opacity': 0.4
+          // Fade in r8 from zoom 8-9 as r7 fades out
+          'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0, 9, 0.4]
         }
       },
       {
@@ -109,13 +110,14 @@ function createBaseStyle(): StyleSpecification {
         source: 't_hex_r7_drive',
         'source-layer': 't_hex_r7_drive',
         minzoom: 0,
-        maxzoom: 8,
+        maxzoom: 9,  // Keep showing r7 through zoom 9 for smooth transition
         layout: {
           visibility: 'visible'
         },
         paint: {
           'fill-color': '#10b981',
-          'fill-opacity': 0.4
+          // Fade out r7 from zoom 8-9 as r8 fades in
+          'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0.4, 9, 0]
         }
       }
     ]

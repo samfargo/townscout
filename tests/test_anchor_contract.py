@@ -14,7 +14,8 @@ from pathlib import Path
 
 
 ALLOWED_MODES = {"drive", "walk"}
-REQUIRED_COLUMNS = {"site_id", "mode", "node_id", "lon", "lat", "poi_ids", "categories"}
+# Note: mode is often encoded in filename (_drive_sites.parquet) rather than as a column
+REQUIRED_COLUMNS = {"site_id", "node_id", "lon", "lat", "poi_ids", "categories"}
 
 
 def find_anchor_site_files() -> list[Path]:
@@ -76,23 +77,31 @@ class TestAnchorContract:
             )
     
     def test_allowed_modes(self):
-        """Verify mode column contains only allowed values."""
+        """Verify mode column contains only allowed values, or mode is in filename."""
         files = find_anchor_site_files()
         assert len(files) > 0, "No anchor files to test"
         
         for file_path in files:
             df = pd.read_parquet(file_path)
             
-            if "mode" not in df.columns:
-                pytest.fail(f"{file_path.name}: Missing 'mode' column")
-            
-            modes = set(df["mode"].unique())
-            invalid = modes - ALLOWED_MODES
-            
-            assert not invalid, (
-                f"{file_path.name}: Invalid mode values: {invalid}. "
-                f"Allowed: {ALLOWED_MODES}"
-            )
+            # Mode can be in column or encoded in filename
+            if "mode" in df.columns:
+                modes = set(df["mode"].unique())
+                invalid = modes - ALLOWED_MODES
+                
+                assert not invalid, (
+                    f"{file_path.name}: Invalid mode values: {invalid}. "
+                    f"Allowed: {ALLOWED_MODES}"
+                )
+            else:
+                # Check if mode is in filename
+                filename = file_path.name.lower()
+                has_mode_in_name = any(mode in filename for mode in ALLOWED_MODES)
+                
+                assert has_mode_in_name, (
+                    f"{file_path.name}: Mode not found in column or filename. "
+                    f"Expected one of {ALLOWED_MODES} in filename."
+                )
     
     def test_anchors_have_pois(self):
         """Verify every anchor has at least one POI."""
