@@ -12,6 +12,15 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Set
 import h3
+import sys
+
+SRC_DIR = Path("src")
+if SRC_DIR.exists():
+    src_path = str(SRC_DIR.resolve())
+    if src_path not in sys.path:
+        sys.path.append(src_path)
+
+from config import H3_RES_LOW, H3_RES_HIGH  # type: ignore
 
 
 def find_state_tile_files() -> Dict[int, Path]:
@@ -205,7 +214,60 @@ class TestCrossResolutionConsistency:
         print(f"  R8 children count: {len(children_df)}")
         print(f"  R8 children with anchors: {children_with_anchors}")
 
+    def test_parent_travel_times_never_better_than_children(self):
+        """
+        Vectorized regression: parent hex travel times should never be
+        strictly better than the minimum of their children for the same anchor.
+        """
+        minutes_dir = Path("data/minutes")
+        parquet_files = sorted(minutes_dir.glob("*_drive_t_hex.parquet"))
+        if not parquet_files:
+            pytest.skip("No drive minutes parquet files found")
+
+        frames = []
+        for file in parquet_files:
+            frames.append(pd.read_parquet(file))
+        minutes_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+        r7_df = minutes_df[minutes_df["res"] == H3_RES_LOW].copy()
+        r8_df = minutes_df[minutes_df["res"] == H3_RES_HIGH].copy()
+
+        if r7_df.empty or r8_df.empty:
+            pytest.skip("Missing required resolutions in minutes parquet")
+
+        def _parent_int(h_int: int) -> int:
+            try:
+                parent_hex = h3.cell_to_parent(h3.int_to_str(int(h_int)), H3_RES_LOW)
+                return int(h3.str_to_int(parent_hex))
+            except Exception:
+                return 0
+
+        r8_df["parent_h3"] = r8_df["h3_id"].apply(_parent_int).astype("uint64")
+        valid_children = r8_df[r8_df["parent_h3"] != 0]
+
+        child_min = (
+            valid_children.groupby(["parent_h3", "anchor_int_id"], as_index=False)["time_s"]
+            .min()
+            .rename(columns={"time_s": "child_min_time"})
+        )
+
+        merged = r7_df.merge(
+            child_min,
+            how="left",
+            left_on=["h3_id", "anchor_int_id"],
+            right_on=["parent_h3", "anchor_int_id"],
+        )
+
+        violations = merged[
+            merged["child_min_time"].notna() & (merged["time_s"] < merged["child_min_time"])
+        ]
+
+        assert violations.empty, (
+            f"{len(violations)} parent/anchor rows have faster times than "
+            f"their children. Examples: "
+            f"{violations[['h3_id', 'anchor_int_id', 'time_s', 'child_min_time']].head().to_dict('records')}"
+        )
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

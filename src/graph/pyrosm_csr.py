@@ -271,6 +271,9 @@ def load_or_build_csr(pbf_path: str, mode: str, resolutions: list[int], progress
                     # Old cache format without pbf_mtime - treat as potentially stale
                     print(f"[graph cache] WARNING: Cache missing pbf_mtime metadata, treating as stale. Rebuild recommended.")
                     cache_valid = False
+                if meta.get("hierarchical_h3") is not True:
+                    print("[graph cache] Cache missing hierarchical_h3 flag; rebuilding to ensure consistent mapping.")
+                    cache_valid = False
             except Exception as e:
                 print(f"[graph cache] Failed to read/validate metadata: {e}, rebuilding cache")
                 cache_valid = False
@@ -284,18 +287,19 @@ def load_or_build_csr(pbf_path: str, mode: str, resolutions: list[int], progress
             # If any requested res missing, compute and save it
             missing = [i for i, a in enumerate(h3_list) if a is None]
             if missing:
-                res_missing = [resolutions[i] for i in missing]
+                print(f"[graph cache] Missing H3 columns for requested resolutions; recomputing all {resolutions}.")
                 h3_ids = compute_h3_for_nodes(lats.astype(np.float32, copy=False),
                                               lons.astype(np.float32, copy=False),
-                                              np.array(res_missing, dtype=np.int32),
+                                              np.array(resolutions, dtype=np.int32),
                                               os.cpu_count(),
                                               bool(progress))
                 h3_ids = np.asarray(h3_ids, dtype=np.uint64)
-                for j, idx in enumerate(missing):
-                    r = int(resolutions[idx])
+                new_h3_list = []
+                for j, r in enumerate(resolutions):
                     arr = h3_ids[:, j]
-                    _save_npy(arr, os.path.join(cache_dir, f"h3_r{r}.npy"))
-                    h3_list[idx] = arr
+                    _save_npy(arr, os.path.join(cache_dir, f"h3_r{int(r)}.npy"))
+                    new_h3_list.append(arr)
+                h3_list = new_h3_list
             # Stack h3_by_res into [N,R]
             h3_by_res = np.column_stack(h3_list) if h3_list else np.empty((len(lats), 0), dtype=np.uint64)
             print(f"[graph cache] Loaded validated cache for {mode}")
@@ -322,6 +326,7 @@ def load_or_build_csr(pbf_path: str, mode: str, resolutions: list[int], progress
             "mode": mode,
             "pbf_mtime": pbf_mtime,
             "cache_created": os.path.getmtime(cache_dir) if os.path.exists(cache_dir) else pbf_mtime,
+            "hierarchical_h3": True,
         }
     )
     # Return stacked [N,R]

@@ -8,7 +8,7 @@ use std::cmp::min;
 use rustc_hash::FxHashMap;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
-use h3o::{LatLng, Resolution};
+use h3o::{CellIndex, LatLng, Resolution};
 
 const UNREACHABLE: u16 = 65535;
 
@@ -797,38 +797,102 @@ fn compute_h3_for_nodes(
     }
     let n_nodes = lats.len();
     let r_len = res_list.len();
+    let mut res_entries: Vec<(usize, u8)> = Vec::with_capacity(r_len);
+    for (idx, &val) in res_list.iter().enumerate() {
+        let rr = u8::try_from(val).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid resolution {}", val))
+        })?;
+        res_entries.push((idx, rr));
+    }
+    let mut unique_res: Vec<u8> = res_entries.iter().map(|(_, r)| *r).collect();
+    unique_res.sort_unstable();
+    unique_res.dedup();
+    unique_res.sort_unstable_by(|a, b| b.cmp(a));
+    let max_res_u8 = unique_res[0];
     let threads_n = if threads == 0 { 1 } else { threads };
-    // Prepare output buffer
-    let out_vec: Vec<u64> = py.allow_threads(|| {
-        use rayon::slice::ParallelSliceMut;
+    let res_map_result = py.allow_threads(|| {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
-        let mut out: Vec<u64> = vec![0u64; n_nodes * r_len];
-        let pool = ThreadPoolBuilder::new().num_threads(threads_n).build().unwrap();
+        let thread_pool = ThreadPoolBuilder::new().num_threads(threads_n).build().unwrap();
+        let max_res = Resolution::try_from(max_res_u8)
+            .map_err(|_| format!("invalid resolution {}", max_res_u8))?;
+        let mut max_cells: Vec<u64> = vec![0u64; n_nodes];
         let counter = Arc::new(AtomicUsize::new(0));
-        pool.install(|| {
-            out.par_chunks_mut(r_len).enumerate().for_each(|(i, row)| {
+        thread_pool.install(|| {
+            max_cells.par_iter_mut().enumerate().for_each(|(i, cell)| {
                 let lat = lats[i] as f64;
                 let lon = lons[i] as f64;
-                if !(lat.is_finite() && lon.is_finite()) { return; }
-                let ll = match LatLng::new(lat, lon) { Ok(v) => v, Err(_) => return };
-                for (j, r) in res_list.iter().enumerate() {
-                    let rr: u8 = match u8::try_from(*r) { Ok(v) => v, Err(_) => continue };
-                    if let Ok(res) = Resolution::try_from(rr) {
-                        let cell = ll.to_cell(res);
-                        let h3_id: u64 = cell.into();
-                        row[j] = h3_id;
-                    }
+                if !(lat.is_finite() && lon.is_finite()) {
+                    return;
                 }
+                let ll = match LatLng::new(lat, lon) {
+                    Ok(v) => v,
+                    Err(_) => return,
+                };
+                let h3_id: u64 = ll.to_cell(max_res).into();
+                *cell = h3_id;
                 if progress {
                     let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    if done % 100000 == 0 || done == n_nodes { eprintln!("[h3] nodes {}/{}", done, n_nodes); }
+                    if done % 100000 == 0 || done == n_nodes {
+                        eprintln!("[h3] nodes {}/{}", done, n_nodes);
+                    }
                 }
             });
         });
-        out
+        let mut res_to_cells: FxHashMap<u8, Vec<u64>> = FxHashMap::default();
+        res_to_cells.insert(max_res_u8, max_cells.clone());
+        let mut current_cells = max_cells;
+        let mut current_res = max_res_u8;
+        for &target in unique_res.iter().skip(1) {
+            while current_res > target {
+                let next_res = current_res - 1;
+                let res_obj = Resolution::try_from(next_res)
+                    .map_err(|_| format!("invalid resolution {}", next_res))?;
+                let next_cells: Vec<u64> = current_cells
+                    .par_iter()
+                    .map(|&h| {
+                        if h == 0 {
+                            0u64
+                        } else if let Ok(cell) = CellIndex::try_from(h) {
+                            match cell.parent(res_obj) {
+                                Some(parent) => u64::from(parent),
+                                None => 0u64,
+                            }
+                        } else {
+                            0u64
+                        }
+                    })
+                    .collect();
+                current_cells = next_cells;
+                current_res = next_res;
+            }
+            res_to_cells.insert(target, current_cells.clone());
+        }
+        Ok::<_, String>(res_to_cells)
     });
-    // Convert to numpy [N,R]
+    let res_to_cells = match res_map_result {
+        Ok(map) => map,
+        Err(err) => {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(err));
+        }
+    };
+    let mut out_vec: Vec<u64> = vec![0u64; n_nodes * r_len];
+    for &(col_idx, res_u8) in &res_entries {
+        let column = res_to_cells.get(&res_u8).ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "missing derived cells for resolution {}",
+                res_u8
+            ))
+        })?;
+        if column.len() != n_nodes {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "derived column length mismatch",
+            ));
+        }
+        for (row, &val) in column.iter().enumerate() {
+            out_vec[row * r_len + col_idx] = val;
+        }
+    }
     let arr = unsafe { PyArray2::new_bound(py, [n_nodes, r_len], false) };
     let arr_slice = unsafe { arr.as_slice_mut()? };
     arr_slice.copy_from_slice(&out_vec);
