@@ -1,6 +1,6 @@
 # Multi-Resolution Travel Time Inconsistency
 
-**Status**: Identified root cause, fix pending
+**Status**: ✅ Fixed (2025-11-07) - Tiles need regeneration
 **Severity**: High (breaks core UX promise of zoom consistency)
 **Date**: 2025-11-07
 
