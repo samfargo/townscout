@@ -1,0 +1,13 @@
+h3_id,category_id,expected_seconds,tolerance_seconds,notes,verified_date,verified_by
+# Golden drive-time dataset for validation
+# Format: h3_id (str), category_id (str), expected_seconds (int), tolerance_seconds (int), notes (str), verified_date (YYYY-MM-DD), verified_by (str)
+# 
+# This dataset contains hand-verified drive times for specific hex-category pairs.
+# Use these to validate that the T_hex + D_anchor composition produces reasonable results.
+#
+# Tolerance: acceptable deviation from expected value (typically 10% of expected time)
+#
+# Example entries (commented out - replace with real data):
+# 8a2a1072c52ffff,supermarket,300,30,"Suburb to nearest grocery",2024-11-07,manual
+# 8a2a1072c52ffff,airport,1800,180,"Suburb to Logan Airport",2024-11-07,manual
+

@@ -1,0 +1,5 @@
+file_path,download_timestamp,file_hash,file_size_bytes,notes
+# Source acquisition ledger
+# Track file hashes and timestamps to detect staleness and corruption
+# Format: file_path,download_timestamp (ISO8601),file_hash (SHA256),file_size_bytes,notes
+

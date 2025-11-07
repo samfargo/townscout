@@ -667,3 +667,64 @@ Before using climate data in tiles, verify these key properties:
    - No null values in climate columns
    - Temperatures and precipitation within realistic ranges
    - Consistent units across all hexes
+
+---
+
+## Quality Control & Validation
+
+vicinity maintains a comprehensive quality control infrastructure to ensure data reliability. The QA system focuses on **blocking issues** rather than polish, maintaining a balance between thoroughness and development velocity.
+
+### Automated Test Suite
+
+**Core Tests** (in `tests/`, run with `pytest`):
+- `test_poi_schema.py` - Validates canonical POI parquet schema, required columns, datatypes, coordinate ranges, and taxonomy coverage
+- `test_anchor_contract.py` - Validates anchor site uniqueness, allowed modes (drive/walk), POI linkage (≥1 POI per anchor), and coordinate validity
+- `test_t_hex_contract.py` - Validates travel time arrays for anchor ID validity, monotonic time ordering per hex, and sentinel value usage (<1%)
+- `test_climate_parquet.py` - Validates climate data schema and quantization (existing)
+
+**Validation Scripts** (in `scripts/`, run before releases):
+- `check_d_anchor_stats.py` - Validates D_anchor shards by joining to anchors, computing P50/P95 statistics, and enforcing P95 ≤ 7200s threshold
+- `check_tile_schema.py` - Validates PMTiles metadata against contract in `docs/tile_contract.json` (layer names, zoom levels, required properties)
+- `validate_golden_drivetime.py` - Compares computed T_hex + D_anchor values against hand-verified golden dataset with tolerance checking
+- `update_source_ledger.py` - Maintains CSV ledger of source file hashes and timestamps, detects staleness (>7 days) and size anomalies (>25% change)
+
+### Data Contracts
+
+The QA infrastructure enforces these contracts:
+- **POI Schema**: Required columns (poi_id, name, category, lon, lat), valid datatypes, coordinate ranges
+- **Anchor Sites**: Unique site_id, valid modes, non-empty POI/category lists, valid node_id references
+- **T_hex Arrays**: Valid anchor_int_id references, monotonic travel times per hex, sentinel (65535) usage <1%
+- **D_anchor Shards**: All referenced anchors exist, P95 travel times ≤ 2 hours, no orphan references
+- **PMTiles**: Correct layer names (`t_hex_r7_drive`, etc.), zoom levels (5-12), required properties (h3_id, a0_id, a0_s)
+
+### Golden Dataset
+
+A small golden dataset (`data/golden_drivetime.csv`) contains hand-verified drive times for specific hex-category pairs. This dataset:
+- Uses external routing APIs for ground truth
+- Covers representative scenarios (suburban→grocery, suburban→airport, etc.)
+- Enforces 10% tolerance on computed values
+- Should be expanded when adding new categories or geographies
+
+### Source Acquisition Ledger
+
+The ledger (`data/source_ledger.csv`) tracks:
+- SHA256 hashes of source files (OSM PBF, Overture parquet, boundary shapefiles, taxonomy CSVs)
+- Download timestamps to detect staleness
+- File sizes to detect corruption or format changes
+- Optional notes for tracking intentional changes
+
+### Release Gate Process
+
+Before publishing artifacts:
+1. Run full pipeline on staging data: `make pois anchors minutes d_anchor_category d_anchor_brand merge tiles`
+2. Execute automated test suite: `pytest tests/`
+3. Run validation scripts: `python scripts/check_*.py`
+4. Perform manual QA rituals:
+   - Glance at source ledger for staleness warnings
+   - Sample 20 random POIs/anchors in a notebook
+   - Run map smoke test with canonical filters (Costco + airport)
+   - Curl API endpoints to verify structure
+5. Record QA results in source ledger with git SHA
+6. If all pass, publish to CDN/API buckets; otherwise fix and retry
+
+For complete QA documentation, see `docs/quality_control_infra.md`.

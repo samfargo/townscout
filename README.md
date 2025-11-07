@@ -78,6 +78,37 @@ The system maintains strict contracts between components to ensure reliable oper
 
 For detailed data contracts and technical specifications, see `docs/ARCHITECTURE_OVERVIEW.md`.
 
+### Quality Control
+
+vicinity includes automated validation to catch data quality issues early:
+
+**Automated Tests** (run with `pytest tests/`):
+- `test_poi_schema.py` - Validates POI parquet schema, datatypes, and taxonomy coverage
+- `test_anchor_contract.py` - Validates anchor uniqueness, modes, and POI linkage
+- `test_t_hex_contract.py` - Validates travel time arrays, anchor references, and sentinel usage
+
+**Validation Scripts** (run before releases):
+- `scripts/check_d_anchor_stats.py` - Validates D_anchor shards and enforces P95 <= 7200s
+- `scripts/check_tile_schema.py` - Validates PMTiles against contract in `docs/tile_contract.json`
+- `scripts/validate_golden_drivetime.py` - Compares computed times against hand-verified golden dataset
+- `scripts/update_source_ledger.py` - Tracks source file hashes and detects staleness/corruption
+
+**Quick Validation:**
+```bash
+# Run all tests
+pytest tests/
+
+# Run validation scripts
+python scripts/check_d_anchor_stats.py
+python scripts/check_tile_schema.py
+python scripts/validate_golden_drivetime.py
+
+# Update source ledger
+python scripts/update_source_ledger.py --auto-scan
+```
+
+For comprehensive QA documentation, see `docs/quality_control_infra.md`.
+
 ---
 
 ## POI Module Architecture
@@ -96,14 +127,17 @@ The architecture supports both category-based (e.g., "supermarket") and brand-ba
 
 - [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md) - Complete system design
 - [Anchor Selection Strategy](docs/ANCHORS.md) - How anchors are chosen and scaled
-- [Railway Station Bug Analysis](docs/RAILWAY_STATION_BUG_ANALYSIS.md) - Graph cache vulnerability and fix (2025-11-05)
+- [Quality Control Infrastructure](docs/quality_control_infra.md) - Automated validation and testing
+- [Bug Fixes Changelog](docs/BUG_FIXES_CHANGELOG.md) - History of major bug fixes and quality improvements
+- [Power Corridors](docs/POWER_CORRIDORS.md) - High-voltage transmission line avoidance feature
+- [Routing Approximation Quality](docs/ROUTING_APPROXIMATION_QUALITY.md) - Analysis of triangle inequality limitations
 
 For detailed module structure and implementation, see the architecture overview.
 
 ## Known Issues & Fixes
 
 ### Graph Cache Validation (Fixed 2025-11-05)
-A vulnerability in the graph cache loading mechanism allowed stale CSR graphs to be loaded when the source PBF file was updated, causing data corruption in D_anchor computations. This has been **fixed** with automatic cache validation based on PBF modification times. See `docs/RAILWAY_STATION_BUG_ANALYSIS.md` for details.
+A vulnerability in the graph cache loading mechanism allowed stale CSR graphs to be loaded when the source PBF file was updated, causing data corruption in D_anchor computations. This has been **fixed** with automatic cache validation based on PBF modification times. See `docs/BUG_FIXES_CHANGELOG.md` for details.
 
 ---
 

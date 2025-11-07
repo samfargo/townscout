@@ -163,6 +163,24 @@ a{K-1}_id: int32, a{K-1}_s: uint16
 - **Improvement**: ~38% of POI anchors statewide got better-connected nodes
 - **Logan result**: Now reaches comparable node counts to other major airports
 
+### Automated Quality Checks
+
+Anchor quality is validated through automated tests:
+
+**Automated Tests** (`tests/test_anchor_contract.py`):
+- `site_id` uniqueness within each file
+- Valid modes (drive/walk only)
+- Every anchor has ≥1 POI
+- Non-negative node_id references
+- Valid coordinate ranges
+- Non-empty categories list
+
+**Additional Validation** (`tests/test_t_hex_contract.py`):
+- All anchor_int_id values in T_hex exist in anchor files
+- No orphan anchor references
+
+See `docs/quality_control_infra.md` for comprehensive QA documentation.
+
 ### Anchor Consistency Checks
 
 1. **Completeness**: Every `anchor_int_id` in T_hex tiles exists in D_anchor tables
