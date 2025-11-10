@@ -4,7 +4,7 @@
 
 ## 1) Purpose, Context, Goals
 
-**Purpose.** vicinity helps a user answer: *"Where should I live given my criteria?"* by computing travel‑time proximity to things that matter (Chipotle, Costco, airports, schools, etc.) and rendering results as a fast, interactive map.
+**Purpose.** Vicinity helps a user answer: *"Where should I live given my criteria?"* by computing travel‑time proximity to things that matter (Chipotle, Costco, airports, schools, etc.) and rendering results as a fast, interactive map.
 
 **Context.** Instead of precomputing every hex→category path, vicinity factorizes the problem into **hex→anchor** and **anchor→category/brand** legs. The frontend combines these in real time with GPU expressions using per‑anchor seconds stored in tiles and per‑anchor category/brand seconds served by the API. This keeps costs near‑zero and makes adding thousands of POIs (brands and categories) cheap.
 

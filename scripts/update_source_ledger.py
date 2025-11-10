@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """
 Update Source Acquisition Ledger
 
@@ -15,9 +17,22 @@ Validates:
 import sys
 import hashlib
 import csv
+import math
+import numbers
+import struct
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Iterable, Sequence
+
+try:
+    import duckdb  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    duckdb = None
+
+try:
+    import pandas as pd  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    pd = None
 
 
 LEDGER_PATH = Path("data/source_ledger.csv")
@@ -141,7 +156,23 @@ def main():
     parser.add_argument("--check-only", action="store_true", help="Only check for issues, don't update")
     parser.add_argument("--auto-scan", action="store_true", help="Automatically scan common source directories")
     parser.add_argument("--notes", default="", help="Optional notes for this update")
+    parser.add_argument(
+        "--anchor-fingerprint",
+        nargs=2,
+        metavar=("ANCHOR_SITES", "ANCHOR_ID_MAP"),
+        help="Compute anchor fingerprint for incremental D_anchor builds and exit",
+    )
     args = parser.parse_args()
+
+    if args.anchor_fingerprint:
+        anchor_sites, anchor_map = (Path(p) for p in args.anchor_fingerprint)
+        try:
+            fingerprint = compute_anchor_fingerprint(anchor_sites, anchor_map)
+        except Exception as exc:
+            print(f"[ledger] Failed to compute anchor fingerprint: {exc}", file=sys.stderr)
+            return 1
+        print(fingerprint)
+        return 0
     
     print("=" * 80)
     print("SOURCE ACQUISITION LEDGER")
@@ -245,6 +276,114 @@ def main():
     return 0
 
 
+SITE_COLUMNS: Sequence[str] = (
+    "site_id",
+    "anchor_int_id",
+    "node_id",
+    "lon",
+    "lat",
+    "poi_ids",
+    "brands",
+    "categories",
+)
+
+MAP_COLUMNS: Sequence[str] = ("anchor_int_id", "site_id")
+
+
+def _require_duckdb_dependencies():
+    if duckdb is None or pd is None:
+        raise RuntimeError(
+            "duckdb and pandas are required for anchor fingerprinting. "
+            "Please install them in your virtual environment."
+        )
+
+
+def _canonicalize_sequence(values: Iterable[str | None] | float | None) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if isinstance(values, float) and math.isnan(values):
+        return ()
+    canonical: list[str] = []
+    for value in values:  # type: ignore[arg-type]
+        if value is None:
+            continue
+        if isinstance(value, float) and math.isnan(value):
+            continue
+        if pd is not None and pd.isna(value):
+            continue
+        canonical.append(str(value))
+    canonical.sort()
+    return tuple(canonical)
+
+
+def _load_sites_frame(path: Path):
+    _require_duckdb_dependencies()
+    relation = duckdb.read_parquet(str(path))
+    missing = [col for col in SITE_COLUMNS if col not in relation.columns]
+    if missing:
+        raise ValueError(f"{path} is missing expected site columns: {missing}")
+    df = relation.project(", ".join(SITE_COLUMNS)).order("site_id").df()
+    for col in ("poi_ids", "brands", "categories"):
+        df[col] = df[col].apply(_canonicalize_sequence)
+    df["node_id"] = df["node_id"].fillna(-1).astype("int64")
+    df["anchor_int_id"] = df["anchor_int_id"].fillna(-1).astype("int64")
+    df["site_id"] = df["site_id"].astype(str)
+    return df.reset_index(drop=True)
+
+
+def _load_map_frame(path: Path):
+    _require_duckdb_dependencies()
+    relation = duckdb.read_parquet(str(path))
+    missing = [col for col in MAP_COLUMNS if col not in relation.columns]
+    if missing:
+        raise ValueError(f"{path} is missing expected map columns: {missing}")
+    df = relation.project(", ".join(MAP_COLUMNS)).order("anchor_int_id, site_id").df()
+    df["anchor_int_id"] = df["anchor_int_id"].fillna(-1).astype("int64")
+    df["site_id"] = df["site_id"].astype(str)
+    return df.reset_index(drop=True)
+
+
+def _update_hash_for_value(hasher: hashlib._Hash, value) -> None:
+    if value is None:
+        hasher.update(b"\x00")
+    elif isinstance(value, tuple):
+        hasher.update(b"[")
+        for item in value:
+            _update_hash_for_value(hasher, item)
+            hasher.update(b",")
+        hasher.update(b"]")
+    elif isinstance(value, numbers.Integral):
+        hasher.update(struct.pack(">q", int(value)))
+    elif isinstance(value, float):
+        if math.isnan(value):
+            hasher.update(b"NaN")
+        else:
+            hasher.update(struct.pack(">d", float(value)))
+    else:
+        hasher.update(str(value).encode("utf-8"))
+
+
+def _hash_frame(df, columns: Sequence[str]) -> str:
+    hasher = hashlib.sha256()
+    subset = df.loc[:, columns]
+    for row in subset.itertuples(index=False, name=None):
+        for value in row:
+            hasher.update(b"\x1f")
+            _update_hash_for_value(hasher, value)
+        hasher.update(b"\x1e")
+    return hasher.hexdigest()
+
+
+def compute_anchor_fingerprint(site_path: Path, map_path: Path) -> str:
+    sites_df = _load_sites_frame(site_path)
+    map_df = _load_map_frame(map_path)
+    site_hash = _hash_frame(sites_df, SITE_COLUMNS)
+    map_hash = _hash_frame(map_df, MAP_COLUMNS)
+    final_hash = hashlib.sha256()
+    final_hash.update(site_hash.encode("utf-8"))
+    final_hash.update(map_hash.encode("utf-8"))
+    return final_hash.hexdigest()
+
+
 if __name__ == "__main__":
     sys.exit(main())
-

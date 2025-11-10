@@ -14,6 +14,7 @@ K_BEST?=20
 # Fingerprint directories to track when downstream data must be recomputed
 DANCHOR_BRAND_FINGERPRINT_DIR := build/d_anchor_brand_hash
 DANCHOR_CATEGORY_FINGERPRINT_DIR := build/d_anchor_category_hash
+PBF_FILES := $(patsubst %,data/osm/%.osm.pbf,$(STATES))
 
 .PHONY: help init clean all \
 	download pois anchors minutes geojson tiles native d_anchor_category d_anchor_brand \
@@ -82,7 +83,7 @@ MINUTE_FILES := $(patsubst %,data/minutes/%_drive_t_hex.parquet,$(STATES))
 
 minutes: $(MINUTE_FILES)  ## 3. Compute per-state travel time minutes from POIs to hexes
 
-data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_drive_sites.parquet src/04_compute_minutes_per_state.py src/graph/pyrosm_csr.py src/config.py | build/native.stamp
+data/minutes/%_drive_t_hex.parquet: data/poi/%_canonical.parquet data/anchors/%_drive_sites.parquet data/osm/%.osm.pbf src/04_compute_minutes_per_state.py src/graph/pyrosm_csr.py src/config.py | build/native.stamp
 	@echo "--- Computing minutes for $* (drive) ---"
 	$(PY) src/04_compute_minutes_per_state.py \
 		--pbf data/osm/$*.osm.pbf \
@@ -112,12 +113,12 @@ data/power_corridors/%_near_power_corridor.parquet: data/osm/%.osm.pbf src/confi
 # The Python script handles all incremental logic - it checks if each brand's
 # parquet exists and only computes missing ones. This is fast when up-to-date.
 .PHONY: d_anchor_brand
-d_anchor_brand: anchors | build/native.stamp ## 3.6 Compute anchor->brand seconds (incremental, delta only)
+d_anchor_brand: $(PBF_FILES) anchors | build/native.stamp ## 3.6 Compute anchor->brand seconds (incremental, delta only)
 	@set -e; mkdir -p $(DANCHOR_BRAND_FINGERPRINT_DIR); \
 	for S in $(STATES); do \
 	  anchor_sites="data/anchors/$${S}_drive_sites.parquet"; \
 	  anchor_map="data/anchors/$${S}_drive_site_id_map.parquet"; \
-	  fingerprint=$$($(PY) scripts/compute_anchor_fingerprint.py "$$anchor_sites" "$$anchor_map"); \
+	  fingerprint=$$($(PY) scripts/update_source_ledger.py --anchor-fingerprint "$$anchor_sites" "$$anchor_map"); \
 	  hash_file="$(DANCHOR_BRAND_FINGERPRINT_DIR)/$${S}.hash"; \
 	  force_flag=""; \
 	  if [ -z "$$fingerprint" ]; then \
@@ -148,7 +149,7 @@ d_anchor_brand: anchors | build/native.stamp ## 3.6 Compute anchor->brand second
 	done
 
 .PHONY: d_anchor_brand_force
-d_anchor_brand_force: ## 3.6 Force recompute all D_anchor brand data
+d_anchor_brand_force: $(PBF_FILES) ## 3.6 Force recompute all D_anchor brand data
 	@for S in $(STATES); do \
 	  echo "--- Force computing D_anchor brand for $$S (drive) ---"; \
 	  $(PY) src/05_compute_d_anchor.py \
@@ -166,12 +167,12 @@ d_anchor_brand_force: ## 3.6 Force recompute all D_anchor brand data
 # The Python script handles all incremental logic - it checks if each category's
 # parquet exists and only computes missing ones. This is fast when up-to-date.
 .PHONY: d_anchor_category
-d_anchor_category: anchors | build/native.stamp ## 3.6b Compute anchor->category seconds (incremental, delta only)
+d_anchor_category: $(PBF_FILES) anchors | build/native.stamp ## 3.6b Compute anchor->category seconds (incremental, delta only)
 	@set -e; mkdir -p $(DANCHOR_CATEGORY_FINGERPRINT_DIR); \
 	for S in $(STATES); do \
 	  anchor_sites="data/anchors/$${S}_drive_sites.parquet"; \
 	  anchor_map="data/anchors/$${S}_drive_site_id_map.parquet"; \
-	  fingerprint=$$($(PY) scripts/compute_anchor_fingerprint.py "$$anchor_sites" "$$anchor_map"); \
+	  fingerprint=$$($(PY) scripts/update_source_ledger.py --anchor-fingerprint "$$anchor_sites" "$$anchor_map"); \
 	  hash_file="$(DANCHOR_CATEGORY_FINGERPRINT_DIR)/$${S}.hash"; \
 	  force_flag=""; \
 	  if [ -z "$$fingerprint" ]; then \
@@ -203,7 +204,7 @@ d_anchor_category: anchors | build/native.stamp ## 3.6b Compute anchor->category
 	done
 
 .PHONY: d_anchor_category_force
-d_anchor_category_force: ## 3.6b Force recompute all D_anchor category data
+d_anchor_category_force: $(PBF_FILES) ## 3.6b Force recompute all D_anchor category data
 	@for S in $(STATES); do \
 	  echo "--- Force computing D_anchor category for $$S (drive) ---"; \
 	  $(PY) src/06_compute_d_anchor_category.py \

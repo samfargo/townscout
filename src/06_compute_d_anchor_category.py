@@ -26,9 +26,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List, Tuple
+
+# Ensure taxonomy helpers are importable when script is run via Make
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+taxonomy_path = PROJECT_ROOT / "data" / "taxonomy"
+if str(taxonomy_path) not in sys.path:
+    sys.path.insert(0, str(taxonomy_path))
 
 SNAPSHOT_TS = time.strftime("%Y-%m-%d")
 
