@@ -2,6 +2,18 @@ PY=PYTHONPATH=.:src .venv/bin/python
 PYTHON_BIN?=$(shell command -v python3.11 2>/dev/null || command -v python3 2>/dev/null)
 STATES=massachusetts
 
+PROJECT_ID    ?= psyntel
+ZONE          ?= us-east4-c
+INSTANCE_NAME ?= first-instance
+BUCKET        ?= vicinity-batch-psyntel
+SERVICE_ACCOUNT ?= 334483861969-compute@developer.gserviceaccount.com
+MACHINE_TYPE    ?= c4d-highcpu-32
+BOOT_DISK_SIZE_GB ?= 200
+BOOT_DISK_TYPE ?= hyperdisk-balanced
+IMAGE_FAMILY   ?= debian-12
+IMAGE_PROJECT  ?= debian-cloud
+SCOPES         ?= https://www.googleapis.com/auth/devstorage.read_write,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write
+
 # Tuning knobs
 THREADS?=8
 CUTOFF?=30
@@ -18,11 +30,42 @@ PBF_FILES := $(patsubst %,data/osm/%.osm.pbf,$(STATES))
 
 .PHONY: help init clean all \
 	download pois anchors minutes geojson tiles native d_anchor_category d_anchor_brand \
-	d_anchor_category_force d_anchor_brand_force merge climate power_corridors
+	d_anchor_category_force d_anchor_brand_force merge climate power_corridors \
+	categories_remote pipeline_remote
 
 help:  ## Show this help message
 	@echo "vicinity Data Pipeline - Available targets:"
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+categories_remote:  ## Run make d_anchor_category remotely via reusable GCE VM
+	TARGET=d_anchor_category \
+	PROJECT_ID=$(PROJECT_ID) \
+	ZONE=$(ZONE) \
+	INSTANCE_NAME=$(INSTANCE_NAME) \
+	BUCKET=$(BUCKET) \
+	SERVICE_ACCOUNT=$(SERVICE_ACCOUNT) \
+	MACHINE_TYPE=$(MACHINE_TYPE) \
+	BOOT_DISK_SIZE_GB=$(BOOT_DISK_SIZE_GB) \
+	BOOT_DISK_TYPE=$(BOOT_DISK_TYPE) \
+	IMAGE_FAMILY=$(IMAGE_FAMILY) \
+	IMAGE_PROJECT=$(IMAGE_PROJECT) \
+	SCOPES="$(SCOPES)" \
+	./scripts/run_categories_remote.sh
+
+pipeline_remote:  ## Run full pipeline remotely via reusable GCE VM
+	TARGET=all \
+	PROJECT_ID=$(PROJECT_ID) \
+	ZONE=$(ZONE) \
+	INSTANCE_NAME=$(INSTANCE_NAME) \
+	BUCKET=$(BUCKET) \
+	SERVICE_ACCOUNT=$(SERVICE_ACCOUNT) \
+	MACHINE_TYPE=$(MACHINE_TYPE) \
+	BOOT_DISK_SIZE_GB=$(BOOT_DISK_SIZE_GB) \
+	BOOT_DISK_TYPE=$(BOOT_DISK_TYPE) \
+	IMAGE_FAMILY=$(IMAGE_FAMILY) \
+	IMAGE_PROJECT=$(IMAGE_PROJECT) \
+	SCOPES="$(SCOPES)" \
+	./scripts/run_categories_remote.sh
 
 init:  ## Initialize virtual environment with Python 3.11 and install dependencies
 	rm -rf .venv

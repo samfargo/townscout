@@ -243,6 +243,8 @@ Each of these commands can run in parallel with `make categories_remote`, giving
 
 ## 3. VM Startup Script (`scripts/startup_categories_vm.sh`)
 
+The startup script includes robust error handling to ensure the VM always shuts down, even on failure:
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
@@ -253,8 +255,34 @@ log() {
   printf '[startup][%s] %s\n' "$(date -Is)" "$*"
 }
 
+error() {
+  printf '[startup][%s][ERROR] %s\n' "$(date -Is)" "$*" >&2
+}
+
 exec > >(stdbuf -oL awk '{ printf "[startup][%s] %s\n", strftime("%FT%TZ"), $0 }')
 exec 2> >(stdbuf -oL awk '{ printf "[startup][%s][stderr] %s\n", strftime("%FT%TZ"), $0 }' >&2)
+
+# Ensure shutdown always happens, even on error
+EXIT_CODE=0
+cleanup_and_shutdown() {
+  local exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    error "Script failed with exit code ${exit_code}"
+    EXIT_CODE=${exit_code}
+    # Upload any logs we have so far
+    if [[ -n "${RESULTS_PREFIX:-}" ]]; then
+      if [[ -f /opt/vicinity/vicinity/build.log ]]; then
+        gsutil -m cp /opt/vicinity/vicinity/build.log "${RESULTS_PREFIX}/build.log" || true
+      fi
+      # Create an error marker file
+      echo "Startup script failed at $(date -Is) with exit code ${exit_code}" > /tmp/startup_error.txt
+      gsutil -m cp /tmp/startup_error.txt "${RESULTS_PREFIX}/startup_error.txt" || true
+    fi
+  fi
+  log "Shutting down VM (exit_code=${EXIT_CODE})"
+  shutdown -h now
+}
+trap cleanup_and_shutdown EXIT
 
 RUN_ID="$(curl "${header[@]}" "${META}/RUN_ID")"
 BUCKET="$(curl "${header[@]}" "${META}/BUCKET")"
@@ -264,9 +292,28 @@ TARGET="$(curl "${header[@]}" "${META}/TARGET")"
 
 log "boot metadata RUN_ID=${RUN_ID} TARGET=${TARGET} SRC=${SRC_TARBALL}"
 
-apt-get update -y
+# Fix any broken package installations from previous runs
+log "Fixing broken packages (if any)..."
+apt-get update -y || {
+  error "apt-get update failed, attempting to fix..."
+  rm -rf /var/lib/apt/lists/*
+  apt-get update -y
+}
+
+# Fix broken dependencies before attempting new installs
+apt-get install -y --fix-broken || true
+apt-get autoremove -y || true
+
+log "Installing required packages..."
 apt-get install -y python3 python3-pip python3-venv git build-essential pkg-config \
-                   libgeos-dev libproj-dev libgdal-dev
+                   libgeos-dev libproj-dev libgdal-dev || {
+  error "Package installation failed, attempting recovery..."
+  # Try to resolve conflicts
+  apt-get install -y --fix-broken
+  # Retry installation
+  apt-get install -y python3 python3-pip python3-venv git build-essential pkg-config \
+                     libgeos-dev libproj-dev libgdal-dev
+}
 
 log "packages installed"
 
@@ -285,7 +332,11 @@ pip install -r requirements.txt
 log "venv + python deps ready"
 
 # Build Rust extension once
-make native
+log "Building Rust native extension..."
+if ! make native 2>&1 | tee -a build.log; then
+  error "Rust extension build failed"
+  exit 1
+fi
 log "rust extension built"
 
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
@@ -296,22 +347,36 @@ export WORKERS=16
 
 if [[ "${TARGET}" == "all" ]]; then
   log "starting make all"
-  make all |& tee build.log
-  gsutil -m rsync -r data/anchors "${RESULTS_PREFIX}/data/anchors"
-  gsutil -m rsync -r data/minutes "${RESULTS_PREFIX}/data/minutes"
-  gsutil -m rsync -r tiles "${RESULTS_PREFIX}/tiles"
-  gsutil -m rsync -r data/d_anchor_category "${RESULTS_PREFIX}/data/d_anchor_category"
-  gsutil -m rsync -r data/d_anchor_brand "${RESULTS_PREFIX}/data/d_anchor_brand"
+  if make all 2>&1 | tee -a build.log; then
+    log "make all completed successfully"
+    log "Uploading results to ${RESULTS_PREFIX}..."
+    gsutil -m rsync -r data/anchors "${RESULTS_PREFIX}/data/anchors" || error "Failed to upload anchors"
+    gsutil -m rsync -r data/minutes "${RESULTS_PREFIX}/data/minutes" || error "Failed to upload minutes"
+    gsutil -m rsync -r tiles "${RESULTS_PREFIX}/tiles" || error "Failed to upload tiles"
+    gsutil -m rsync -r data/d_anchor_category "${RESULTS_PREFIX}/data/d_anchor_category" || error "Failed to upload d_anchor_category"
+    gsutil -m rsync -r data/d_anchor_brand "${RESULTS_PREFIX}/data/d_anchor_brand" || error "Failed to upload d_anchor_brand"
+  else
+    error "make all failed"
+    EXIT_CODE=1
+  fi
 else
   log "starting make d_anchor_category"
-  make d_anchor_category |& tee build.log
-  gsutil -m rsync -r data/d_anchor_category "${RESULTS_PREFIX}/data/d_anchor_category"
+  if make d_anchor_category 2>&1 | tee -a build.log; then
+    log "make d_anchor_category completed successfully"
+    log "Uploading results to ${RESULTS_PREFIX}..."
+    gsutil -m rsync -r data/d_anchor_category "${RESULTS_PREFIX}/data/d_anchor_category" || error "Failed to upload d_anchor_category"
+  else
+    error "make d_anchor_category failed"
+    EXIT_CODE=1
+  fi
 fi
 
+# Always upload build log (even on failure - handled by trap)
 gsutil -m cp build.log "${RESULTS_PREFIX}/build.log" || true
 log "uploaded build.log to ${RESULTS_PREFIX}"
 
-shutdown -h now
+log "Build process complete (exit_code=${EXIT_CODE})"
+# Trap will handle shutdown
 ```
 
 The `exec > >(stdbuf … awk …)` redirection timestamps every line that the startup script emits (apt, pip, make, etc.), so anything mirrored into the serial console—and by extension the local `logs/remote_runs/<RUN_ID>-serial.log`—has clear timing context. The inline `log` calls mark phase boundaries (metadata read, venv ready, make start/finish), which is invaluable when comparing multiple runs.
@@ -321,6 +386,29 @@ Notes:
 - 200 GB boot disk leaves room for OSM PBFs, parquet outputs, temp files.
 - Startup scripts execute on **every** boot, so updating metadata + starting the instance is enough to kick off a new run.
 - You can bake this into a custom image to avoid apt/venv work each run.
+
+### 3.1 Error Handling
+
+The startup script includes several layers of error handling:
+
+1. **Guaranteed Shutdown:** A `trap cleanup_and_shutdown EXIT` ensures the VM always shuts down, even if the script fails.
+
+2. **Error Logging:** All errors are logged with timestamps and uploaded to GCS before shutdown.
+
+3. **Error Markers:** If the script fails, a `startup_error.txt` file is uploaded to `${RESULTS_PREFIX}`, which the orchestrator detects.
+
+4. **Package Recovery:** The script attempts to fix broken package installations automatically:
+   - Clears corrupted apt cache if `apt-get update` fails
+   - Runs `apt-get install --fix-broken` before installing new packages
+   - Retries package installation if the first attempt fails
+
+5. **Build Logs:** All output from `make` commands is captured in `build.log` and uploaded even on failure.
+
+When a failure occurs:
+- The orchestrator detects `startup_error.txt` and exits with an error
+- Partial logs are displayed in the terminal
+- Serial logs are saved to `logs/remote_runs/<RUN_ID>-serial.log`
+- The VM shuts down cleanly, preventing stuck instances
 
 ---
 
