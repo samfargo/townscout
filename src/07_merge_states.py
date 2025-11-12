@@ -11,17 +11,38 @@ Pipeline (anchor-mode only):
 """
 import glob
 import os
+from pathlib import Path
 import numpy as np
 import h3
 import pandas as pd
 import polars as pl
+import geopandas as gpd
+import shapely
 from tqdm import tqdm
 
 from vicinity.domains_overlay.climate import classify_climate_expr
 from vicinity.domains_overlay.climate.schema import TEMP_SCALE, PPT_MM_SCALE, PPT_IN_SCALE
 from vicinity.domains_overlay.validation import check_parquet_files
 
-from config import STATES, H3_RES_LOW, H3_RES_HIGH, STATE_BOUNDING_BOXES
+from config import (
+    STATES,
+    H3_RES_LOW,
+    H3_RES_HIGH,
+    STATE_BOUNDING_BOXES,
+    STATE_SLUG_TO_CODE,
+    STATE_FIPS,
+)
+from geometry_utils import clean_geoms
+
+BOUNDARIES_DIR = Path("data/boundaries")
+COUNTY_BOUNDARY_SHP = BOUNDARIES_DIR / "tl_2024_us_county.shp"
+STATE_CODE_TO_FIPS = {abbr.upper(): fips for fips, abbr in STATE_FIPS.items()}
+_COUNTY_BOUNDARIES = None
+_STATE_GEOM_CACHE = {}
+_BOUNDARY_WARNING_EMITTED = False
+_H3_GEO_TO_CELLS = getattr(h3, "geo_to_cells", None)
+_H3_POLYFILL_GEOJSON = getattr(h3, "polyfill_geojson", None)
+_H3_POLYFILL = getattr(h3, "polyfill", None)
 
 
 def _h3_str_to_int(cell) -> int:
@@ -51,21 +72,150 @@ def _bbox_to_polygon(bbox: dict) -> dict:
     return {"type": "Polygon", "coordinates": [ring]}
 
 
+def _get_state_fips(state_slug: str):
+    """Map a Geofabrik-style state slug to its two-digit FIPS code."""
+    code = STATE_SLUG_TO_CODE.get(state_slug)
+    if not code:
+        return None
+    return STATE_CODE_TO_FIPS.get(code.upper())
+
+
+def _load_county_boundaries():
+    """
+    Load nationwide county geometries once and cache them.
+    """
+    global _COUNTY_BOUNDARIES, _BOUNDARY_WARNING_EMITTED
+    if _COUNTY_BOUNDARIES is not None:
+        return _COUNTY_BOUNDARIES
+    if not COUNTY_BOUNDARY_SHP.exists():
+        if not _BOUNDARY_WARNING_EMITTED:
+            print(
+                f"[warn] County shapefile {COUNTY_BOUNDARY_SHP} missing; "
+                "falling back to bounding boxes."
+            )
+            _BOUNDARY_WARNING_EMITTED = True
+        return None
+    gdf = gpd.read_file(COUNTY_BOUNDARY_SHP)
+    if gdf.empty:
+        if not _BOUNDARY_WARNING_EMITTED:
+            print(
+                f"[warn] County shapefile {COUNTY_BOUNDARY_SHP} contained no geometries; "
+                "falling back to bounding boxes."
+            )
+            _BOUNDARY_WARNING_EMITTED = True
+        return None
+    if gdf.crs is None:
+        gdf = gdf.set_crs("EPSG:4326")
+    elif gdf.crs.to_epsg() != 4326:
+        gdf = gdf.to_crs("EPSG:4326")
+    _COUNTY_BOUNDARIES = gdf[["STATEFP", "geometry"]].copy()
+    return _COUNTY_BOUNDARIES
+
+
+def _union_polygons(geoms):
+    """Iteratively union polygon geometries to avoid GEOS collection issues."""
+    result = None
+    for geom in geoms:
+        if geom is None or geom.is_empty:
+            continue
+        current = shapely.make_valid(geom)
+        if current.is_empty:
+            continue
+        if result is None:
+            result = current
+        else:
+            result = shapely.make_valid(result.union(current))
+    return result
+
+
+def _load_state_geometry(state_slug: str):
+    """Dissolve county polygons for the requested state into a single boundary."""
+    if state_slug in _STATE_GEOM_CACHE:
+        return _STATE_GEOM_CACHE[state_slug]
+    fips = _get_state_fips(state_slug)
+    if not fips:
+        print(f"[warn] No USPS/FIPS mapping for '{state_slug}'; using bounding box coverage.")
+        return None
+    counties = _load_county_boundaries()
+    if counties is None:
+        return None
+    subset = counties[counties["STATEFP"] == fips]
+    if subset.empty:
+        print(f"[warn] County geometries missing for '{state_slug}' (FIPS {fips}); using bounding box.")
+        return None
+    polys = clean_geoms(subset, ["Polygon", "MultiPolygon"])
+    if polys.empty:
+        print(f"[warn] No polygonal county geometries for '{state_slug}'; using bounding box.")
+        return None
+    geom = _union_polygons(polys.to_list())
+    if geom is None or geom.is_empty:
+        print(f"[warn] Unable to dissolve counties for '{state_slug}'; using bounding box.")
+        return None
+    geom = shapely.make_valid(geom)
+    _STATE_GEOM_CACHE[state_slug] = geom
+    return geom
+
+
+def _geometry_to_polygons(geom) -> list[dict]:
+    """Split a Shapely geometry into GeoJSON polygon parts."""
+    mapping = geom.__geo_interface__
+    if mapping["type"] == "Polygon":
+        return [mapping]
+    if mapping["type"] == "MultiPolygon":
+        return [{"type": "Polygon", "coordinates": coords} for coords in mapping["coordinates"]]
+    return []
+
+
+def _polyfill_geojson(polygon: dict, resolution: int):
+    """Polyfill a GeoJSON polygon via whichever H3 API is available."""
+    if callable(_H3_GEO_TO_CELLS):
+        return _H3_GEO_TO_CELLS(polygon, resolution)
+    if callable(_H3_POLYFILL_GEOJSON):
+        return _H3_POLYFILL_GEOJSON(polygon, resolution)
+    if callable(_H3_POLYFILL):
+        coords_latlon = [
+            [(lat, lon) for lon, lat in ring]
+            for ring in polygon["coordinates"]
+        ]
+        return _H3_POLYFILL(coords_latlon, resolution, geo_json_conformant=True)
+    raise RuntimeError("No suitable H3 polyfill function available.")
+
+
+def _polyfill_geometry(geom, resolution: int):
+    """Polyfill a Shapely geometry by iterating through its polygon parts."""
+    cells = set()
+    for polygon in _geometry_to_polygons(geom):
+        result = _polyfill_geojson(polygon, resolution)
+        cells.update(_h3_str_to_int(cell) for cell in result)
+    return cells
+
+
 def build_complete_hex_grid(states, resolutions):
     """
     Build an H3 grid that covers the requested states by polyfilling their
-    bounding boxes. This guarantees we have features for every hex even if
-    we never computed travel times there.
+    dissolved county boundaries when available, falling back to bounding boxes
+    otherwise. This guarantees we have features for every hex even if we never
+    computed travel times there, while avoiding spillover beyond true state limits.
     """
     records = []
     for state in states:
+        geom = _load_state_geometry(state)
+        if geom is not None:
+            for res in resolutions:
+                cells = _polyfill_geometry(geom, res)
+                if not cells:
+                    print(f"[warn] polyfill produced 0 cells for {state} at res {res}")
+                    continue
+                records.extend((cell, res) for cell in cells)
+            continue
+
         bbox = STATE_BOUNDING_BOXES.get(state)
         if not bbox:
             print(f"[warn] Missing bounding box for '{state}'; falling back to observed coverage.")
             continue
         polygon = _bbox_to_polygon(bbox)
         for res in resolutions:
-            cells = h3.geo_to_cells(polygon, res)
+            cells = _polyfill_geojson(polygon, res)
             if not cells:
                 print(f"[warn] polyfill produced 0 cells for {state} at res {res}")
                 continue
@@ -106,11 +256,20 @@ def main():
 
     # Build a complete H3 grid so the frontend can shade every hex, even if we
     # never computed anchor travel times there (e.g., large parks or rural areas).
-    print("[info] Building complete hex coverage from state bounding boxes...")
+    print("[info] Building complete hex coverage from state boundaries (bbox fallback enabled)...")
     grid_hexes = build_complete_hex_grid(STATES, [H3_RES_LOW, H3_RES_HIGH])
     observed_hexes = all_times[["h3_id", "res"]].drop_duplicates()
     observed_hexes["h3_id"] = observed_hexes["h3_id"].astype("uint64", copy=False)
     observed_hexes["res"] = observed_hexes["res"].astype("int32", copy=False)
+    initial_observed = len(observed_hexes)
+    observed_hexes = observed_hexes.merge(
+        grid_hexes[["h3_id", "res"]],
+        on=["h3_id", "res"],
+        how="inner"
+    )
+    dropped = initial_observed - len(observed_hexes)
+    if dropped > 0:
+        print(f"[info] Clipped {dropped} observed hexes outside configured state boundaries.")
     base_hexes = pd.concat([grid_hexes, observed_hexes], ignore_index=True)
     base_hexes = base_hexes.drop_duplicates(ignore_index=True)
     print(f"[info] Base coverage: {len(base_hexes)} hexes across all resolutions")
@@ -266,6 +425,9 @@ def main():
         print(f"[ok] Saved {len(res_df)} rows to {output_path}")
 
     print("--- Pipeline step 04 finished ---")
+    stamp_path = Path("state_tiles/.merge.stamp")
+    stamp_path.parent.mkdir(parents=True, exist_ok=True)
+    stamp_path.touch()
 
 
 if __name__ == "__main__":

@@ -679,7 +679,20 @@ export default function SearchBox() {
             <div className="space-y-4">
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-stone-900">Political views filter</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-stone-900">Political views filter</span>
+                    <div className="group relative flex items-center">
+                      <span
+                        className="flex h-4 w-4 items-center justify-center rounded-full border border-stone-300 text-[9px] font-semibold text-stone-500"
+                        aria-label="Hexes without election data hide when you narrow this range."
+                      >
+                        i
+                      </span>
+                      <span className="pointer-events-none absolute left-1/2 top-full z-10 mt-1 hidden w-48 -translate-x-1/2 rounded-md bg-stone-900 px-2 py-1 text-[10px] text-stone-50 shadow-lg group-hover:block">
+                        Hexes without election data hide when you narrow this range.
+                      </span>
+                    </div>
+                  </div>
                   {politicalLeanRange && (
                     <Button
                       size="sm"
@@ -705,14 +718,11 @@ export default function SearchBox() {
                     <span key={label}>{label}</span>
                   ))}
                 </div>
-                <p className="text-xs text-stone-600">
-                  {politicalLeanRange
-                    ? `Showing counties from ${POLITICAL_LEAN_LABELS[politicalLeanRange[0]]} to ${POLITICAL_LEAN_LABELS[politicalLeanRange[1]]}`
-                    : 'Adjust the slider to focus on a political leaning range.'}
-                </p>
-                <p className="text-[11px] leading-snug text-stone-500">
-                  Hexes without election data hide when you narrow this range.
-                </p>
+                {politicalLeanRange && (
+                  <p className="text-xs text-stone-600">
+                    {`Showing counties from ${POLITICAL_LEAN_LABELS[politicalLeanRange[0]]} to ${POLITICAL_LEAN_LABELS[politicalLeanRange[1]]}`}
+                  </p>
+                )}
               </div>
               <Separator className="bg-stone-200" />
               <div className="space-y-2">

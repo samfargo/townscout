@@ -14,6 +14,22 @@ IMAGE_FAMILY   ?= debian-12
 IMAGE_PROJECT  ?= debian-cloud
 SCOPES         ?= https://www.googleapis.com/auth/devstorage.read_write,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write
 
+define RUN_REMOTE
+TARGET=$(1) \
+PROJECT_ID=$(PROJECT_ID) \
+ZONE=$(ZONE) \
+INSTANCE_NAME=$(INSTANCE_NAME) \
+BUCKET=$(BUCKET) \
+SERVICE_ACCOUNT=$(SERVICE_ACCOUNT) \
+MACHINE_TYPE=$(MACHINE_TYPE) \
+BOOT_DISK_SIZE_GB=$(BOOT_DISK_SIZE_GB) \
+BOOT_DISK_TYPE=$(BOOT_DISK_TYPE) \
+IMAGE_FAMILY=$(IMAGE_FAMILY) \
+IMAGE_PROJECT=$(IMAGE_PROJECT) \
+SCOPES="$(SCOPES)" \
+./scripts/run_categories_remote.sh
+endef
+
 # Tuning knobs
 THREADS?=8
 CUTOFF?=30
@@ -30,7 +46,7 @@ PBF_FILES := $(patsubst %,data/osm/%.osm.pbf,$(STATES))
 
 .PHONY: help init clean all \
 	download pois anchors minutes geojson tiles native d_anchor_category d_anchor_brand \
-	d_anchor_category_force d_anchor_brand_force merge climate power_corridors \
+	merge climate power_corridors \
 	categories_remote pipeline_remote
 
 help:  ## Show this help message
@@ -38,34 +54,10 @@ help:  ## Show this help message
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 categories_remote:  ## Run make d_anchor_category remotely via reusable GCE VM
-	TARGET=d_anchor_category \
-	PROJECT_ID=$(PROJECT_ID) \
-	ZONE=$(ZONE) \
-	INSTANCE_NAME=$(INSTANCE_NAME) \
-	BUCKET=$(BUCKET) \
-	SERVICE_ACCOUNT=$(SERVICE_ACCOUNT) \
-	MACHINE_TYPE=$(MACHINE_TYPE) \
-	BOOT_DISK_SIZE_GB=$(BOOT_DISK_SIZE_GB) \
-	BOOT_DISK_TYPE=$(BOOT_DISK_TYPE) \
-	IMAGE_FAMILY=$(IMAGE_FAMILY) \
-	IMAGE_PROJECT=$(IMAGE_PROJECT) \
-	SCOPES="$(SCOPES)" \
-	./scripts/run_categories_remote.sh
+	$(call RUN_REMOTE,d_anchor_category)
 
 pipeline_remote:  ## Run full pipeline remotely via reusable GCE VM
-	TARGET=all \
-	PROJECT_ID=$(PROJECT_ID) \
-	ZONE=$(ZONE) \
-	INSTANCE_NAME=$(INSTANCE_NAME) \
-	BUCKET=$(BUCKET) \
-	SERVICE_ACCOUNT=$(SERVICE_ACCOUNT) \
-	MACHINE_TYPE=$(MACHINE_TYPE) \
-	BOOT_DISK_SIZE_GB=$(BOOT_DISK_SIZE_GB) \
-	BOOT_DISK_TYPE=$(BOOT_DISK_TYPE) \
-	IMAGE_FAMILY=$(IMAGE_FAMILY) \
-	IMAGE_PROJECT=$(IMAGE_PROJECT) \
-	SCOPES="$(SCOPES)" \
-	./scripts/run_categories_remote.sh
+	$(call RUN_REMOTE,all)
 
 init:  ## Initialize virtual environment with Python 3.11 and install dependencies
 	rm -rf .venv
@@ -191,21 +183,6 @@ d_anchor_brand: $(PBF_FILES) anchors | build/native.stamp ## 3.6 Compute anchor-
 	  echo "$$fingerprint" > "$$hash_file"; \
 	done
 
-.PHONY: d_anchor_brand_force
-d_anchor_brand_force: $(PBF_FILES) ## 3.6 Force recompute all D_anchor brand data
-	@for S in $(STATES); do \
-	  echo "--- Force computing D_anchor brand for $$S (drive) ---"; \
-	  $(PY) src/05_compute_d_anchor.py \
-	    --pbf data/osm/$$S.osm.pbf \
-	    --anchors data/anchors/$$S\_drive_sites.parquet \
-	    --mode drive \
-	    --threads $(THREADS) \
-	    --cutoff $(CUTOFF) \
-	    --overflow-cutoff $(OVERFLOW) \
-	    --force \
-	    --out-dir data/d_anchor_brand ; \
-	done
-
 # Compute D_anchor category tables (anchor->category seconds) for categories present in anchors
 # The Python script handles all incremental logic - it checks if each category's
 # parquet exists and only computes missing ones. This is fast when up-to-date.
@@ -246,22 +223,6 @@ d_anchor_category: $(PBF_FILES) anchors | build/native.stamp ## 3.6b Compute anc
 	  echo "$$fingerprint" > "$$hash_file"; \
 	done
 
-.PHONY: d_anchor_category_force
-d_anchor_category_force: $(PBF_FILES) ## 3.6b Force recompute all D_anchor category data
-	@for S in $(STATES); do \
-	  echo "--- Force computing D_anchor category for $$S (drive) ---"; \
-	  $(PY) src/06_compute_d_anchor_category.py \
-	    --pbf data/osm/$$S.osm.pbf \
-	    --anchors data/anchors/$$S\_drive_sites.parquet \
-	    --mode drive \
-	    --threads $(THREADS) \
-	    --cutoff $(CUTOFF) \
-	    --overflow-cutoff $(OVERFLOW) \
-	    --prune \
-	    --force \
-	    --out-dir data/d_anchor_category ; \
-	done
-
 CLIMATE_PARQUET := out/climate/hex_climate.parquet
 
 $(CLIMATE_PARQUET): $(MINUTE_FILES)
@@ -285,19 +246,12 @@ state_tiles/.merge.stamp: $(MERGE_DEPS)
 	$(PY) src/07_merge_states.py
 	@touch $@
 
-state_tiles/us_r7.parquet: state_tiles/.merge.stamp
-state_tiles/us_r8.parquet: state_tiles/.merge.stamp
+state_tiles/us_r%.parquet: state_tiles/.merge.stamp
 
-tiles/us_r7.geojson: state_tiles/us_r7.parquet
+tiles/us_r%.geojson: state_tiles/us_r%.parquet
 	@mkdir -p tiles
 	CLIMATE_DECODE_AT_EXPORT=false $(PY) src/08_h3_to_geojson.py \
-		--input state_tiles/us_r7.parquet \
-		--output $@
-
-tiles/us_r8.geojson: state_tiles/us_r8.parquet
-	@mkdir -p tiles
-	CLIMATE_DECODE_AT_EXPORT=false $(PY) src/08_h3_to_geojson.py \
-		--input state_tiles/us_r8.parquet \
+		--input $< \
 		--output $@
 
 .PHONY: geojson
@@ -306,27 +260,29 @@ geojson: tiles/us_r7.geojson tiles/us_r8.geojson ## 5. Convert summaries to GeoJ
 
 tiles: tiles/t_hex_r7_drive.pmtiles tiles/t_hex_r8_drive.pmtiles ## 6. Build vector tiles (PMTiles)
 	@mkdir -p tiles/web
-
-tiles/t_hex_r7_drive.pmtiles: tiles/us_r7.geojson
-	$(PY) src/09_build_tiles.py \
-		--input $< \
-		--output $@ \
-		--layer t_hex_r7_drive \
-		--minzoom 4 --maxzoom 8
-
-tiles/t_hex_r8_drive.pmtiles: tiles/us_r8.geojson
-	$(PY) src/09_build_tiles.py \
-		--input $< \
-		--output $@ \
-		--layer t_hex_r8_drive \
-		--minzoom 8 --maxzoom 12
 	@if [ -f tiles/us_r8_walk.geojson ]; then \
-		$(PY) src/09_build_tiles.py \
-			--input tiles/us_r8_walk.geojson \
-			--output tiles/t_hex_r8_walk.pmtiles \
-			--layer t_hex_r8_walk \
-			--minzoom 8 --maxzoom 12 ; \
+		$(MAKE) tiles/t_hex_r8_walk.pmtiles; \
 	fi
+
+tiles/t_hex_r%_drive.pmtiles: tiles/us_r%.geojson
+	@mkdir -p tiles/web
+	@if [ "$*" = "7" ]; then \
+		MIN=4; MAX=8; \
+	else \
+		MIN=8; MAX=12; \
+	fi; \
+	$(PY) src/09_build_tiles.py \
+		--input $< \
+		--output $@ \
+		--layer t_hex_r$*_drive \
+		--minzoom $$MIN --maxzoom $$MAX
+
+tiles/t_hex_r8_walk.pmtiles: tiles/us_r8_walk.geojson
+	$(PY) src/09_build_tiles.py \
+		--input $< \
+		--output $@ \
+		--layer t_hex_r8_walk \
+		--minzoom 8 --maxzoom 12
 
 ## Full pipeline now includes brand/category D_anchor so the API works out of the box
 all:  ## Run the full data pipeline (tiles + D_anchor)
