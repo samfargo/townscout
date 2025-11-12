@@ -162,6 +162,36 @@ A vulnerability in the graph cache loading mechanism allowed stale CSR graphs to
 make pois anchors minutes climate power_corridors d_anchor_category d_anchor_brand merge tiles
 ```
 
+### Remote Compute Offloading (GCP)
+
+For computationally expensive steps like `d_anchor_category`, you can offload to Google Cloud Platform:
+
+```bash
+make categories_remote
+```
+
+This orchestrator script (`scripts/run_categories_remote.sh`):
+- Packages your local repo with `git archive HEAD` and uploads to GCS
+- Spins up an ephemeral c4d-highcpu-32 VM (32 cores, 200GB disk)
+- Runs the full setup: installs dependencies, builds Rust native extensions, downloads data
+- Executes `make d_anchor_category` on the VM (~15-30 minutes for Massachusetts)
+- Syncs results back to `data/categories_results/<timestamp>/`
+- Automatically terminates the VM and cleans up
+
+**Prerequisites:**
+- GCP project with Compute Engine API enabled
+- Service account with permissions for VM creation and GCS access
+- GCS bucket for artifacts (e.g., `gs://vicinity-batch-<project-id>`)
+- Configure environment variables in `Makefile`:
+  - `PROJECT_ID`, `ZONE`, `BUCKET`, `SERVICE_ACCOUNT`
+
+**Monitoring:**
+- Serial console logs: `logs/remote_runs/<timestamp>-serial.log`
+- Build logs: `data/categories_results/<timestamp>/build.log`
+- Watch progress: `tail -f logs/remote_runs/<timestamp>-serial.log`
+
+The VM automatically handles all dependencies (Python packages, Rust toolchain, DuckDB CLI) and ensures reproducible builds. Results are downloaded automatically when the job completes.
+
 ### Category & Brand Scope (Stay Focused)
 - **Categories**: edit `data/taxonomy/POI_category_registry.csv` (columns: `category_id`, `numeric_id`, `display_name`). Any category in the CSV is automatically allowlisted for anchors and precomputation. Numeric IDs are explicit to prevent drift.
 - **Brands**: edit `data/taxonomy/POI_brand_registry.csv` (columns: `brand_id`, `canonical`, `aliases`, `wikidata`). Any brand in the registry is automatically allowlisted for anchors and precomputation.

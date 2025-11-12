@@ -1,0 +1,77 @@
+{
+  "description": "Minimal contract for vicinity PMTiles",
+  "version": "1.0.0",
+  "tiles": [
+    {
+      "filename_pattern": "t_hex_r7_drive.pmtiles",
+      "layer_name": "t_hex_r7_drive",
+      "min_zoom": 5,
+      "max_zoom": 12,
+      "required_properties": [
+        "h3_id",
+        "a0_id",
+        "a0_s"
+      ],
+      "optional_properties": [
+        "near_power_corridor",
+        "climate_label",
+        "climate_summer_temp_f",
+        "climate_winter_temp_f",
+        "climate_annual_precip_in",
+        "political_lean"
+      ]
+    },
+    {
+      "filename_pattern": "t_hex_r8_drive.pmtiles",
+      "layer_name": "t_hex_r8_drive",
+      "min_zoom": 5,
+      "max_zoom": 12,
+      "required_properties": [
+        "h3_id",
+        "a0_id",
+        "a0_s"
+      ],
+      "optional_properties": [
+        "near_power_corridor",
+        "climate_label",
+        "climate_summer_temp_f",
+        "climate_winter_temp_f",
+        "climate_annual_precip_in",
+        "political_lean"
+      ]
+    },
+    {
+      "filename_pattern": "t_hex_r8_walk.pmtiles",
+      "layer_name": "t_hex_r8_walk",
+      "min_zoom": 5,
+      "max_zoom": 12,
+      "required_properties": [
+        "h3_id",
+        "a0_id",
+        "a0_s"
+      ],
+      "optional_properties": [
+        "near_power_corridor",
+        "climate_label",
+        "climate_summer_temp_f",
+        "climate_winter_temp_f",
+        "climate_annual_precip_in",
+        "political_lean"
+      ]
+    }
+  ],
+  "anchor_array_spec": {
+    "description": "Each tile must have K anchor pairs (a{i}_id, a{i}_s) where i=0..K-1",
+    "max_k": 20,
+    "id_suffix": "_id",
+    "time_suffix": "_s",
+    "id_type": "int32",
+    "time_type": "uint16",
+    "sentinel_value": 65535
+  },
+  "geometry_spec": {
+    "type": "Polygon",
+    "description": "H3 hexagon boundaries"
+  }
+}
+

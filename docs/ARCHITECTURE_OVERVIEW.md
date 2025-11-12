@@ -274,6 +274,126 @@ Subsequent development typically touches a single layer (e.g., adjusting taxonom
 
 ---
 
+## Remote Compute Infrastructure
+
+For compute-intensive pipeline steps (D_anchor category/brand computation), vicinity supports automated offloading to Google Cloud Platform through an orchestration script.
+
+### Architecture
+
+The remote execution system (`scripts/run_categories_remote.sh`) provides ephemeral compute infrastructure:
+
+**Components:**
+- **Orchestrator script** (`scripts/run_categories_remote.sh`) - Manages VM lifecycle, artifact packaging, and result syncing
+- **Startup script** (`scripts/startup_categories_vm.sh`) - Provisions VM environment and executes pipeline
+- **GCS bucket** - Stores source tarballs and results
+- **Ephemeral VM** - High-core-count instance (default: c4d-highcpu-32) that auto-terminates after job completion
+
+**Workflow:**
+1. Package local repository with `git archive HEAD` (only committed code is included)
+2. Upload source tarball to `gs://<bucket>/src/vicinity-src-<timestamp>.tar.gz`
+3. Create ephemeral VM with metadata-driven startup script
+4. VM bootstraps environment:
+   - Installs system packages (Python, build-essential, libgeos/libproj/libgdal)
+   - Downloads and installs DuckDB CLI v1.1.3
+   - Installs Rust toolchain (rustc 1.91.1) with explicit CARGO_HOME configuration
+   - Downloads source tarball from GCS
+   - Creates Python venv and installs all requirements (including `duckdb` Python package)
+   - Builds Rust native extension (`vicinity_native`)
+5. Executes pipeline target (e.g., `make d_anchor_category`)
+6. Uploads results to `gs://<bucket>/results/<timestamp>/`
+7. VM shuts down automatically (trap handlers ensure cleanup even on errors)
+8. Orchestrator syncs results to local `data/categories_results/<timestamp>/`
+9. Orchestrator deletes VM to prevent resource leaks
+
+**Key Design Decisions:**
+- **Metadata-driven configuration**: All runtime parameters (RUN_ID, BUCKET, TARGET) passed via GCP instance metadata
+- **Retry logic**: Metadata fetch uses exponential backoff (5 attempts, 5s delay) to handle startup race conditions
+- **Explicit PATH management**: Rust toolchain requires setting CARGO_HOME before installation and re-exporting before builds
+- **Environment validation**: HOME=/root set explicitly for DuckDB extension installation
+- **Error reporting**: Failed jobs upload startup_error.txt with systemd journal logs for debugging
+
+### Usage
+
+**Basic invocation:**
+```bash
+make categories_remote
+```
+
+**Configuration** (via Makefile or environment variables):
+- `PROJECT_ID` - GCP project ID
+- `ZONE` - GCP zone (e.g., `us-east4-c`)
+- `BUCKET` - GCS bucket name (e.g., `vicinity-batch-<project>`)
+- `SERVICE_ACCOUNT` - Service account email for VM
+- `MACHINE_TYPE` - VM machine type (default: `c4d-highcpu-32`)
+- `BOOT_DISK_SIZE_GB` - Boot disk size (default: 200GB)
+- `BOOT_DISK_TYPE` - Disk type (default: `hyperdisk-balanced`)
+
+**Monitoring:**
+- **Orchestrator logs**: Printed to terminal with `[orchestrator]` prefix
+- **Serial console logs**: Written to `logs/remote_runs/<timestamp>-serial.log` (background process)
+- **Build logs**: Synced to `data/categories_results/<timestamp>/build.log` after completion
+- **Instance status**: Polled every 30s until TERMINATED state
+
+**Performance** (Massachusetts d_anchor_category):
+- Setup time: ~5 minutes (package install, Rust build)
+- Computation time: ~35 minutes (17 categories, 27,949 anchor sites)
+- Total runtime: ~40 minutes
+- Cost: ~$0.80 per run (c4d-highcpu-32 @ $0.02/minute)
+
+### Troubleshooting
+
+**Common issues and solutions:**
+
+1. **Metadata fetch failures** (exit code 3):
+   - Cause: Bash array syntax incompatibility or network issues
+   - Solution: Retry logic with direct `-H "Metadata-Flavor: Google"` header
+
+2. **Rust not found in PATH** (exit code 1):
+   - Cause: CARGO_HOME not set before rustup installation
+   - Solution: Export CARGO_HOME=/root/.cargo before `curl | sh` invocation
+
+3. **DuckDB "home directory not found"**:
+   - Cause: HOME environment variable not set
+   - Solution: Export HOME=/root at script start
+
+4. **Python duckdb package missing**:
+   - Cause: requirements.txt not committed to git
+   - Solution: Ensure `duckdb>=1.1.0` is committed before running remote job
+
+**Debugging:**
+- Check serial console: `gcloud compute instances get-serial-port-output <instance> --zone=<zone>`
+- View build log: `cat data/categories_results/<timestamp>/build.log`
+- Inspect startup errors: `cat data/categories_results/<timestamp>/startup_error.txt`
+- SSH to VM (if still running): `gcloud compute ssh <instance> --zone=<zone>`
+
+### Implementation Details
+
+**Dependency installation order** (critical for reproducibility):
+1. System packages via apt-get (Python, build tools, geospatial libs)
+2. DuckDB CLI binary from GitHub releases
+3. Rust toolchain via rustup (with CARGO_HOME pre-configured)
+4. Python packages via pip (including duckdb Python library)
+5. Rust native extension via maturin develop
+
+**Data packaging strategy:**
+- Uses `git archive HEAD` to ensure only committed code is deployed
+- Copies large binary files (OSM PBF, POI parquet, anchor parquet) if present locally
+- Excludes build artifacts and .gitignore patterns
+- Tarball typically ~380MB for Massachusetts pipeline
+
+**Incremental computation support:**
+- Anchor fingerprinting via `scripts/update_source_ledger.py` detects unchanged anchor data
+- Fingerprint stored in `build/d_anchor_category_hash/<state>.hash`
+- Only recomputes categories when anchor data changes (speeds up incremental runs)
+
+**Security considerations:**
+- Service account should have minimal required permissions (compute.instances.*, storage.objects.*)
+- Startup script runs as root (required for apt-get) but activates venv for pipeline execution
+- GCS bucket should restrict public access; use IAM policies for access control
+- Temporary VMs use ephemeral IPs and are deleted immediately after completion
+
+---
+
 ## Extending the System
 
 - **Adding new POI categories/brands**: extend `data/taxonomy/taxonomy.py` or the override files in `data/taxonomy/`, regenerate canonical POIs, rebuild anchors, rerun D_anchor scripts, and refresh the catalog API.

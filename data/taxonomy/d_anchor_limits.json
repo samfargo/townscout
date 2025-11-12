@@ -1,0 +1,136 @@
+{
+  "category": {
+    "airport": {
+      "max_minutes": 180,
+      "top_k": 8
+    },
+    "ski_resort": {
+      "max_minutes": 180,
+      "top_k": 12
+    },
+    "beach": {
+      "max_minutes": 180,
+      "top_k": 12
+    },
+    "beach_ocean": {
+      "max_minutes": 180,
+      "top_k": 12
+    },
+    "beach_lake": {
+      "max_minutes": 180,
+      "top_k": 12
+    },
+    "beach_river": {
+      "max_minutes": 180,
+      "top_k": 12
+    },
+    "beach_other": {
+      "max_minutes": 180,
+      "top_k": 12
+    },
+    "park": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "hospital": {
+      "max_minutes": 60,
+      "top_k": 10
+    },
+    "trauma_level_1_adult": {
+      "max_minutes": 60,
+      "top_k": 6
+    },
+    "trauma_level_1_pediatric": {
+      "max_minutes": 60,
+      "top_k": 6
+    },
+    "supermarket": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "fast_food": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "cafe": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "pharmacy": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "railway_station": {
+      "max_minutes": 60,
+      "top_k": 10
+    },
+    "bus_station": {
+      "max_minutes": 60,
+      "top_k": 10
+    }
+  },
+  "brand": {
+    "costco": {
+      "max_minutes": 60,
+      "top_k": 10
+    },
+    "trader_joes": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "whole_foods": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "target": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "walmart": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "starbucks": {
+      "max_minutes": 60,
+      "top_k": 14
+    },
+    "dunkin": {
+      "max_minutes": 60,
+      "top_k": 14
+    },
+    "mcdonalds": {
+      "max_minutes": 60,
+      "top_k": 14
+    },
+    "cvs": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "walgreens": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "chipotle": {
+      "max_minutes": 60,
+      "top_k": 12
+    }
+  },
+  "_defaults": {
+    "category": {
+      "max_minutes": 60,
+      "top_k": 12
+    },
+    "brand": {
+      "max_minutes": 60,
+      "top_k": 12
+    }
+  },
+  "_notes": {
+    "description": "Runtime configuration for D_anchor computation",
+    "max_minutes": "Maximum travel time cutoff for SSSP searches",
+    "top_k": "Maximum number of nearest sources to retain per anchor",
+    "sparse_categories": "airport, ski_resort, beach variants use 180 min for weekend destinations",
+    "removed": "ferry_terminal and clinic are no longer tracked as separate categories"
+  }
+}
+

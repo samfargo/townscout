@@ -72,8 +72,24 @@ dump.rdb
 *.bin
 *.rlib
 *.rmeta
-*.json
 vicinity_native/target/debug
 vicinity_native/target/release
 *.npy
 *.tif
+
+# Large generated JSON files (exclude, but allow taxonomy/config)
+state_tiles/*.json
+tiles/*.json
+out/**/*.json
+data/d_anchor_category/**/*.json
+data/d_anchor_brand/**/*.json
+data/poi/*.json
+data/minutes/*.json
+# Allow taxonomy and configuration JSON files
+!data/taxonomy/*.json
+!data/datasets.json
+!docs/*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!jsconfig.json

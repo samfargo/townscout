@@ -1,0 +1,121 @@
+{
+  "datasets": {
+    "climate": {
+      "description": "PRISM climate normals aggregated to the vicinity hex grid.",
+      "raw": {
+        "prism_normals": "data/climate/raw/prism_normals_1991_2020"
+      },
+      "derived": {
+        "hex_climate": "data/climate/derived/hex_climate.parquet"
+      },
+      "scripts": {
+        "fetch": "src/climate/prism_normals_fetch.py",
+        "build": "src/climate/prism_to_hex.py"
+      },
+      "schema": {
+        "primary_keys": [
+          "h3_id",
+          "res"
+        ],
+        "columns": {
+          "h3_id": "uint64",
+          "res": "int32",
+          "climate_label": "str",
+          "temp_mean_summer_f": "float",
+          "temp_mean_winter_f": "float",
+          "ppt_ann_in": "float"
+        }
+      }
+    },
+    "power_corridors": {
+      "description": "High voltage transmission corridor buffers tagged onto hexes.",
+      "raw": {},
+      "derived": {
+        "per_state_pattern": "data/power_corridors/derived/{state}_near_power_corridor.parquet"
+      },
+      "scripts": {
+        "build": "src/power_corridors/osm_to_hex.py"
+      },
+      "schema": {
+        "primary_keys": [
+          "h3_id",
+          "res"
+        ],
+        "columns": {
+          "near_power_corridor": "bool"
+        }
+      }
+    },
+    "beaches": {
+      "description": "Classified beach POIs built from OSM points and Overture water polygons.",
+      "raw": {
+        "overture_water": "data/beaches/raw/{state}_water.parquet"
+      },
+      "derived": {
+        "poi": "data/beaches/derived/{state}_beaches.parquet"
+      },
+      "scripts": {
+        "build": "src/osm_beaches.py"
+      },
+      "schema": {
+        "primary_keys": [
+          "poi_id"
+        ],
+        "columns": {
+          "poi_id": "str",
+          "category": "str",
+          "subcat": "str",
+          "lon": "float",
+          "lat": "float"
+        }
+      }
+    },
+    "trauma_level1": {
+      "description": "ACS Level 1 trauma centers normalized to vicinity canonical schema.",
+      "raw": {
+        "acs_export": "data/level1_trauma/raw"
+      },
+      "derived": {
+        "parquet": "data/level1_trauma/derived/acs_trauma.parquet",
+        "qa": "data/level1_trauma/qa/acs_trauma.csv"
+      },
+      "scripts": {
+        "build": "data/level1_trauma/acs_trauma_to_parquet.py"
+      },
+      "schema": {
+        "primary_keys": [
+          "poi_id"
+        ],
+        "columns": {
+          "poi_id": "str",
+          "category": "str",
+          "subcat": "str",
+          "trauma_level": "str",
+          "lon": "float",
+          "lat": "float"
+        },
+        "notes": "trauma_level is the only canonical column that distinguishes trauma centers from hospitals; all other specialty POIs should rely on class/category/subcat."
+      }
+    },
+    "qa_infrastructure": {
+      "description": "Quality control infrastructure for automated validation and testing.",
+      "tests": {
+        "test_poi_schema": "tests/test_poi_schema.py",
+        "test_anchor_contract": "tests/test_anchor_contract.py",
+        "test_t_hex_contract": "tests/test_t_hex_contract.py"
+      },
+      "validation_scripts": {
+        "check_d_anchor_stats": "scripts/check_d_anchor_stats.py",
+        "check_tile_schema": "scripts/check_tile_schema.py",
+        "validate_golden_drivetime": "scripts/validate_golden_drivetime.py",
+        "update_source_ledger": "scripts/update_source_ledger.py"
+      },
+      "data_files": {
+        "source_ledger": "data/source_ledger.csv",
+        "golden_drivetime": "data/golden_drivetime.csv",
+        "tile_contract": "docs/tile_contract.json"
+      },
+      "documentation": "docs/quality_control_infra.md"
+    }
+  }
+}
