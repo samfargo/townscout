@@ -144,6 +144,8 @@ The merge step in `src/07_merge_states.py` consumes these parquet files and defa
 
 Generated tiles are tracked in `state_tiles/` (raw parquet) and `tiles/` (NDJSON + PMTiles). The FastAPI service streams these via HTTP range responses.
 
+**Vector Basemap**: The map background is provided by a self-hosted OpenMapTiles-compatible vector tileset generated via `make vector_basemap` (wraps `scripts/build_vector_basemap.sh` + Planetiler). This produces `tiles/vicinity_basemap.pmtiles` containing standard OMT layers (transportation, water, buildings, etc.) and eliminates dependency on third-party raster tile servers. See `docs/vector_basemap_plan.md` for build prerequisites and styling workflows.
+
 ### 5. Overlay Enrichment (Climate & Power Corridors)
 
 Climate and power corridor overlays are processed as auxiliary data enrichment:
@@ -208,7 +210,7 @@ The web client is a Next.js 13+ App Router project that renders a full-height ma
 
 ### Map Integration
 
-- `lib/map/MapController.ts` instantiates MapLibre, registers the PMTiles protocol, tracks active mode filters, and exposes hover callbacks. The base style defines r7/r8 PMTiles sources with default visibility and 0.4 opacity, ensuring that when no filters are active, all hexes are shaded (showing the full coverage area).
+- `lib/map/MapController.ts` instantiates MapLibre, registers the PMTiles protocol, tracks active mode filters, and exposes hover callbacks. The basemap uses a **self-hosted vector style** (`/basemaps/vicinity.json`) built from OpenMapTiles schema via Planetiler (see `docs/vector_basemap_plan.md`). The hex layers (r7/r8 PMTiles sources) are merged on top with default visibility and 0.4 opacity, ensuring that when no filters are active, all hexes are shaded (showing the full coverage area). If the vector basemap fails to load, the controller gracefully falls back to raster OpenStreetMap tiles.
 - `lib/map/map.worker.ts` builds GPU expressions in a Web Worker to combine multiple POI criteria. When multiple filters are active (e.g., airport + Costco), the worker uses **intersection logic** (MapLibre `'all'` expressions) so only hexes meeting ALL criteria are shown. This ensures that adding more criteria progressively narrows the livable area, as intended. Optional overlays (climate selections, "Avoid power lines" toggle, and political lean range filter) are AND-ed into those expressions by inspecting tile properties such as `climate_label`, `near_power_corridor`, and `political_lean`.
 - The MapController maintains a singleton worker instance and applies expression updates via RAF-coalesced batches to minimize render thrashing during slider interactions.
 

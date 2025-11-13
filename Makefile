@@ -43,11 +43,16 @@ K_BEST?=20
 DANCHOR_BRAND_FINGERPRINT_DIR := build/d_anchor_brand_hash
 DANCHOR_CATEGORY_FINGERPRINT_DIR := build/d_anchor_category_hash
 PBF_FILES := $(patsubst %,data/osm/%.osm.pbf,$(STATES))
+PLANETILER_OSM ?= $(firstword $(PBF_FILES))
+PLANETILER_AREA ?= us/$(firstword $(STATES))
+PLANETILER_OUTPUT ?= tiles/vicinity_basemap.pmtiles
+PLANETILER_HEAP ?= 24g
+PLANETILER_EXTRA ?=
 
 .PHONY: help init clean all \
 	download pois anchors minutes geojson tiles native d_anchor_category d_anchor_brand \
 	merge climate power_corridors \
-	categories_remote pipeline_remote
+	categories_remote pipeline_remote vector_basemap
 
 help:  ## Show this help message
 	@echo "vicinity Data Pipeline - Available targets:"
@@ -58,6 +63,16 @@ categories_remote:  ## Run make d_anchor_category remotely via reusable GCE VM
 
 pipeline_remote:  ## Run full pipeline remotely via reusable GCE VM
 	$(call RUN_REMOTE,all)
+
+vector_basemap: $(PLANETILER_OUTPUT) ## Build OMT-compatible vector basemap via Planetiler
+
+$(PLANETILER_OUTPUT): $(PLANETILER_OSM) planetiler-openmaptiles.jar scripts/build_vector_basemap.sh
+	./scripts/build_vector_basemap.sh \
+		--osm-path "$(PLANETILER_OSM)" \
+		--area "$(PLANETILER_AREA)" \
+		--output "$(PLANETILER_OUTPUT)" \
+		--heap "$(PLANETILER_HEAP)" \
+		$(if $(strip $(PLANETILER_EXTRA)),$(PLANETILER_EXTRA))
 
 init:  ## Initialize virtual environment with Python 3.11 and install dependencies
 	rm -rf .venv

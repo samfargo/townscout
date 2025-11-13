@@ -2,7 +2,14 @@
 import { fetchPoiPoints, type FetchPoiPointsOptions } from "../services";
 import type { HoverState, POI } from "../state/store";
 import type { FeatureCollection, Point } from "geojson";
-import type { LngLatBoundsLike, LngLatLike, Map as MLMap, StyleSpecification } from "maplibre-gl";
+import type {
+  AnySourceData,
+  LayerSpecification,
+  LngLatBoundsLike,
+  LngLatLike,
+  Map as MLMap,
+  StyleSpecification
+} from "maplibre-gl";
 
 export type Mode = "drive" | "walk";
 
@@ -57,7 +64,82 @@ function sanitizeLayerKey(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
-function createBaseStyle(): StyleSpecification {
+const BASEMAP_STYLE_URL = '/basemaps/vicinity.json';
+
+const HEX_SOURCE_DEFINITIONS: Record<string, AnySourceData> = {
+  [LAYER_IDS.driveR8]: {
+    type: 'vector',
+    url: 'pmtiles:///tiles/t_hex_r8_drive.pmtiles'
+  },
+  [LAYER_IDS.driveR7]: {
+    type: 'vector',
+    url: 'pmtiles:///tiles/t_hex_r7_drive.pmtiles'
+  }
+};
+
+const HEX_LAYER_DEFINITIONS: LayerSpecification[] = [
+  {
+    id: LAYER_IDS.driveR8,
+    type: 'fill',
+    source: LAYER_IDS.driveR8,
+    'source-layer': 't_hex_r8_drive',
+    minzoom: 8, // Start showing r8 at zoom 8
+    maxzoom: 22,
+    layout: {
+      visibility: 'visible'
+    },
+    paint: {
+      'fill-color': '#10b981',
+      // Fade in r8 from zoom 8-9 as r7 fades out
+      'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0, 9, 0.4]
+    }
+  },
+  {
+    id: LAYER_IDS.driveR7,
+    type: 'fill',
+    source: LAYER_IDS.driveR7,
+    'source-layer': 't_hex_r7_drive',
+    minzoom: 0,
+    maxzoom: 9, // Keep showing r7 through zoom 9 for smooth transition
+    layout: {
+      visibility: 'visible'
+    },
+    paint: {
+      'fill-color': '#10b981',
+      // Fade out r7 from zoom 8-9 as r8 fades in
+      'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0.4, 9, 0]
+    }
+  }
+];
+
+async function fetchBasemapStyle(): Promise<StyleSpecification> {
+  const response = await fetch(BASEMAP_STYLE_URL, { cache: 'force-cache' });
+  if (!response.ok) {
+    throw new Error(`Failed to load basemap style (${response.status} ${response.statusText})`);
+  }
+  return (await response.json()) as StyleSpecification;
+}
+
+function withHexOverlays(style: StyleSpecification): StyleSpecification {
+  const mergedSources = {
+    ...(style.sources ?? {}),
+    ...HEX_SOURCE_DEFINITIONS
+  };
+  const baseLayers = [...(style.layers ?? [])];
+  const insertionIndex = baseLayers.findIndex((layer) => layer.type === 'symbol');
+  if (insertionIndex === -1) {
+    baseLayers.push(...HEX_LAYER_DEFINITIONS);
+  } else {
+    baseLayers.splice(insertionIndex, 0, ...HEX_LAYER_DEFINITIONS);
+  }
+  return {
+    ...style,
+    sources: mergedSources,
+    layers: baseLayers
+  };
+}
+
+function createFallbackRasterStyle(): StyleSpecification {
   return {
     version: 8,
     sources: {
@@ -69,16 +151,10 @@ function createBaseStyle(): StyleSpecification {
           'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'
         ],
         tileSize: 256,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
       },
-      't_hex_r8_drive': {
-        type: 'vector',
-        url: 'pmtiles:///tiles/t_hex_r8_drive.pmtiles'
-      },
-      't_hex_r7_drive': {
-        type: 'vector',
-        url: 'pmtiles:///tiles/t_hex_r7_drive.pmtiles'
-      }
+      ...HEX_SOURCE_DEFINITIONS
     },
     layers: [
       {
@@ -88,40 +164,19 @@ function createBaseStyle(): StyleSpecification {
         minzoom: 0,
         maxzoom: 22
       },
-      {
-        id: LAYER_IDS.driveR8,
-        type: 'fill',
-        source: 't_hex_r8_drive',
-        'source-layer': 't_hex_r8_drive',
-        minzoom: 8,  // Start showing r8 at zoom 8
-        maxzoom: 22,
-        layout: {
-          visibility: 'visible'
-        },
-        paint: {
-          'fill-color': '#10b981',
-          // Fade in r8 from zoom 8-9 as r7 fades out
-          'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0, 9, 0.4]
-        }
-      },
-      {
-        id: LAYER_IDS.driveR7,
-        type: 'fill',
-        source: 't_hex_r7_drive',
-        'source-layer': 't_hex_r7_drive',
-        minzoom: 0,
-        maxzoom: 9,  // Keep showing r7 through zoom 9 for smooth transition
-        layout: {
-          visibility: 'visible'
-        },
-        paint: {
-          'fill-color': '#10b981',
-          // Fade out r7 from zoom 8-9 as r8 fades in
-          'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0.4, 9, 0]
-        }
-      }
+      ...HEX_LAYER_DEFINITIONS
     ]
   };
+}
+
+async function loadMergedStyle(): Promise<StyleSpecification> {
+  try {
+    const basemapStyle = await fetchBasemapStyle();
+    return withHexOverlays(basemapStyle);
+  } catch (error) {
+    console.error('[MapController] Falling back to raster basemap:', error);
+    return createFallbackRasterStyle();
+  }
 }
 
 export function getColorForMinutes(minutes: number | null): string {
@@ -207,9 +262,11 @@ export class MapController {
   async init(container: HTMLDivElement) {
     if (this.map) return;
 
-    const [maplibreModule, pmtilesModule] = await Promise.all([
+    const stylePromise = loadMergedStyle();
+    const [maplibreModule, pmtilesModule, baseStyle] = await Promise.all([
       import("maplibre-gl"),
-      import("pmtiles")
+      import("pmtiles"),
+      stylePromise
     ]);
     
     const maplibre = (maplibreModule as any).default ?? maplibreModule;
@@ -236,7 +293,7 @@ export class MapController {
 
     const map = new MapCtor({
       container,
-      style: createBaseStyle(),
+      style: baseStyle,
       center: [-98.58, 39.83],
       zoom: 4,
       minZoom: 3,
