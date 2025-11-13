@@ -80,7 +80,8 @@ for state in massachusetts; do
 done
 
 # Create the final compressed tarball
-tar -czf "/tmp/${SRC_TARBALL}" .
+# Set COPYFILE_DISABLE to prevent macOS from adding ._* metadata files
+COPYFILE_DISABLE=1 tar -czf "/tmp/${SRC_TARBALL}" --exclude='._*' .
 
 # Cleanup
 cd "${REPO_ROOT}"
