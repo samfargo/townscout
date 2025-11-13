@@ -258,21 +258,40 @@ def main():
     # never computed anchor travel times there (e.g., large parks or rural areas).
     print("[info] Building complete hex coverage from state boundaries (bbox fallback enabled)...")
     grid_hexes = build_complete_hex_grid(STATES, [H3_RES_LOW, H3_RES_HIGH])
+    # Mark these as core area (within state land boundaries)
+    grid_hexes["is_core_area"] = True
+    
     observed_hexes = all_times[["h3_id", "res"]].drop_duplicates()
     observed_hexes["h3_id"] = observed_hexes["h3_id"].astype("uint64", copy=False)
     observed_hexes["res"] = observed_hexes["res"].astype("int32", copy=False)
     initial_observed = len(observed_hexes)
-    observed_hexes = observed_hexes.merge(
+    
+    # Identify hexes outside core area (ocean, neighboring states, extended coverage)
+    observed_outside_core = observed_hexes.merge(
+        grid_hexes[["h3_id", "res"]],
+        on=["h3_id", "res"],
+        how="left",
+        indicator=True
+    )
+    outside_core = observed_outside_core[observed_outside_core["_merge"] == "left_only"][["h3_id", "res"]].copy()
+    outside_core["is_core_area"] = False
+    
+    # Keep only observed hexes that are within core boundaries
+    observed_in_core = observed_hexes.merge(
         grid_hexes[["h3_id", "res"]],
         on=["h3_id", "res"],
         how="inner"
     )
-    dropped = initial_observed - len(observed_hexes)
+    dropped = initial_observed - len(observed_in_core)
     if dropped > 0:
-        print(f"[info] Clipped {dropped} observed hexes outside configured state boundaries.")
-    base_hexes = pd.concat([grid_hexes, observed_hexes], ignore_index=True)
-    base_hexes = base_hexes.drop_duplicates(ignore_index=True)
+        print(f"[info] {dropped} observed hexes outside configured state boundaries (will be marked is_core_area=false).")
+    
+    # Combine: core boundary hexes + observed in-core hexes + observed outside-core hexes
+    base_hexes = pd.concat([grid_hexes, outside_core], ignore_index=True)
+    base_hexes = base_hexes.drop_duplicates(subset=["h3_id", "res"], ignore_index=True)
     print(f"[info] Base coverage: {len(base_hexes)} hexes across all resolutions")
+    core_count = base_hexes["is_core_area"].sum()
+    print(f"[info] Core area (within state land): {core_count} hexes ({core_count/len(base_hexes)*100:.1f}%)")
 
     # 2. Anchor arrays for frontend (a{i}_id / a{i}_s) — top-K already enforced upstream
     # Sort times per hex and assign rank 0..K-1, then pivot into columns

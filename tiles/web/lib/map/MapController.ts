@@ -806,6 +806,40 @@ export class MapController {
     this.updatePinHoverLayers();
   }
 
+  /**
+   * Count visible hexes in the current viewport.
+   * Returns { total, coreArea } where coreArea includes only hexes within state land boundaries.
+   */
+  countVisibleHexes(): { total: number; coreArea: number } {
+    if (!this.map) return { total: 0, coreArea: 0 };
+    
+    const activeLayers = [LAYER_IDS.driveR8, LAYER_IDS.driveR7];
+    if (activeLayers.length === 0) return { total: 0, coreArea: 0 };
+
+    try {
+      const features = this.map.queryRenderedFeatures(undefined, { layers: activeLayers });
+      const seen = new Set<string>();
+      let coreAreaCount = 0;
+
+      for (const feature of features) {
+        const h3Id = feature.properties?.h3_id;
+        if (!h3Id || seen.has(h3Id)) continue;
+        
+        seen.add(h3Id);
+        
+        // Count core area hexes (is_core_area property set in data pipeline)
+        if (feature.properties?.is_core_area === true || feature.properties?.is_core_area === 1) {
+          coreAreaCount++;
+        }
+      }
+
+      return { total: seen.size, coreArea: coreAreaCount };
+    } catch (error) {
+      console.error('[MapController] Failed to count visible hexes:', error);
+      return { total: 0, coreArea: 0 };
+    }
+  }
+
   destroy() {
     if (this.map) {
       if (this.moveEndHandler) {

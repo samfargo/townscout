@@ -352,22 +352,62 @@ export default function SearchBox() {
 
   const activeFilterCount = pois.length;
 
-  const livableAreaPercent = React.useMemo(() => {
-    const base = 100;
-    const poiPenalty = Math.min(activeFilterCount * 8, 40);
-    const sliderPenalty = sliderMinutes.length
-      ? (sliderMinutes.reduce((acc, minutes) => acc + (MAX_MINUTES - minutes), 0) /
-          (sliderMinutes.length * (MAX_MINUTES - MIN_MINUTES))) * 40
-      : 0;
-    const climatePenalty = Math.min(climateSelections.length * 5, 25);
-    const corridorPenalty = avoidPowerLines ? 6 : 0;
-    const politicsPenalty = politicalLeanRange
-      ? (1 - (Math.max(0, politicalLeanRange[1] - politicalLeanRange[0]) / 4)) * 18
-      : 0;
-    const deduction = poiPenalty + sliderPenalty + climatePenalty + corridorPenalty + politicsPenalty;
-    const raw = base - deduction;
-    return Math.max(1, Math.min(100, Math.round(raw)));
+  const [baselineHexCount, setBaselineHexCount] = React.useState<number>(0);
+  const [visibleHexCount, setVisibleHexCount] = React.useState<number>(0);
+
+  // Update hex counts when filters change
+  React.useEffect(() => {
+    const controller = getMapController();
+    if (!controller) return;
+
+    // Small delay to let map render updated filters
+    const timer = setTimeout(() => {
+      const counts = controller.countVisibleHexes();
+      
+      // Set baseline on first load (no filters active)
+      if (activeFilterCount === 0 && climateSelections.length === 0 && !avoidPowerLines && !politicalLeanRange) {
+        if (counts.coreArea > 0) {
+          setBaselineHexCount(counts.coreArea);
+        }
+      }
+      
+      setVisibleHexCount(counts.coreArea);
+    }, 300); // Wait for map to update
+
+    return () => clearTimeout(timer);
   }, [
+    activeFilterCount,
+    sliderMinutes,
+    climateSelections.length,
+    avoidPowerLines,
+    politicalLeanRange
+  ]);
+
+  const livableAreaPercent = React.useMemo(() => {
+    if (baselineHexCount === 0 || visibleHexCount === 0) {
+      // Fall back to heuristic if map hasn't loaded yet
+      const base = 100;
+      const poiPenalty = Math.min(activeFilterCount * 8, 40);
+      const sliderPenalty = sliderMinutes.length
+        ? (sliderMinutes.reduce((acc, minutes) => acc + (MAX_MINUTES - minutes), 0) /
+            (sliderMinutes.length * (MAX_MINUTES - MIN_MINUTES))) * 40
+        : 0;
+      const climatePenalty = Math.min(climateSelections.length * 5, 25);
+      const corridorPenalty = avoidPowerLines ? 6 : 0;
+      const politicsPenalty = politicalLeanRange
+        ? (1 - (Math.max(0, politicalLeanRange[1] - politicalLeanRange[0]) / 4)) * 18
+        : 0;
+      const deduction = poiPenalty + sliderPenalty + climatePenalty + corridorPenalty + politicsPenalty;
+      const raw = base - deduction;
+      return Math.max(1, Math.min(100, Math.round(raw)));
+    }
+    
+    // Use actual hex counts from map
+    const percent = (visibleHexCount / baselineHexCount) * 100;
+    return Math.max(0, Math.min(100, Math.round(percent)));
+  }, [
+    baselineHexCount,
+    visibleHexCount,
     activeFilterCount,
     sliderMinutes,
     climateSelections.length,
