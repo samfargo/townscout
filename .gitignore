@@ -34,6 +34,11 @@ wheels/
 *.swo
 .DS_Store
 
+# macOS metadata files
+._*
+.AppleDouble
+.LSOverride
+
 # Project specific
 data/osm/*.pbf
 data/osm/cache/*.parquet
