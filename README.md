@@ -170,7 +170,7 @@ For computationally expensive steps like `d_anchor_category`, you can offload to
 make categories_remote
 ```
 
-This orchestrator script (`scripts/run_categories_remote.sh`):
+This orchestrator script (`scripts/run_remote.sh`):
 - Packages your local repo with `git archive HEAD` and uploads to GCS
 - Spins up an ephemeral c4d-highcpu-32 VM (32 cores, 200GB disk)
 - Runs the full setup: installs dependencies, builds Rust native extensions, downloads data

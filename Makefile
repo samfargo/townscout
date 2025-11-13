@@ -27,7 +27,7 @@ BOOT_DISK_TYPE=$(BOOT_DISK_TYPE) \
 IMAGE_FAMILY=$(IMAGE_FAMILY) \
 IMAGE_PROJECT=$(IMAGE_PROJECT) \
 SCOPES="$(SCOPES)" \
-./scripts/run_categories_remote.sh
+./scripts/run_remote.sh
 endef
 
 # Tuning knobs
@@ -288,7 +288,8 @@ tiles/t_hex_r8_walk.pmtiles: tiles/us_r8_walk.geojson
 all:  ## Run the full data pipeline (tiles + D_anchor)
 	@set -e; \
 	START_TIME=$$(date +%s); \
-	$(MAKE) tiles d_anchor_category d_anchor_brand; \
+	$(MAKE) download pois anchors minutes power_corridors climate; \
+	$(MAKE) merge geojson tiles d_anchor_category d_anchor_brand; \
 	END_TIME=$$(date +%s); \
 	ELAPSED=$$(($$END_TIME - $$START_TIME)); \
 	HOURS=$$(($$ELAPSED / 3600)); \

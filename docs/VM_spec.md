@@ -20,7 +20,7 @@ When you run `make categories_remote` (categories only) or `make pipeline_remote
 5. `gsutil rsync` results into the local `data/categories_results/<RUN_ID>` (and, if running the full pipeline, fan the outputs back into the main `data/` directories).
 6. Leave the VM stopped so it is ready for the next run—no create/delete churn.
 
-Everything is orchestrated by `scripts/run_categories_remote.sh`, which the Makefile target (`categories_remote` or `pipeline_remote`) invokes.
+Everything is orchestrated by `scripts/run_remote.sh`, which the Makefile target (`categories_remote` or `pipeline_remote`) invokes.
 
 ---
 
@@ -91,7 +91,7 @@ categories_remote:
 	ZONE=$(ZONE) \
 	INSTANCE_NAME=$(INSTANCE_NAME) \
 	BUCKET=$(BUCKET) \
-	./scripts/run_categories_remote.sh
+	./scripts/run_remote.sh
 
 .PHONY: pipeline_remote
 pipeline_remote:
@@ -100,12 +100,12 @@ pipeline_remote:
 	ZONE=$(ZONE) \
 	INSTANCE_NAME=$(INSTANCE_NAME) \
 	BUCKET=$(BUCKET) \
-	./scripts/run_categories_remote.sh
+	./scripts/run_remote.sh
 ```
 
 `categories_remote` runs just the expensive D_anchor categories. `pipeline_remote` flips a single flag (`TARGET=all`) so the VM builds the entire graph/anchoring/minutes/tiles/D_anchor chain. Both targets now point at a fixed VM (`INSTANCE_NAME`) that remains stopped between runs.
 
-### 2.2 Orchestrator (`scripts/run_categories_remote.sh`)
+### 2.2 Orchestrator (`scripts/run_remote.sh`)
 
 Key behavior (trimmed shell):
 
@@ -217,7 +217,7 @@ Feel free to add logging, Slack hooks, etc.
 
 Those exclusions line up with the generated directories called out in `docs/ARCHITECTURE_OVERVIEW.md` and `README.md` (`data/`, `tiles/`, `state_tiles/`, `out/`) and the Makefile targets that recreate them (`anchors`, `minutes`, `d_anchor_*`, etc.), so the tarball contains only the source + configs the VM actually needs.
 
-### 2.3 Troubleshooting `run_categories_remote.sh`
+### 2.3 Troubleshooting `run_remote.sh`
 
 If the polling loop never sees `TERMINATED` or the startup script exits early, use these quick checks before forcing a rebuild or manual intervention:
 
@@ -233,7 +233,7 @@ If the polling loop never sees `TERMINATED` or the startup script exits early, u
 The snippet above automatically tails the serial console (port 1) after the VM is started, so you immediately see the remote `make` output in the same terminal that invoked `make categories_remote` **or** `make pipeline_remote`. A few related tricks:
 
 - **Serial console streaming:** `gcloud compute instances tail-serial-port-output "${INSTANCE_NAME}" --zone "${ZONE}" --monitor` mirrors the console you would see during a comparable local `make` run while also capturing startup-script output.
-- **Local replay:** Because `run_categories_remote.sh` now tees that stream into `logs/remote_runs/<RUN_ID>-serial.log`, you can re-run `less +F logs/remote_runs/<RUN_ID>-serial.log` to revisit the exact boot you just kicked off.
+- **Local replay:** Because `run_remote.sh` now tees that stream into `logs/remote_runs/<RUN_ID>-serial.log`, you can re-run `less +F logs/remote_runs/<RUN_ID>-serial.log` to revisit the exact boot you just kicked off.
 - **SSH + tail:** Once the instance is up, run `gcloud compute ssh "${INSTANCE_NAME}" --zone "${ZONE}" --command "cd /opt/vicinity/vicinity && tail -f build.log"` to watch the pipeline log file (assuming the startup script pipes `make ... |& tee build.log`, which it already relies on when uploading results). Replace `build.log` with `/var/log/syslog` if you need system-level messages.
 - **Ad-hoc commands:** Use `gcloud compute ssh` without `--command` to open an interactive shell and run any other diagnostics (`htop`, `tail -f data/d_anchor_category/*.log`, etc.). Exit once satisfied; the remote make continues unattended.
 

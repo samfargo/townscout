@@ -280,10 +280,10 @@ For compute-intensive pipeline steps (D_anchor category/brand computation), vici
 
 ### Architecture
 
-The remote execution system (`scripts/run_categories_remote.sh`) provides ephemeral compute infrastructure:
+The remote execution system (`scripts/run_remote.sh`) provides ephemeral compute infrastructure:
 
 **Components:**
-- **Orchestrator script** (`scripts/run_categories_remote.sh`) - Manages VM lifecycle, artifact packaging, and result syncing
+- **Orchestrator script** (`scripts/run_remote.sh`) - Manages VM lifecycle, artifact packaging, and result syncing
 - **Startup script** (`scripts/startup_categories_vm.sh`) - Provisions VM environment and executes pipeline
 - **GCS bucket** - Stores source tarballs and results
 - **Ephemeral VM** - High-core-count instance (default: c4d-highcpu-32) that auto-terminates after job completion
