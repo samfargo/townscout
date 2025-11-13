@@ -75,7 +75,8 @@ dump.rdb
 vicinity_native/target/debug
 vicinity_native/target/release
 *.npy
-*.tif
+# Allow climate data TIFF files
+!data/climate/**/*.tif
 
 # Large generated JSON files (exclude, but allow taxonomy/config)
 state_tiles/*.json
