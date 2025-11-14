@@ -162,6 +162,11 @@ A vulnerability in the graph cache loading mechanism allowed stale CSR graphs to
 make pois anchors minutes climate power_corridors d_anchor_category d_anchor_brand merge tiles
 ```
 
+### Vector Basemap (Planetiler)
+- `make vector_basemap` wraps `scripts/build_vector_basemap.sh` and `planetiler-openmaptiles.jar` to produce `tiles/vicinity_basemap.pmtiles`.
+- Override `PLANETILER_OSM`, `PLANETILER_AREA`, `PLANETILER_HEAP`, or `PLANETILER_OUTPUT` inline when building (e.g., `PLANETILER_OSM=data/osm/massachusetts.osm.pbf PLANETILER_AREA=us/massachusetts make vector_basemap`).
+- See `docs/vector_basemap_plan.md` for prerequisites (JDK 21+, disk/memory guidance) and styling workflows once the PMTiles file is generated.
+
 ### Remote Compute Offloading (GCP)
 
 For computationally expensive steps like `d_anchor_category`, you can offload to Google Cloud Platform:
