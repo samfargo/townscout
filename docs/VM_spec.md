@@ -28,50 +28,15 @@ Everything is orchestrated by `scripts/run_remote.sh`, which the Makefile target
 
 We assume a `c4d-highcpu-32` instance already exists in your project (e.g., `vicinity-batch` in `us-east4-c`) but is currently stopped. The orchestrator will **reuse** that VM on every run, so the only bootstrap work is wiring up the metadata, buckets, and startup script once.
 
-1. **Confirm the reusable VM is stopped:**
-   ```bash
-   gcloud compute instances list --filter="name=vicinity-batch"
-   # Optional: start/stop it manually outside the orchestrator
-   gcloud compute instances start vicinity-batch --zone=us-east4-c
-   gcloud compute instances stop vicinity-batch --zone=us-east4-c
-   ```
-   If you plan to keep long-lived state on this machine, document any changes so you can recreate them if the disk is wiped.
+1. **Confirm the reusable VM is stopped:** Use the GCE console or the equivalent `gcloud compute` calls to verify the instance is TERMINATED, optionally starting and stopping it to be sure the lifecycle behaves. Document any stateful tweaks so they can be recreated if the disk ever needs to be rebuilt.
 
-2. **Attach the startup script once:**
-   ```bash
-   gcloud compute instances add-metadata vicinity-batch \
-     --zone us-east4-c \
-     --metadata-from-file startup-script=scripts/startup_categories_vm.sh
-   ```
-   GCE runs startup scripts on *every* boot, so the same script will execute each time the orchestrator starts the VM.
+2. **Attach the startup script once:** Add `scripts/startup_categories_vm.sh` as instance metadata so it runs automatically on every boot that the orchestrator triggers.
 
-3. **Bucket (regional, near the VM):**
-   ```bash
-   export BUCKET=vicinity-batch-$USER
-   gsutil mb -l us-east4 gs://$BUCKET/
-   ```
-   Use prefixes:
-   - `gs://$BUCKET/src/` – uploaded source tarballs.
-   - `gs://$BUCKET/results/` – VM outputs per run (`<RUN_ID>/...`).
+3. **Bucket (regional, near the VM):** Create a regional bucket in `us-east4` (for example `vicinity-batch-$USER`) with `src/` reserved for uploaded tarballs and `results/` reserved for per-run artifacts.
 
-4. **Service account for the VM:**
-   ```bash
-   gcloud iam service-accounts create vicinity-batch-sa \
-     --display-name="Vicinity batch jobs"
+4. **Service account for the VM:** Create a dedicated service account such as `vicinity-batch-sa` and grant Storage Admin so the VM can download source and upload results; only add extra permissions if the workload uses additional APIs.
 
-   gcloud projects add-iam-policy-binding $PROJECT_ID \
-     --member="serviceAccount:vicinity-batch-sa@$PROJECT_ID.iam.gserviceaccount.com" \
-     --role="roles/storage.admin"
-   ```
-   Storage Admin is enough for “pull code / push results”. Add more roles only if the job touches other APIs.
-
-5. **Local gcloud defaults (run once per workstation):**
-   ```bash
-   gcloud auth login
-   gcloud config set project $PROJECT_ID
-   gcloud config set compute/region us-east4
-   gcloud config set compute/zone us-east4-b
-   ```
+5. **Local gcloud defaults (run once per workstation):** Authenticate, then set project, region, and zone defaults so the helper script can rely on consistent settings.
 
 ---
 
@@ -79,139 +44,17 @@ We assume a `c4d-highcpu-32` instance already exists in your project (e.g., `vic
 
 ### 2.1 Makefile fragment
 
-```make
-PROJECT_ID    ?= your-project-id
-ZONE          ?= us-east4-b
-INSTANCE_NAME ?= vicinity-batch
-BUCKET        ?= vicinity-batch-$(USER)
-.PHONY: categories_remote
-categories_remote:
-	TARGET=d_anchor_category \
-	PROJECT_ID=$(PROJECT_ID) \
-	ZONE=$(ZONE) \
-	INSTANCE_NAME=$(INSTANCE_NAME) \
-	BUCKET=$(BUCKET) \
-	./scripts/run_remote.sh
-
-.PHONY: pipeline_remote
-pipeline_remote:
-	TARGET=all \
-	PROJECT_ID=$(PROJECT_ID) \
-	ZONE=$(ZONE) \
-	INSTANCE_NAME=$(INSTANCE_NAME) \
-	BUCKET=$(BUCKET) \
-	./scripts/run_remote.sh
-```
-
-`categories_remote` runs just the expensive D_anchor categories. `pipeline_remote` flips a single flag (`TARGET=all`) so the VM builds the entire graph/anchoring/minutes/tiles/D_anchor chain. Both targets now point at a fixed VM (`INSTANCE_NAME`) that remains stopped between runs.
+The Makefile exposes two orchestration targets. `categories_remote` sets `TARGET=d_anchor_category`, while `pipeline_remote` sets `TARGET=all`. Both targets pass the same core variables—`PROJECT_ID`, `ZONE`, `INSTANCE_NAME`, and `BUCKET`—into `scripts/run_remote.sh`, ensuring every run reuses the same stopped VM and bucket without recreating infrastructure.
 
 ### 2.2 Orchestrator (`scripts/run_remote.sh`)
 
-Key behavior (trimmed shell):
+Key behavior:
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-log() {
-  printf '[orchestrator][%s] %s\n' "$(date -Is)" "$*"
-}
-
-: "${PROJECT_ID:?set PROJECT_ID}"
-: "${ZONE:?set ZONE}"
-: "${INSTANCE_NAME:?set INSTANCE_NAME}"
-: "${BUCKET:?set BUCKET}"
-: "${TARGET:=d_anchor_category}"
-
-RUN_ID="$(date +%Y%m%d-%H%M%S)"
-SRC_TARBALL="vicinity-src-${RUN_ID}.tar.gz"
-SRC_PATH="gs://${BUCKET}/src/${SRC_TARBALL}"
-RESULTS_PREFIX="gs://${BUCKET}/results/${RUN_ID}"
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-LOG_ROOT="${REPO_ROOT}/logs/remote_runs"
-SERIAL_LOG="${LOG_ROOT}/${RUN_ID}-serial.log"
-
-mkdir -p "${LOG_ROOT}"
-
-log "run=${RUN_ID} target=${TARGET} instance=${INSTANCE_NAME} zone=${ZONE} bucket=${BUCKET}"
-log "packaging HEAD $(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
-
-# Ship only tracked files; this keeps the VM build clean and reproducible.
-git -C "${REPO_ROOT}" archive --format=tar.gz --output "/tmp/${SRC_TARBALL}" HEAD
-log "src tarball size $(du -h "/tmp/${SRC_TARBALL}" | cut -f1) → ${SRC_PATH}"
-time gsutil cp "/tmp/${SRC_TARBALL}" "${SRC_PATH}"
-# If you truly need untracked overrides (rare), swap back to tar + --exclude guards.
-
-# Refresh metadata so the next boot picks up the new run parameters.
-gcloud compute instances add-metadata "${INSTANCE_NAME}" \
-  --project "${PROJECT_ID}" \
-  --zone "${ZONE}" \
-  --metadata \
-    RUN_ID="${RUN_ID}",\
-    BUCKET="${BUCKET}",\
-    SRC_TARBALL="${SRC_TARBALL}",\
-    RESULTS_PREFIX="${RESULTS_PREFIX}",\
-    TARGET="${TARGET}"
-log "metadata pushed for ${INSTANCE_NAME}: RUN_ID=${RUN_ID} TARGET=${TARGET}"
-
-# Start the reusable worker. The attached startup script runs on every boot.
-gcloud compute instances start "${INSTANCE_NAME}" \
-  --project "${PROJECT_ID}" \
-  --zone "${ZONE}"
-
-# Stream the VM console directly into this terminal so the remote build looks like a local run.
-gcloud compute instances tail-serial-port-output "${INSTANCE_NAME}" \
-  --zone "${ZONE}" \
-  --monitor \
-  --port 1 \
-  |& awk '{ printf "[serial][%s] %s\n", strftime("%FT%TZ"), $0 }' \
-  | tee "${SERIAL_LOG}" &
-LOG_TAIL_PID=$!
-cleanup() {
-  if [[ -n "${LOG_TAIL_PID:-}" ]]; then
-    kill "${LOG_TAIL_PID}" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup EXIT
-
-log "waiting for ${INSTANCE_NAME} to return to TERMINATED (serial log → ${SERIAL_LOG})"
-while true; do
-  STATUS="$(gcloud compute instances describe "${INSTANCE_NAME}" --zone "${ZONE}" \
-    --format='value(status)')"
-  [[ "${STATUS}" == "TERMINATED" ]] && break
-  log "status=${STATUS} (sleeping 30s)"
-  sleep 30
-done
-
-LOCAL_RESULTS_DIR="${REPO_ROOT}/data/categories_results/${RUN_ID}"
-mkdir -p "${LOCAL_RESULTS_DIR}"
-log "syncing results → ${LOCAL_RESULTS_DIR}"
-time gsutil -m rsync -r "${RESULTS_PREFIX}" "${LOCAL_RESULTS_DIR}"
-
-rm -rf "${REPO_ROOT}/data/categories_results/latest"
-cp -R "${LOCAL_RESULTS_DIR}" "${REPO_ROOT}/data/categories_results/latest"
-
-# Optional local fan-out: for full pipeline runs, mirror the remote outputs into the
-# canonical working directories so downstream targets see fresh data.
-if [[ "${TARGET}" == "all" ]]; then
-  rsync -a "${LOCAL_RESULTS_DIR}/data/anchors/" "${REPO_ROOT}/data/anchors/"
-  rsync -a "${LOCAL_RESULTS_DIR}/data/minutes/" "${REPO_ROOT}/data/minutes/"
-  rsync -a "${LOCAL_RESULTS_DIR}/tiles/" "${REPO_ROOT}/tiles/"
-  rsync -a "${LOCAL_RESULTS_DIR}/data/d_anchor_category/" "${REPO_ROOT}/data/d_anchor_category/"
-  rsync -a "${LOCAL_RESULTS_DIR}/data/d_anchor_brand/" "${REPO_ROOT}/data/d_anchor_brand/"
-fi
-
-if [[ -f "${LOCAL_RESULTS_DIR}/build.log" ]]; then
-  log "tail of remote build.log"
-  tail -n 40 "${LOCAL_RESULTS_DIR}/build.log"
-fi
-
-log "remote batch complete → ${LOCAL_RESULTS_DIR} (serial log at ${SERIAL_LOG})"
-# VM stays in TERMINATED state, ready for the next run.
-log "done"
-```
-
-The new `log()` helper keeps every stage timestamped locally, while each serial console stream is mirrored into `logs/remote_runs/<RUN_ID>-serial.log` for after-the-fact debugging. Piping heavy operations (`gsutil cp`, `gsutil rsync`) through `time` makes it obvious how long uploads/downloads consumed and prevents “silent” terminals during multi-minute transfers. Tailing the fetched `build.log` right away also surfaces remote failures without hunting through directories.
+- Validates the required environment variables, stamps each run with a unique `RUN_ID`, and writes logs under `logs/remote_runs/<RUN_ID>-serial.log`.
+- Archives tracked files only, uploads the tarball to `gs://$BUCKET/src/`, and updates instance metadata with the run parameters so the next boot knows what to execute.
+- Starts the reusable VM, tails the serial console in real time, and waits for the instance to return to the TERMINATED state before proceeding.
+- Rsyncs `gs://$BUCKET/results/<RUN_ID>` into `data/categories_results/<RUN_ID>`, refreshes the `latest` symlink/folder, and—when the full pipeline runs—fans outputs back into the canonical local directories.
+- Shows the tail of the remote `build.log` immediately so failures surface without digging through directories.
 
 Feel free to add logging, Slack hooks, etc.
 
@@ -239,153 +82,17 @@ The snippet above automatically tails the serial console (port 1) after the VM i
 
 Each of these commands can run in parallel with `make categories_remote`, giving you local visibility into the remote job without waiting for `TERMINATED`.
 
+Every boot also spawns lightweight telemetry loops (`vmstat`/`mpstat`) whose output is prefixed with `[vmstat]` / `[mpstat]` before being mirrored to the serial console and saved log. That means you automatically capture CPU utilization and `%wa` samples for both `categories_remote` and `pipeline_remote` without opening an SSH session; just search the serial transcript for those tags. `[timer]` lines clock the major phases (apt, pip, Rust build, make target, total runtime) so you can compare runs at a glance. Verbose dependency steps (apt/pip/rustup) are muted from the serial stream; the full transcript is uploaded as `${RESULTS_PREFIX}/startup_detail.log` and pulled down to `data/categories_results/<RUN_ID>/startup_detail.log`.
+
 ---
 
 ## 3. VM Startup Script (`scripts/startup_categories_vm.sh`)
 
-The startup script includes robust error handling to ensure the VM always shuts down, even on failure:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
-header=(-H "Metadata-Flavor: Google")
-
-log() {
-  printf '[startup][%s] %s\n' "$(date -Is)" "$*"
-}
-
-error() {
-  printf '[startup][%s][ERROR] %s\n' "$(date -Is)" "$*" >&2
-}
-
-exec > >(stdbuf -oL awk '{ printf "[startup][%s] %s\n", strftime("%FT%TZ"), $0 }')
-exec 2> >(stdbuf -oL awk '{ printf "[startup][%s][stderr] %s\n", strftime("%FT%TZ"), $0 }' >&2)
-
-# Ensure shutdown always happens, even on error
-EXIT_CODE=0
-cleanup_and_shutdown() {
-  local exit_code=$?
-  if [[ ${exit_code} -ne 0 ]]; then
-    error "Script failed with exit code ${exit_code}"
-    EXIT_CODE=${exit_code}
-    # Upload any logs we have so far
-    if [[ -n "${RESULTS_PREFIX:-}" ]]; then
-      if [[ -f /opt/vicinity/vicinity/build.log ]]; then
-        gsutil -m cp /opt/vicinity/vicinity/build.log "${RESULTS_PREFIX}/build.log" || true
-      fi
-      # Create an error marker file
-      echo "Startup script failed at $(date -Is) with exit code ${exit_code}" > /tmp/startup_error.txt
-      gsutil -m cp /tmp/startup_error.txt "${RESULTS_PREFIX}/startup_error.txt" || true
-    fi
-  fi
-  log "Shutting down VM (exit_code=${EXIT_CODE})"
-  shutdown -h now
-}
-trap cleanup_and_shutdown EXIT
-
-RUN_ID="$(curl "${header[@]}" "${META}/RUN_ID")"
-BUCKET="$(curl "${header[@]}" "${META}/BUCKET")"
-SRC_TARBALL="$(curl "${header[@]}" "${META}/SRC_TARBALL")"
-RESULTS_PREFIX="$(curl "${header[@]}" "${META}/RESULTS_PREFIX")"
-TARGET="$(curl "${header[@]}" "${META}/TARGET")"
-
-log "boot metadata RUN_ID=${RUN_ID} TARGET=${TARGET} SRC=${SRC_TARBALL}"
-
-# Fix any broken package installations from previous runs
-log "Fixing broken packages (if any)..."
-apt-get update -y || {
-  error "apt-get update failed, attempting to fix..."
-  rm -rf /var/lib/apt/lists/*
-  apt-get update -y
-}
-
-# Fix broken dependencies before attempting new installs
-apt-get install -y --fix-broken || true
-apt-get autoremove -y || true
-
-log "Installing required packages..."
-apt-get install -y python3 python3-pip python3-venv git build-essential pkg-config \
-                   libgeos-dev libproj-dev libgdal-dev || {
-  error "Package installation failed, attempting recovery..."
-  # Try to resolve conflicts
-  apt-get install -y --fix-broken
-  # Retry installation
-  apt-get install -y python3 python3-pip python3-venv git build-essential pkg-config \
-                     libgeos-dev libproj-dev libgdal-dev
-}
-
-log "packages installed"
-
-mkdir -p /opt/vicinity && cd /opt/vicinity
-gsutil cp "gs://${BUCKET}/src/${SRC_TARBALL}" .
-tar xzf "${SRC_TARBALL}"
-cd vicinity  # matches repo root inside tarball
-
-log "unpacked source into $(pwd)"
-
-python3 -m venv .venv
-. .venv/bin/activate
-pip install --upgrade pip wheel
-pip install -r requirements.txt
-
-log "venv + python deps ready"
-
-# Build Rust extension once
-log "Building Rust native extension..."
-if ! make native 2>&1 | tee -a build.log; then
-  error "Rust extension build failed"
-  exit 1
-fi
-log "rust extension built"
-
-export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
-# 32 vCPU ≈ 16 physical cores; start with one worker/core and increase only if profiling
-# shows spare capacity (20–24 workers max tends to be the sweet spot).
-export THREADS=1
-export WORKERS=16
-
-if [[ "${TARGET}" == "all" ]]; then
-  log "starting make all"
-  if make all 2>&1 | tee -a build.log; then
-    log "make all completed successfully"
-    log "Uploading results to ${RESULTS_PREFIX}..."
-    gsutil -m rsync -r data/anchors "${RESULTS_PREFIX}/data/anchors" || error "Failed to upload anchors"
-    gsutil -m rsync -r data/minutes "${RESULTS_PREFIX}/data/minutes" || error "Failed to upload minutes"
-    gsutil -m rsync -r tiles "${RESULTS_PREFIX}/tiles" || error "Failed to upload tiles"
-    gsutil -m rsync -r data/d_anchor_category "${RESULTS_PREFIX}/data/d_anchor_category" || error "Failed to upload d_anchor_category"
-    gsutil -m rsync -r data/d_anchor_brand "${RESULTS_PREFIX}/data/d_anchor_brand" || error "Failed to upload d_anchor_brand"
-  else
-    error "make all failed"
-    EXIT_CODE=1
-  fi
-else
-  log "starting make d_anchor_category"
-  if make d_anchor_category 2>&1 | tee -a build.log; then
-    log "make d_anchor_category completed successfully"
-    log "Uploading results to ${RESULTS_PREFIX}..."
-    gsutil -m rsync -r data/d_anchor_category "${RESULTS_PREFIX}/data/d_anchor_category" || error "Failed to upload d_anchor_category"
-  else
-    error "make d_anchor_category failed"
-    EXIT_CODE=1
-  fi
-fi
-
-# Always upload build log (even on failure - handled by trap)
-gsutil -m cp build.log "${RESULTS_PREFIX}/build.log" || true
-log "uploaded build.log to ${RESULTS_PREFIX}"
-
-log "Build process complete (exit_code=${EXIT_CODE})"
-# Trap will handle shutdown
-```
-
-The `exec > >(stdbuf … awk …)` redirection timestamps every line that the startup script emits (apt, pip, make, etc.), so anything mirrored into the serial console—and by extension the local `logs/remote_runs/<RUN_ID>-serial.log`—has clear timing context. The inline `log` calls mark phase boundaries (metadata read, venv ready, make start/finish), which is invaluable when comparing multiple runs.
-
-Notes:
-- `make native` depends on `maturin` via `requirements.txt`; if you move it elsewhere, install explicitly.
-- 200 GB boot disk leaves room for OSM PBFs, parquet outputs, temp files.
-- Startup scripts execute on **every** boot, so updating metadata + starting the instance is enough to kick off a new run.
-- You can bake this into a custom image to avoid apt/venv work each run.
+The startup script is a full bootstrapper: it reads metadata for the current run, timestamps every line of output, fixes broken apt state if needed, installs system packages, downloads the uploaded tarball into `/opt/vicinity`, recreates the virtual environment, installs Python dependencies, builds the Rust extension, and runs either `make all` or `make d_anchor_category`. Single-threaded math libraries keep resource usage predictable, while environment variables (notably `WORKERS`) scale with the VM size. Each major phase logs explicit markers so the serial console and saved logs show clear boundaries, and every run uploads its `build.log` plus the relevant result directories before powering off. Notes:
+- `make native` depends on `maturin` from `requirements.txt`, so keep that requirement in sync if the build location changes.
+- A 200 GB boot disk leaves headroom for OSM inputs, intermediate parquet files, and temporary artifacts.
+- Because startup scripts execute on every boot, updating metadata + starting the instance is all it takes to kick off a new run.
+- Consider baking the dependencies into a custom image to avoid repeating apt/venv work if boot time ever becomes painful.
 
 ### 3.1 Error Handling
 
@@ -418,10 +125,20 @@ When a failure occurs:
 | ------- | ---- | --- | ---------------------------------- | --------------------- |
 | MacBook Pro M1 Pro | 8 | 16 GiB | ~60 h | sunk cost |
 | `c4d-highcpu-32`    | 32 | 60 GiB | ~17–18 h | ~$19/run |
+| `c4d-highcpu-96`    | 96 | 180 GiB | ~8–10 h  | ~$56/run |
 
 \* Computed from on-demand pricing + 18 h runtime.
 
-Set `WORKERS=16` and keep per-worker `THREADS=1` so each ProcessPool worker runs a single SSSP without oversubscribing. Monitor with `htop` and only raise `WORKERS` if you see headroom (20–24 workers is usually the upper bound before hyperthreads stop helping).
+Tuning guidance for high-core runs:
+- Keep `THREADS=1` (enforced via `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_{NUM,MAX}_THREADS`) so each worker drives a single SSSP.
+- Start with `WORKERS = ⌊vCPU / 3⌋` (32 on c4d-highcpu-96). This keeps plenty of memory headroom (~2.5–3 GiB RSS per worker while writing parquet).
+- During `make d_anchor_category`, monitor:
+  - `htop` (if you SSH in) or the `[mpstat]` stream in the serial log for overall CPU% (target ≥90 % when CPU-bound),
+  - `[vmstat]` rows (emitted by the scripted `vmstat 1`) for `wa` (keep <5–10 %; higher means PD throughput is throttling),
+  - `free -h` / `ps` for remaining RAM (stop if <20–25 % free).
+- If the telemetry firehose is too chatty, set `TELEMETRY_INTERVAL` (Makefile/run_remote knob) to a higher value so the background `vmstat`/`mpstat` samplers emit less frequently.
+- If CPU <70 % and `wa` stays low, rerun with +4–8 workers; stop increasing once `wa` spikes or memory drops below the safe headroom.
+- Record wall-clock runtime, average CPU%, and average `wa` from each run (serial logs already timestamp every phase) so speedups are measurable—expect ~1.8–2.1× vs the c4d-highcpu-32 baseline when I/O keeps up.
 
 ---
 

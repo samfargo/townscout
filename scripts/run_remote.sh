@@ -15,12 +15,15 @@ log() {
 : "${BUCKET:?set BUCKET}"
 : "${TARGET:=d_anchor_category}"
 : "${SERVICE_ACCOUNT:?set SERVICE_ACCOUNT}"
-: "${MACHINE_TYPE:=c4d-highcpu-32}"
-: "${BOOT_DISK_SIZE_GB:=200}"
+: "${MACHINE_TYPE:=c4d-highcpu-96}"
+: "${BOOT_DISK_SIZE_GB:=500}"
 : "${BOOT_DISK_TYPE:=pd-balanced}"
 : "${IMAGE_FAMILY:=debian-12}"
 : "${IMAGE_PROJECT:=debian-cloud}"
 : "${SCOPES:=https://www.googleapis.com/auth/devstorage.read_write,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write}"
+: "${THREADS:=1}"
+: "${WORKERS:=32}"
+: "${TELEMETRY_INTERVAL:=5}"
 
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 SRC_TARBALL="vicinity-src-${RUN_ID}.tar.gz"
@@ -30,6 +33,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 LOG_ROOT="${REPO_ROOT}/logs/remote_runs"
 SERIAL_LOG="${LOG_ROOT}/${RUN_ID}-serial.log"
 STARTUP_SCRIPT_PATH="${STARTUP_SCRIPT_PATH:-${REPO_ROOT}/scripts/startup_categories_vm.sh}"
+RUN_START_TIME="$(date +%s)"
 
 mkdir -p "${LOG_ROOT}"
 
@@ -103,7 +107,7 @@ if [[ "${instance_exists}" -eq 1 ]]; then
     --quiet
 fi
 
-log "creating ephemeral instance ${INSTANCE_NAME} machine=${MACHINE_TYPE} disk=${BOOT_DISK_SIZE_GB}GB type=${BOOT_DISK_TYPE}"
+log "creating ephemeral instance ${INSTANCE_NAME} machine=${MACHINE_TYPE} disk=${BOOT_DISK_SIZE_GB}GB type=${BOOT_DISK_TYPE} workers=${WORKERS} threads=${THREADS} telemetry_interval=${TELEMETRY_INTERVAL}s"
 gcloud compute instances create "${INSTANCE_NAME}" \
   --project "${PROJECT_ID}" \
   --zone "${ZONE}" \
@@ -114,7 +118,7 @@ gcloud compute instances create "${INSTANCE_NAME}" \
   --image-project "${IMAGE_PROJECT}" \
   --boot-disk-size "${BOOT_DISK_SIZE_GB}" \
   --boot-disk-type "${BOOT_DISK_TYPE}" \
-  --metadata RUN_ID="${RUN_ID}",BUCKET="${BUCKET}",SRC_TARBALL="${SRC_TARBALL}",RESULTS_PREFIX="${RESULTS_PREFIX}",TARGET="${TARGET}" \
+  --metadata RUN_ID="${RUN_ID}",BUCKET="${BUCKET}",SRC_TARBALL="${SRC_TARBALL}",RESULTS_PREFIX="${RESULTS_PREFIX}",TARGET="${TARGET}",THREADS="${THREADS}",WORKERS="${WORKERS}",TELEMETRY_INTERVAL="${TELEMETRY_INTERVAL}" \
   --metadata-from-file startup-script="${STARTUP_SCRIPT_PATH}"
 log "instance ${INSTANCE_NAME} created"
 
@@ -142,7 +146,7 @@ serial_tail() {
       continue
     fi
     local end_offset
-    end_offset="$(printf '%s\n' "${raw}" | sed -n 's/^end: \(.*\)/\1/p' | head -n1)"
+    end_offset="$(printf '%s\n' "${raw}" | sed -n 's/^Specify --start=\(.*\) in the next.*/\1/p' | head -n1)"
     if [[ -z "${end_offset}" ]]; then
       sleep 10
       continue
@@ -233,4 +237,7 @@ fi
 
 log "✅ remote batch complete → ${LOCAL_RESULTS_DIR} (serial log at ${SERIAL_LOG})"
 delete_instance
+RUN_END_TIME="$(date +%s)"
+RUN_ELAPSED=$((RUN_END_TIME - RUN_START_TIME))
+log "run ${RUN_ID} finished in ${RUN_ELAPSED}s"
 log "done"

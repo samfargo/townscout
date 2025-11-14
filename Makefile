@@ -7,8 +7,8 @@ ZONE          ?= us-east4-c
 INSTANCE_NAME ?= first-instance
 BUCKET        ?= vicinity-batch-psyntel
 SERVICE_ACCOUNT ?= 334483861969-compute@developer.gserviceaccount.com
-MACHINE_TYPE    ?= c4d-highcpu-32
-BOOT_DISK_SIZE_GB ?= 200
+MACHINE_TYPE    ?= c4d-highcpu-96
+BOOT_DISK_SIZE_GB ?= 500
 BOOT_DISK_TYPE ?= hyperdisk-balanced
 IMAGE_FAMILY   ?= debian-12
 IMAGE_PROJECT  ?= debian-cloud
@@ -27,11 +27,16 @@ BOOT_DISK_TYPE=$(BOOT_DISK_TYPE) \
 IMAGE_FAMILY=$(IMAGE_FAMILY) \
 IMAGE_PROJECT=$(IMAGE_PROJECT) \
 SCOPES="$(SCOPES)" \
+THREADS=$(THREADS) \
+WORKERS=$(WORKERS) \
+TELEMETRY_INTERVAL=$(TELEMETRY_INTERVAL) \
 ./scripts/run_remote.sh
 endef
 
 # Tuning knobs
-THREADS?=8
+THREADS?=1
+WORKERS?=8
+TELEMETRY_INTERVAL?=5
 CUTOFF?=30
 OVERFLOW?=60
 K_BEST?=20
@@ -176,6 +181,7 @@ d_anchor_brand: $(PBF_FILES) anchors | build/native.stamp ## 3.6 Compute anchor-
 	    --anchors data/anchors/$$S\_drive_sites.parquet \
 	    --mode drive \
 	    --threads $(THREADS) \
+	    --workers $(WORKERS) \
 	    --cutoff $(CUTOFF) \
 	    --overflow-cutoff $(OVERFLOW) \
 	    $$force_flag \
@@ -215,6 +221,7 @@ d_anchor_category: $(PBF_FILES) anchors | build/native.stamp ## 3.6b Compute anc
 	    --anchors data/anchors/$$S\_drive_sites.parquet \
 	    --mode drive \
 	    --threads $(THREADS) \
+	    --workers $(WORKERS) \
 	    --cutoff $(CUTOFF) \
 	    --overflow-cutoff $(OVERFLOW) \
 	    --prune \

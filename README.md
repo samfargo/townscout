@@ -172,9 +172,9 @@ make categories_remote
 
 This orchestrator script (`scripts/run_remote.sh`):
 - Packages your local repo with `git archive HEAD` and uploads to GCS
-- Spins up an ephemeral c4d-highcpu-32 VM (32 cores, 200GB disk)
+- Spins up an ephemeral c4d-highcpu-96 VM (96 cores, 500 GB disk by default)
 - Runs the full setup: installs dependencies, builds Rust native extensions, downloads data
-- Executes `make d_anchor_category` on the VM (~15-30 minutes for Massachusetts)
+- Executes `make d_anchor_category` on the VM (~8–10 hours for Massachusetts when CPU-bound)
 - Syncs results back to `data/categories_results/<timestamp>/`
 - Automatically terminates the VM and cleans up
 
@@ -189,8 +189,24 @@ This orchestrator script (`scripts/run_remote.sh`):
 - Serial console logs: `logs/remote_runs/<timestamp>-serial.log`
 - Build logs: `data/categories_results/<timestamp>/build.log`
 - Watch progress: `tail -f logs/remote_runs/<timestamp>-serial.log`
+- Telemetry: the startup script runs `vmstat`/`mpstat` at `TELEMETRY_INTERVAL` seconds (default 5s) in the background, prefixing their rows with `[vmstat]` / `[mpstat]` so CPU utilization and `%wa` are captured in the serial log for both `categories_remote` and `pipeline_remote`.
+- Phase timings: look for `[timer] ...` entries in the serial log to see how long apt, pip, Rust build, and the `make` target took end-to-end.
+- Verbose apt/pip/rustup output is muted from the serial stream; check `data/categories_results/<timestamp>/startup_detail.log` (synced from `${RESULTS_PREFIX}/startup_detail.log`) for the full transcript if a dependency step fails.
 
 The VM automatically handles all dependencies (Python packages, Rust toolchain, DuckDB CLI) and ensures reproducible builds. Results are downloaded automatically when the job completes.
+
+**Recommended 96-vCPU config**
+- `MACHINE_TYPE=c4d-highcpu-96`
+- `BOOT_DISK_SIZE_GB=500` (use 1 TB if you need >300 MB/s sustained disk throughput)
+- `THREADS=1` with `OMP_NUM_THREADS/MKL_NUM_THREADS/OPENBLAS_NUM_THREADS/NUMEXPR_{NUM,MAX}_THREADS=1` (already enforced by the startup script)
+- `WORKERS=32` (≈ vCPU/3) to keep each ProcessPool worker single-threaded while filling the box
+- `TELEMETRY_INTERVAL=5` (seconds between `vmstat`/`mpstat` samples; raise this if you want fewer log lines)
+
+**Worker tuning checklist**
+1. Kick off `make categories_remote` (defaults above are pre-wired) and open `htop`, `vmstat 1`, and `free -h` via the serial log.
+2. Expect CPU utilization ≥90 % and `wa` <5 % when the run is CPU-bound. If CPU drops below ~70 % and `wa` stays low, terminate the VM and rerun with `WORKERS` bumped by 4–8.
+3. Stop increasing `WORKERS` when either `wa` spikes (disk-throttled) or free memory falls under ~25 % headroom (each worker peaks at ~2.5–3 GiB RSS while writing parquet shards).
+4. Capture wall-clock runtime, average CPU%, and average `wa` from each run (the serial log already timestamps every phase) so you can compare c4d-highcpu-32 / WORKERS=12 runs (~17–18 h for MA) against the c4d-highcpu-96 / WORKERS=32 runs (~8–10 h). A 1.8–2.1× speed-up is typical when the workload stays CPU-bound.
 
 ### Category & Brand Scope (Stay Focused)
 - **Categories**: edit `data/taxonomy/POI_category_registry.csv` (columns: `category_id`, `numeric_id`, `display_name`). Any category in the CSV is automatically allowlisted for anchors and precomputation. Numeric IDs are explicit to prevent drift.
