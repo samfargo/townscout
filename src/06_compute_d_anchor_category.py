@@ -24,13 +24,13 @@ Usage:
 """
 from __future__ import annotations
 import argparse
-import json
+import io
 import os
 import sys
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 # Ensure taxonomy helpers are importable when script is run via Make
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +51,7 @@ from d_anchor_common import (
     build_graph_context,
     execute_tasks,
     write_empty_shard,
-    write_shard,
+    build_shard_frame,
     get_entity_limits,
 )
 def _normalize_label(s: str) -> str:
@@ -68,69 +68,73 @@ _CATEGORY_SCHEMA: Dict[str, pl.DataType] = {
 }
 
 
-def _vectorized_write(
-    out_path: str,
-    category_id: int,
-    category_label: str,
-    mode_code: int,
-    time_s: np.ndarray,
-    snapshot_ts: str,
-) -> int:
-    # Get limits for this category
-    limits = get_entity_limits("category", category_label)
-    max_seconds = limits["max_minutes"] * 60
-    top_k = limits["top_k"]
-    
-    return write_shard(
-        out_path=out_path,
-        time_s=time_s,
-        snapshot_ts=snapshot_ts,
-        schema=_CATEGORY_SCHEMA,
-        dedupe_keys=["anchor_id", "category_id", "mode", "snapshot_ts"],
-        extra_builder=lambda size: {
-            "category_id": np.full(size, category_id, dtype=np.uint32),
-            "mode": np.full(size, mode_code, dtype=np.uint8),
-        },
-        top_k=top_k,
-        max_seconds=max_seconds,
-    )
-
-
 def _write_empty_category_shard(out_path: str) -> None:
     write_empty_shard(out_path, _CATEGORY_SCHEMA)
 
 
-def _compute_one_category(
-    task: Tuple[int, str, int, np.ndarray, np.ndarray, str]
-) -> Tuple[int, str]:
-    """Worker entrypoint for one category.
-    Args tuple = (cid, label, mode_code, src, targets_idx, out_path)
-    Returns (cid, out_path)
-    """
-    cid, label, mode_code, src, targets_idx, out_path = task
+def _split_sources(src: np.ndarray, desired_shards: int) -> List[np.ndarray]:
+    if src.size == 0:
+        return []
+    shards = max(1, min(int(desired_shards), int(src.size)))
+    chunks = np.array_split(src, shards)
+    return [chunk.astype(np.int32, copy=False) for chunk in chunks if chunk.size > 0]
 
-    # Get limits for this category
-    limits = get_entity_limits("category", label)
-    cutoff_primary_s = limits["max_minutes"] * 60
-    # Use same cutoff for overflow (no two-pass strategy yet)
+
+def _encode_frame(df: pl.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    df.write_ipc(buf)
+    return buf.getvalue()
+
+
+def _decode_frame(payload: bytes) -> pl.DataFrame:
+    return pl.read_ipc(io.BytesIO(payload))
+
+
+def _compute_category_shard(
+    task: Tuple[int, str, int, np.ndarray, np.ndarray, int, int, int, int]
+) -> Tuple[int, str, int, int, bytes, int]:
+    (
+        cid,
+        label,
+        mode_code,
+        src,
+        targets_idx,
+        shard_idx,
+        shard_count,
+        cutoff_primary_s,
+        top_k,
+    ) = task
+
     cutoff_overflow_s = cutoff_primary_s
 
     task_start = time.perf_counter()
-    # Compute SSSP for this category's sources
     sssp_start = time.perf_counter()
     time_s = compute_times(src, targets_idx, cutoff_primary_s, cutoff_overflow_s)
     sssp_elapsed = time.perf_counter() - sssp_start
-    # Write parquet using vectorized path
-    write_start = time.perf_counter()
-    rows = _vectorized_write(out_path, cid, label, mode_code, time_s, SNAPSHOT_TS)
-    write_elapsed = time.perf_counter() - write_start
-    total_elapsed = time.perf_counter() - task_start
-    print(
-        f"[ok] Wrote D_anchor category id={cid}: {out_path} rows={rows} "
-        f"sssp={sssp_elapsed:.2f}s write={write_elapsed:.2f}s total={total_elapsed:.2f}s "
-        f"max_minutes={limits['max_minutes']} top_k={limits['top_k']}"
+
+    encode_start = time.perf_counter()
+    df = build_shard_frame(
+        time_s=time_s,
+        snapshot_ts=SNAPSHOT_TS,
+        schema=_CATEGORY_SCHEMA,
+        dedupe_keys=["anchor_id", "category_id", "mode", "snapshot_ts"],
+        extra_builder=lambda size: {
+            "category_id": np.full(size, cid, dtype=np.uint32),
+            "mode": np.full(size, mode_code, dtype=np.uint8),
+        },
+        top_k=top_k,
+        max_seconds=cutoff_primary_s,
     )
-    return cid, out_path
+    payload = _encode_frame(df)
+    encode_elapsed = time.perf_counter() - encode_start
+    total_elapsed = time.perf_counter() - task_start
+    rows = df.height
+    print(
+        f"[ok] Computed shard {shard_idx + 1}/{shard_count} for category id={cid} label='{label}' "
+        f"rows={rows} sssp={sssp_elapsed:.2f}s encode={encode_elapsed:.2f}s total={total_elapsed:.2f}s "
+        f"max_minutes={cutoff_primary_s // 60} top_k={top_k}"
+    )
+    return cid, label, shard_idx, shard_count, payload, rows
 
 
 def main():
@@ -144,6 +148,7 @@ def main():
     ap.add_argument("--overflow-cutoff", type=int, default=90)
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1), help="Parallel category workers (processes)")
+    ap.add_argument("--category-shards", type=int, default=4, help="Shards to split each category's anchors into for parallel routing")
     ap.add_argument("--out-dir", default="data/d_anchor_category")
     ap.add_argument("--categories-csv", default="data/taxonomy/POI_category_registry.csv", help="Path to categories CSV with explicit numeric IDs")
     ap.add_argument("--force", action="store_true")
@@ -158,6 +163,7 @@ def main():
         )
         kernel_threads = 1
     args.threads = kernel_threads
+    args.category_shards = max(1, int(args.category_shards or 1))
     for env_var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         os.environ.setdefault(env_var, str(kernel_threads))
 
@@ -170,7 +176,6 @@ def main():
 
     # Build category frequencies from anchors
     cat_counts: Dict[str, int] = {}
-    cat_values: List[str] = []
     for cats in anchors_df.get("categories", pd.Series([], dtype=object)).dropna().values:
         if isinstance(cats, (list, np.ndarray)):
             iterable = cats.tolist() if isinstance(cats, np.ndarray) else cats
@@ -181,7 +186,6 @@ def main():
                 if not s:
                     continue
                 cat_counts[s] = cat_counts.get(s, 0) + 1
-                cat_values.append(s)
 
     # Load categories from CSV with explicit numeric IDs (anti-drift design)
     from taxonomy import get_categories
@@ -284,8 +288,8 @@ def main():
         except Exception as e:
             print(f"[warn] prune step failed: {e}")
 
-    # Queue work items, but handle up-to-date and empty-src in parent
-    work: List[Tuple[int, str, int, np.ndarray, np.ndarray, str]] = []
+    category_plans: Dict[int, Dict[str, Any]] = {}
+    work: List[Tuple[int, str, int, np.ndarray, np.ndarray, int, int, int, int]] = []
     for label in targets:
         cid = label_to_id[label]
         src = cat_to_source_idxs.get(label, np.array([], dtype=np.int32))
@@ -310,31 +314,102 @@ def main():
             _write_empty_category_shard(out_path)
             continue
 
-        # Build target set as anchors in components that contain at least one source
-        build_targets_start = time.perf_counter()
-        src_comp, targets_idx, fallback_used = compute_target_nodes(
-            src, comp_id, comp_to_anchor_nodes, anchor_idx, anchor_nodes
-        )
-        build_targets_elapsed = time.perf_counter() - build_targets_start
-        print(
-            f"[debug] Category '{label}' comps={src_comp.size} target_nodes={targets_idx.size} "
-            f"build={build_targets_elapsed:.2f}s fallback={fallback_used}"
-        )
-        if targets_idx.size == 0:
-            print(f"[warn] No target nodes for category id={cid}; writing empty.")
+        limits = get_entity_limits("category", label)
+        max_seconds = limits["max_minutes"] * 60
+        top_k = limits["top_k"]
+
+        shards = _split_sources(src, args.category_shards)
+        shard_payloads: List[Tuple[np.ndarray, np.ndarray]] = []
+        for shard_idx, shard_src in enumerate(shards):
+            build_targets_start = time.perf_counter()
+            src_comp, targets_idx, fallback_used = compute_target_nodes(
+                shard_src, comp_id, comp_to_anchor_nodes, anchor_idx, anchor_nodes
+            )
+            build_targets_elapsed = time.perf_counter() - build_targets_start
+            print(
+                f"[debug] Category '{label}' shard={shard_idx + 1}/{len(shards)} comps={src_comp.size} "
+                f"src_nodes={shard_src.size} target_nodes={targets_idx.size} "
+                f"build={build_targets_elapsed:.2f}s fallback={fallback_used}"
+            )
+            if targets_idx.size == 0:
+                print(f"[warn] No target nodes for category id={cid} shard={shard_idx + 1}; skipping shard.")
+                continue
+            shard_payloads.append((shard_src, targets_idx))
+
+        if not shard_payloads:
+            print(f"[warn] No runnable shards for category id={cid}; writing empty.")
             _write_empty_category_shard(out_path)
             continue
 
-        work.append((cid, label, mode_code, src, targets_idx, out_path))
+        category_plans[cid] = {
+            "label": label,
+            "out_path": out_path,
+            "shards": len(shard_payloads),
+        }
 
-    execute_tasks(
+        for shard_idx, (shard_src, targets_idx) in enumerate(shard_payloads):
+            work.append(
+                (
+                    cid,
+                    label,
+                    mode_code,
+                    shard_src,
+                    targets_idx,
+                    shard_idx,
+                    len(shard_payloads),
+                    max_seconds,
+                    top_k,
+                )
+            )
+
+    if not work:
+        print("[info] No category shards scheduled; exiting.")
+        return
+
+    shard_results = execute_tasks(
         work,
         graph_ctx,
         kernel_threads,
         max_workers,
-        _compute_one_category,
-        describe=lambda task: f"Category id={task[0]} label='{task[1]}'",
+        _compute_category_shard,
+        describe=lambda task: f"Category id={task[0]} shard={task[5] + 1}/{task[6]} label='{task[1]}'",
     )
+
+    shard_frames: Dict[int, List[pl.DataFrame]] = defaultdict(list)
+    for result in shard_results:
+        if not result:
+            continue
+        cid, label, shard_idx, shard_count, payload, rows = result
+        try:
+            frame = _decode_frame(payload)
+        except Exception as exc:
+            print(f"[error] Failed to decode shard result for category id={cid} shard={shard_idx + 1}: {exc}")
+            continue
+        shard_frames[cid].append(frame)
+
+    for cid, meta in category_plans.items():
+        frames = shard_frames.get(cid, [])
+        if len(frames) != meta["shards"]:
+            print(
+                f"[warn] Expected {meta['shards']} shards for category id={cid} but received {len(frames)}; "
+                "output may be incomplete."
+            )
+        if not frames:
+            _write_empty_category_shard(meta["out_path"])
+            continue
+        combined = frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical")
+        deduped = (
+            combined.group_by(["anchor_id", "category_id", "mode", "snapshot_ts"])
+            .agg(pl.col("seconds_u16").min())
+            .select(list(_CATEGORY_SCHEMA.keys()))
+        )
+        tmp_path = meta["out_path"] + ".tmp"
+        deduped.write_parquet(tmp_path, compression="zstd", statistics=True, row_group_size=128_000)
+        os.replace(tmp_path, meta["out_path"])
+        print(
+            f"[ok] Wrote D_anchor category id={cid} label='{meta['label']}' "
+            f"rows={deduped.height} shards={meta['shards']} output={meta['out_path']}"
+        )
 
 
 if __name__ == "__main__":

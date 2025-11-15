@@ -200,6 +200,80 @@ def write_empty_shard(out_path: str, schema: Dict[str, pl.DataType]) -> int:
     return 0
 
 
+def build_shard_frame(
+    time_s: np.ndarray,
+    snapshot_ts: str,
+    schema: Dict[str, pl.DataType],
+    dedupe_keys: Iterable[str],
+    extra_builder: Callable[[int], Dict[str, Any]],
+    top_k: Optional[int] = None,
+    max_seconds: Optional[int] = None,
+) -> pl.DataFrame:
+    """
+    Construct a Polars DataFrame for a D_anchor shard without writing it to disk.
+    """
+    target_node_idx, anchor_ids = _anchor_projection()
+    if time_s.size == 0 or target_node_idx.size == 0:
+        return empty_frame(schema)
+
+    ts = np.asarray(time_s)
+    if ts.ndim == 1:
+        ts = ts.reshape(-1, 1)
+
+    rows_anchor_id: List[int] = []
+    rows_seconds: List[int] = []
+
+    for node_idx, anchor_id in zip(target_node_idx, anchor_ids):
+        distances = ts[node_idx, :].astype(np.int32, copy=False)
+        valid_distances = distances[distances >= 0]
+
+        if max_seconds is not None:
+            valid_distances = valid_distances[valid_distances <= max_seconds]
+
+        if valid_distances.size == 0:
+            continue
+
+        valid_distances = np.sort(valid_distances)
+        if top_k is not None and valid_distances.size > top_k:
+            valid_distances = valid_distances[:top_k]
+
+        rows_anchor_id.append(int(anchor_id))
+        rows_seconds.append(int(valid_distances[0]))
+
+    if not rows_anchor_id:
+        return empty_frame(schema)
+
+    size = len(rows_anchor_id)
+    columns: Dict[str, Any] = {
+        "anchor_id": pl.Series("anchor_id", np.array(rows_anchor_id, dtype=np.uint32), dtype=pl.UInt32),
+        "_seconds_raw": pl.Series("_seconds_raw", np.array(rows_seconds, dtype=np.int32), dtype=pl.Int32),
+        "snapshot_ts": pl.Series([snapshot_ts] * size, dtype=pl.Utf8).str.to_date(),
+    }
+    extra_cols = extra_builder(size)
+    if extra_cols:
+        columns.update(extra_cols)
+
+    df = pl.DataFrame(columns)
+    df = df.with_columns(
+        pl.when(pl.col("_seconds_raw") >= 0)
+        .then(pl.col("_seconds_raw").cast(pl.UInt16))
+        .otherwise(pl.lit(None, dtype=pl.UInt16))
+        .alias("seconds_u16")
+    ).drop("_seconds_raw")
+
+    df = df.with_columns([pl.col(name).cast(dtype) for name, dtype in schema.items() if name in df.columns])
+    dedupe_keys = list(dedupe_keys)
+    if dedupe_keys:
+        df = (
+            df.group_by(dedupe_keys)
+            .agg(pl.col("seconds_u16").min())
+            .select(list(schema.keys()))
+        )
+    else:
+        df = df.select(list(schema.keys()))
+    return df
+
+
 def write_shard(
     out_path: str,
     time_s: np.ndarray,
@@ -226,78 +300,17 @@ def write_shard(
     Returns:
         Number of rows written
     """
-    target_node_idx, anchor_ids = _anchor_projection()
-    if time_s.size == 0 or target_node_idx.size == 0:
+    df = build_shard_frame(
+        time_s=time_s,
+        snapshot_ts=snapshot_ts,
+        schema=schema,
+        dedupe_keys=dedupe_keys,
+        extra_builder=extra_builder,
+        top_k=top_k,
+        max_seconds=max_seconds,
+    )
+    if df.height == 0:
         return write_empty_shard(out_path, schema)
-
-    ts = np.asarray(time_s)
-    if ts.ndim == 1:
-        ts = ts.reshape(-1, 1)
-    
-    # For k-best results, we have multiple columns (one per k)
-    # We want to keep only valid (non-negative) distances
-    k_cols = ts.shape[1]
-    
-    # Build rows: for each anchor, include up to top_k valid distances
-    rows_anchor_id = []
-    rows_seconds = []
-    
-    for i, (node_idx, anchor_id) in enumerate(zip(target_node_idx, anchor_ids)):
-        distances = ts[node_idx, :].astype(np.int32, copy=False)
-        
-        # Filter valid distances (>= 0)
-        valid_distances = distances[distances >= 0]
-        
-        # Apply max_seconds filter if specified
-        if max_seconds is not None:
-            valid_distances = valid_distances[valid_distances <= max_seconds]
-        
-        # Sort and keep top_k
-        if len(valid_distances) > 0:
-            valid_distances = np.sort(valid_distances)
-            if top_k is not None and len(valid_distances) > top_k:
-                valid_distances = valid_distances[:top_k]
-            
-            # For now, we only keep the minimum (top-1) distance per anchor
-            # This matches the existing behavior where we store one distance per anchor
-            # Future: could extend schema to support multiple distances
-            min_dist = valid_distances[0]
-            rows_anchor_id.append(anchor_id)
-            rows_seconds.append(min_dist)
-    
-    if len(rows_anchor_id) == 0:
-        return write_empty_shard(out_path, schema)
-    
-    size = len(rows_anchor_id)
-    anchor_series = pl.Series("anchor_id", np.array(rows_anchor_id, dtype=np.uint32), dtype=pl.UInt32)
-    seconds_raw_series = pl.Series("_seconds_raw", np.array(rows_seconds, dtype=np.int32), dtype=pl.Int32)
-
-    columns: Dict[str, Any] = {
-        "anchor_id": anchor_series,
-        "_seconds_raw": seconds_raw_series,
-        "snapshot_ts": pl.Series([snapshot_ts] * size, dtype=pl.Utf8).str.to_date(),
-    }
-    extra_cols = extra_builder(size)
-    if extra_cols:
-        columns.update(extra_cols)
-
-    df = pl.DataFrame(columns)
-    df = df.with_columns(
-        pl.when(pl.col("_seconds_raw") >= 0)
-        .then(pl.col("_seconds_raw").cast(pl.UInt16))
-        .otherwise(pl.lit(None, dtype=pl.UInt16))
-        .alias("seconds_u16")
-    ).drop("_seconds_raw")
-    df = df.with_columns([pl.col(name).cast(dtype) for name, dtype in schema.items() if name in df.columns])
-    dedupe_keys = list(dedupe_keys)
-    if dedupe_keys:
-        df = (
-            df.group_by(dedupe_keys)
-            .agg(pl.col("seconds_u16").min())
-            .select(list(schema.keys()))
-        )
-    else:
-        df = df.select(list(schema.keys()))
 
     tmp_path = out_path + ".tmp"
     df.write_parquet(tmp_path, compression="zstd", statistics=True, row_group_size=128_000)
@@ -356,9 +369,9 @@ def execute_tasks(
     max_workers: int,
     worker_fn: Callable[[Any], Any],
     describe: Callable[[Any], str],
-) -> None:
+) -> List[Any]:
     if not work:
-        return
+        return []
 
     import multiprocessing as mp
     from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -384,6 +397,7 @@ def execute_tasks(
             "threads": kernel_threads,
         }
 
+        results: List[Any] = []
         with ProcessPoolExecutor(
             max_workers=effective_workers,
             mp_context=ctx,
@@ -399,9 +413,11 @@ def execute_tasks(
             for fut in as_completed(futures):
                 start, desc = futures.pop(fut)
                 try:
-                    fut.result()
+                    result = fut.result()
+                    results.append(result)
                     elapsed = time.perf_counter() - start
                     if desc:
                         print(f"[debug] {desc} finished in {elapsed:.2f}s")
                 except Exception as exc:
                     print(f"[error] {desc} failed: {exc}")
+        return results

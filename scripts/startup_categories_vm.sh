@@ -46,6 +46,9 @@ log_duration_from() {
 
 VMSTAT_PID=""
 MPSTAT_PID=""
+MEMSTAT_PID=""
+MEM_STATS_FILE=""
+MEMORY_MONITOR_LABEL=""
 
 telemetry_vmstat_loop() {
   local interval="$1"
@@ -101,6 +104,112 @@ telemetry_mpstat_loop() {
       log "[telemetry][cpu] interval=${interval}s t=${timestamp} cpu=${cpu} usr=${usr}% sys=${sys}% wa=${iowait}% idle=${idle}% irq=${irq}% soft=${soft}% steal=${steal}% guest=${guest}% gnice=${gnice}%"
     done
   }
+}
+
+telemetry_mem_loop() {
+  local interval="$1"
+  local stats_file="$2"
+  local label="$3"
+  local total_kb
+  total_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo)
+  if [[ -z "${total_kb}" ]]; then
+    total_kb=0
+  fi
+  local samples=0
+  local sum_used_kb=0
+  local peak_used_kb=0
+  : > "${stats_file}"
+  while true; do
+    local avail_kb
+    avail_kb=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+    if [[ -z "${avail_kb}" ]]; then
+      avail_kb=0
+    fi
+    local used_kb=$((total_kb - avail_kb))
+    if (( used_kb < 0 )); then
+      used_kb=0
+    fi
+    sum_used_kb=$((sum_used_kb + used_kb))
+    samples=$((samples + 1))
+    if (( used_kb > peak_used_kb )); then
+      peak_used_kb=$((used_kb))
+    fi
+    local used_mb=$((used_kb / 1024))
+    local avail_mb=$((avail_kb / 1024))
+    local peak_mb=$((peak_used_kb / 1024))
+    local usage_pct=0
+    if (( total_kb > 0 )); then
+      usage_pct=$((used_kb * 100 / total_kb))
+    fi
+    log "[telemetry][mem] interval=${interval}s label=${label} samples=${samples} used_mb=${used_mb} avail_mb=${avail_mb} peak_mb=${peak_mb} usage_pct=${usage_pct}%"
+    printf "%s %s %s %s\n" "${samples}" "${sum_used_kb}" "${peak_used_kb}" "${total_kb}" > "${stats_file}"
+    sleep "${interval}"
+  done
+}
+
+summarize_memory_stats() {
+  local label="$1"
+  local stats_file="${MEM_STATS_FILE:-}"
+  if [[ -z "${stats_file}" || ! -f "${stats_file}" ]]; then
+    log "[telemetry][mem][summary] label=${label} samples=0 (no data)"
+    return
+  fi
+  read -r samples sum_used_kb peak_used_kb total_kb < "${stats_file}" || {
+    log "[telemetry][mem][summary] label=${label} samples=0 (failed to read stats)"
+    rm -f "${stats_file}"
+    MEM_STATS_FILE=""
+    return
+  }
+  if [[ -z "${samples}" || "${samples}" -eq 0 ]]; then
+    log "[telemetry][mem][summary] label=${label} samples=0 (no samples)"
+    rm -f "${stats_file}"
+    MEM_STATS_FILE=""
+    return
+  fi
+  local avg_kb=$((sum_used_kb / samples))
+  local avg_gb
+  avg_gb=$(awk -v kb="${avg_kb}" 'BEGIN {printf "%.2f", (kb / 1024 / 1024)}')
+  local peak_gb
+  peak_gb=$(awk -v kb="${peak_used_kb}" 'BEGIN {printf "%.2f", (kb / 1024 / 1024)}')
+  local total_gb
+  total_gb=$(awk -v kb="${total_kb}" 'BEGIN {printf "%.2f", (kb / 1024 / 1024)}')
+  local avg_pct
+  avg_pct=$(awk -v used="${avg_kb}" -v total="${total_kb}" 'BEGIN {if (total <= 0) {printf "0.0"} else {printf "%.1f", (used / total) * 100}}')
+  local peak_pct
+  peak_pct=$(awk -v used="${peak_used_kb}" -v total="${total_kb}" 'BEGIN {if (total <= 0) {printf "0.0"} else {printf "%.1f", (used / total) * 100}}')
+  log "[telemetry][mem][summary] label=${label} samples=${samples} avg_gb=${avg_gb} avg_pct=${avg_pct}% peak_gb=${peak_gb} peak_pct=${peak_pct}% total_gb=${total_gb}"
+  rm -f "${stats_file}"
+  MEM_STATS_FILE=""
+}
+
+start_memory_monitor() {
+  local interval="$1"
+  local label="$2"
+  stop_memory_monitor ""
+  if ! MEM_STATS_FILE="$(mktemp /tmp/vicinity_memstats.XXXXXX)"; then
+    log "[warn] Unable to create memory stats file; skipping memory telemetry"
+    MEM_STATS_FILE=""
+    return
+  fi
+  MEMORY_MONITOR_LABEL="${label}"
+  telemetry_mem_loop "${interval}" "${MEM_STATS_FILE}" "${label}" &
+  MEMSTAT_PID=$!
+}
+
+stop_memory_monitor() {
+  local label="${1:-${MEMORY_MONITOR_LABEL:-}}"
+  if [[ -n "${MEMSTAT_PID}" ]]; then
+    kill "${MEMSTAT_PID}" >/dev/null 2>&1 || true
+    wait "${MEMSTAT_PID}" 2>/dev/null || true
+    MEMSTAT_PID=""
+  fi
+  if [[ -n "${label}" ]]; then
+    summarize_memory_stats "${label}"
+  elif [[ -n "${MEM_STATS_FILE}" ]]; then
+    rm -f "${MEM_STATS_FILE}"
+    MEM_STATS_FILE=""
+  fi
+  MEMORY_MONITOR_LABEL=""
 }
 
 start_monitors() {
@@ -259,6 +368,7 @@ start_monitors "${TELEMETRY_BOOTSTRAP_INTERVAL_VALUE}"
 EXIT_CODE=0
 cleanup_and_shutdown() {
   local exit_code=$?
+  stop_memory_monitor "${MEMORY_MONITOR_LABEL:-}"
   stop_monitors
   if [[ ${exit_code} -ne 0 ]]; then
     error "Script failed with exit code ${exit_code}"
@@ -388,6 +498,8 @@ export OMP_NUM_THREADS="${THREADS_VALUE}" \
 
 restart_monitors "${TELEMETRY_INTERVAL_VALUE}"
 
+memory_phase_label="make_${TARGET}"
+start_memory_monitor "${TELEMETRY_INTERVAL_VALUE}" "${memory_phase_label}"
 if [[ "${TARGET}" == "all" ]]; then
   log "starting make all"
   if make all 2>&1 | tee -a build.log; then
@@ -415,6 +527,7 @@ else
   fi
   log_phase "make d_anchor_category"
 fi
+stop_memory_monitor "${memory_phase_label}"
 
 stop_monitors
 

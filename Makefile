@@ -36,6 +36,7 @@ endef
 # Tuning knobs
 THREADS?=1
 WORKERS?=32
+CATEGORY_SHARDS?=4
 TELEMETRY_INTERVAL?=5
 CUTOFF?=30
 OVERFLOW?=60
@@ -237,6 +238,7 @@ d_anchor_category: $(PBF_FILES) anchors | build/native.stamp ## 3.6b Compute anc
 	    --mode drive \
 	    --threads $(THREADS) \
 	    --workers $(WORKERS) \
+	    --category-shards $(CATEGORY_SHARDS) \
 	    --cutoff $(CUTOFF) \
 	    --overflow-cutoff $(OVERFLOW) \
 	    --prune \

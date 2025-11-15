@@ -82,7 +82,7 @@ The snippet above automatically tails the serial console (port 1) after the VM i
 
 Each of these commands can run in parallel with `make categories_remote`, giving you local visibility into the remote job without waiting for `TERMINATED`.
 
-Every boot also spawns lightweight telemetry loops (`vmstat`/`mpstat`) whose output is summarized as `[telemetry][vmstat]` / `[telemetry][cpu]` and mirrored to the serial console. Feed the resulting serial log into `python scripts/analyze_telemetry.py logs/remote_runs/<RUN_ID>-serial.log --after "starting make d_anchor_category"` to compute average `usr/sys/idle/wa` and run queue depth without opening an SSH session. `[timer]` lines clock the major phases (apt, pip, Rust build, make target, total runtime) so you can compare runs at a glance. Verbose dependency steps (apt/pip/rustup) are muted from the serial stream; the full transcript is uploaded as `${RESULTS_PREFIX}/startup_detail.log` and pulled down to `data/categories_results/<RUN_ID>/startup_detail.log`.
+Every boot also spawns lightweight telemetry loops (`vmstat`/`mpstat`) whose output is summarized as `[telemetry][vmstat]` / `[telemetry][cpu]` and mirrored to the serial console. During the compute phase a third sampler now emits `[telemetry][mem]` rows plus a `[telemetry][mem][summary]` footer, capturing average/peak RAM usage so you can confirm that shard merges stay well below the 180 GiB ceiling. Feed the resulting serial log into `python scripts/analyze_telemetry.py logs/remote_runs/<RUN_ID>-serial.log --after "starting make d_anchor_category"` to compute average `usr/sys/idle/wa` and run queue depth without opening an SSH session. `[timer]` lines clock the major phases (apt, pip, Rust build, make target, total runtime) so you can compare runs at a glance. Verbose dependency steps (apt/pip/rustup) are muted from the serial stream; the full transcript is uploaded as `${RESULTS_PREFIX}/startup_detail.log` and pulled down to `data/categories_results/<RUN_ID>/startup_detail.log`.
 
 ---
 
@@ -132,10 +132,11 @@ When a failure occurs:
 Tuning guidance for high-core runs:
 - Keep `THREADS=1` (enforced via `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_{NUM,MAX}_THREADS`) so each worker drives a single SSSP.
 - Start with `WORKERS = ⌊vCPU / 3⌋` (32 on c4d-highcpu-96). This keeps plenty of memory headroom (~2.5–3 GiB RSS per worker while writing parquet).
+- Use `CATEGORY_SHARDS` to fan each category into 4–8 anchor shards (default 4). Massachusetts has 17 categories, so `CATEGORY_SHARDS=4` feeds 68 independent tasks into the 96-core pool; bump to 8 when a single category (e.g., `airport`) dominates wall clock. Shards merge in-memory, so every category still produces exactly one parquet partition.
 - During `make d_anchor_category`, monitor:
   - `htop` (if you SSH in) or the `[mpstat]` stream in the serial log for overall CPU% (target ≥90 % when CPU-bound),
   - `[vmstat]` rows (emitted by the scripted `vmstat 1`) for `wa` (keep <5–10 %; higher means PD throughput is throttling),
-  - `free -h` / `ps` for remaining RAM (stop if <20–25 % free).
+  - `[telemetry][mem]` samples (plus the `[telemetry][mem][summary] label=make_d_anchor_category ...` footer) for RAM; average should stay around 50–60 % with peaks <75 % on the 96-core box. SSH `free -h` / `ps` if you need confirmation.
 - If the telemetry firehose is too chatty, set `TELEMETRY_INTERVAL` (Makefile/run_remote knob) to a higher value so the background `vmstat`/`mpstat` samplers emit less frequently.
 - If CPU <70 % and `wa` stays low, rerun with +4–8 workers; stop increasing once `wa` spikes or memory drops below the safe headroom.
 - Record wall-clock runtime, average CPU%, and average `wa` from each run (serial logs already timestamp every phase) so speedups are measurable—expect ~1.8–2.1× vs the c4d-highcpu-32 baseline when I/O keeps up.
