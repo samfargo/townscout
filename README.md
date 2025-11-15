@@ -194,7 +194,7 @@ This orchestrator script (`scripts/run_remote.sh`):
 - Serial console logs: `logs/remote_runs/<timestamp>-serial.log`
 - Build logs: `data/categories_results/<timestamp>/build.log`
 - Watch progress: `tail -f logs/remote_runs/<timestamp>-serial.log`
-- Telemetry: the startup script runs `vmstat`/`mpstat` at `TELEMETRY_INTERVAL` seconds (default 5s) in the background, prefixing their rows with `[vmstat]` / `[mpstat]` so CPU utilization and `%wa` are captured in the serial log for both `categories_remote` and `pipeline_remote`.
+- Telemetry: the startup script runs `vmstat`/`mpstat` at `TELEMETRY_INTERVAL` seconds (default 5s) in the background, prefixing their rows with `[telemetry][vmstat]` / `[telemetry][cpu]` so CPU utilization and `%wa` are captured in the serial log for both `categories_remote` and `pipeline_remote`. Use `python scripts/analyze_telemetry.py logs/remote_runs/<run>-serial.log --after "starting make d_anchor_category"` to summarize averages.
 - Phase timings: look for `[timer] ...` entries in the serial log to see how long apt, pip, Rust build, and the `make` target took end-to-end.
 - Verbose apt/pip/rustup output is muted from the serial stream; check `data/categories_results/<timestamp>/startup_detail.log` (synced from `${RESULTS_PREFIX}/startup_detail.log`) for the full transcript if a dependency step fails.
 
@@ -206,6 +206,7 @@ The VM automatically handles all dependencies (Python packages, Rust toolchain, 
 - `THREADS=1` with `OMP_NUM_THREADS/MKL_NUM_THREADS/OPENBLAS_NUM_THREADS/NUMEXPR_{NUM,MAX}_THREADS=1` (already enforced by the startup script)
 - `WORKERS=32` (≈ vCPU/3) to keep each ProcessPool worker single-threaded while filling the box
 - `TELEMETRY_INTERVAL=5` (seconds between `vmstat`/`mpstat` samples; raise this if you want fewer log lines)
+- **Worker sweep:** to quantify utilization, run a small series of jobs (e.g. `WORKERS=8/16/32 make categories_remote`) and feed each serial log through `scripts/analyze_telemetry.py`. Capture wall clock (`orchestrator` already prints it) plus the average `usr/sys/idle/wa` values before deciding how far to push concurrency.
 
 **Worker tuning checklist**
 1. Kick off `make categories_remote` (defaults above are pre-wired) and open `htop`, `vmstat 1`, and `free -h` via the serial log.

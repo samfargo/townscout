@@ -22,25 +22,99 @@ QUIET_LOG="/tmp/vicinity-startup-detail.log"
 : > "${QUIET_LOG}"
 SCRIPT_START_TIME="$(date +%s)"
 PHASE_START_TIME="${SCRIPT_START_TIME}"
+CURRENT_TELEMETRY_INTERVAL=""
 log "Detailed command output will be appended to ${QUIET_LOG}"
+
+duration_since() {
+  local start="$1"
+  local now
+  now="$(date +%s)"
+  echo $((now - start))
+}
+
+log_duration_from() {
+  local label="$1"
+  local start="$2"
+  if [[ -z "${start}" ]]; then
+    log "[timer] ${label} completed (duration unknown)"
+    return
+  fi
+  local elapsed
+  elapsed="$(duration_since "${start}")"
+  log "[timer] ${label} took ${elapsed}s"
+}
 
 VMSTAT_PID=""
 MPSTAT_PID=""
 
+telemetry_vmstat_loop() {
+  local interval="$1"
+  vmstat -n "${interval}" | {
+    local header_lines=0
+    while read -r line; do
+      [[ -z "${line// }" ]] && continue
+      if [[ ${header_lines} -lt 2 ]]; then
+        ((header_lines++))
+        continue
+      fi
+      set -- $line
+      local field_count=$#
+      if (( field_count < 17 )); then
+        log "[telemetry][vmstat] skipped short line (fields=${field_count}): ${line}"
+        continue
+      fi
+      local runq="$1"
+      local blocks="$2"
+      local free_mem="$4"
+      local idle="${15}"
+      local wa="${16}"
+      log "[telemetry][vmstat] interval=${interval}s runq=${runq} blocked=${blocks} free=${free_mem} idle=${idle}% wa=${wa}%"
+    done
+  }
+}
+
+telemetry_mpstat_loop() {
+  local interval="$1"
+  LC_ALL=C mpstat "${interval}" | {
+    local header_seen=0
+    while read -r line; do
+      [[ -z "${line// }" ]] && continue
+      if [[ "${line}" == *"CPU"*"%idle"* ]]; then
+        header_seen=1
+        continue
+      fi
+      [[ "${line}" == Average:* ]] && continue
+      [[ ${header_seen} -eq 0 ]] && continue
+      set -- $line
+      local timestamp="$1"
+      local cpu="$2"
+      local usr="${3:-0}"
+      local nice="${4:-0}"
+      local sys="${5:-0}"
+      local iowait="${6:-0}"
+      local irq="${7:-0}"
+      local soft="${8:-0}"
+      local steal="${9:-0}"
+      local guest="${10:-0}"
+      local gnice="${11:-0}"
+      local idle="${12:-0}"
+      log "[telemetry][cpu] interval=${interval}s t=${timestamp} cpu=${cpu} usr=${usr}% sys=${sys}% wa=${iowait}% idle=${idle}% irq=${irq}% soft=${soft}% steal=${steal}% guest=${guest}% gnice=${gnice}%"
+    done
+  }
+}
+
 start_monitors() {
-  log "Starting telemetry monitors (vmstat/mpstat @${TELEMETRY_INTERVAL_VALUE}s cadence)"
+  local interval="$1"
+  CURRENT_TELEMETRY_INTERVAL="${interval}"
+  log "Starting telemetry monitors (interval=${interval}s)"
   if command -v vmstat >/dev/null 2>&1; then
-    stdbuf -oL vmstat "${TELEMETRY_INTERVAL_VALUE}" > >(while IFS= read -r line; do
-      printf '[vmstat][%s] %s\n' "$(timestamp)" "$line"
-    done) &
+    telemetry_vmstat_loop "${interval}" &
     VMSTAT_PID=$!
   else
     log "vmstat not found; skipping vmstat telemetry"
   fi
   if command -v mpstat >/dev/null 2>&1; then
-    stdbuf -oL mpstat "${TELEMETRY_INTERVAL_VALUE}" > >(while IFS= read -r line; do
-      printf '[mpstat][%s] %s\n' "$(timestamp)" "$line"
-    done) &
+    telemetry_mpstat_loop "${interval}" &
     MPSTAT_PID=$!
   else
     log "mpstat not found; skipping mpstat telemetry"
@@ -58,6 +132,15 @@ stop_monitors() {
   done
 }
 
+restart_monitors() {
+  local interval="$1"
+  if [[ "${CURRENT_TELEMETRY_INTERVAL}" == "${interval}" ]]; then
+    return
+  fi
+  stop_monitors
+  start_monitors "${interval}"
+}
+
 log_phase() {
   local label="$1"
   local now
@@ -67,6 +150,48 @@ log_phase() {
   log "[timer] ${label} took ${elapsed}s (total ${total}s)"
   PHASE_START_TIME="${now}"
 }
+
+download_and_extract_source() (
+  set -euo pipefail
+  local work_dir="/opt/vicinity/work"
+  mkdir -p "${work_dir}"
+  cd "${work_dir}"
+  log "Downloading source tarball..."
+  gsutil cp "gs://${BUCKET}/src/${SRC_TARBALL}" .
+  log "Extracting source tarball..."
+  tar xzf "${SRC_TARBALL}"
+  rm -f "${SRC_TARBALL}"
+  log "unpacked source into ${work_dir}"
+)
+
+install_duckdb_cli() (
+  set -euo pipefail
+  log "Installing DuckDB CLI..."
+  local tmp_zip="/tmp/duckdb.zip"
+  DUCKDB_VERSION="v1.1.3"
+  wget -q "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" -O "${tmp_zip}"
+  unzip -q "${tmp_zip}" -d /tmp
+  mv /tmp/duckdb /usr/local/bin/
+  chmod +x /usr/local/bin/duckdb
+  rm -f "${tmp_zip}"
+  export HOME=/root
+  mkdir -p /root/.duckdb
+  duckdb --version >/dev/null
+)
+
+install_rust_toolchain() (
+  set -euo pipefail
+  log "Installing Rust toolchain..."
+  export CARGO_HOME="/root/.cargo"
+  export RUSTUP_HOME="/root/.rustup"
+  export PATH="${CARGO_HOME}/bin:$PATH"
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+  if [[ ! -f "${CARGO_HOME}/bin/rustc" ]]; then
+    log "[timer] rustup failed to produce rustc binary"
+    exit 1
+  fi
+  log "Rust $(${CARGO_HOME}/bin/rustc --version) installed"
+)
 
 # Helper function to fetch metadata with retries
 fetch_metadata() {
@@ -120,10 +245,15 @@ TELEMETRY_INTERVAL_VALUE="${TELEMETRY_INTERVAL_OVERRIDE:-5}"
 if [[ -z "${TELEMETRY_INTERVAL_VALUE}" || ! "${TELEMETRY_INTERVAL_VALUE}" =~ ^[0-9]+$ || "${TELEMETRY_INTERVAL_VALUE}" -lt 1 ]]; then
   TELEMETRY_INTERVAL_VALUE=5
 fi
+TELEMETRY_BOOTSTRAP_INTERVAL_VALUE=$((TELEMETRY_INTERVAL_VALUE * 6))
+if [[ "${TELEMETRY_BOOTSTRAP_INTERVAL_VALUE}" -lt "${TELEMETRY_INTERVAL_VALUE}" ]]; then
+  TELEMETRY_BOOTSTRAP_INTERVAL_VALUE="${TELEMETRY_INTERVAL_VALUE}"
+fi
 
 log "boot metadata RUN_ID=${RUN_ID} TARGET=${TARGET} SRC=${SRC_TARBALL}"
 log "parallelism config threads=${THREADS_VALUE} workers=${WORKERS_VALUE}"
-log "telemetry interval ${TELEMETRY_INTERVAL_VALUE}s"
+log "telemetry intervals bootstrap=${TELEMETRY_BOOTSTRAP_INTERVAL_VALUE}s fast=${TELEMETRY_INTERVAL_VALUE}s"
+start_monitors "${TELEMETRY_BOOTSTRAP_INTERVAL_VALUE}"
 
 # Ensure shutdown always happens, even on error
 EXIT_CODE=0
@@ -186,54 +316,32 @@ log_phase "apt-get install base deps"
 
 log "packages installed"
 
-# Install DuckDB CLI
-log "Installing DuckDB CLI..."
-DUCKDB_VERSION="v1.1.3"
-wget -q "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" -O /tmp/duckdb.zip
-unzip -q /tmp/duckdb.zip -d /tmp
-mv /tmp/duckdb /usr/local/bin/
-chmod +x /usr/local/bin/duckdb
-rm -f /tmp/duckdb.zip
-if ! command -v duckdb &> /dev/null; then
-  error "duckdb installation failed"
-  exit 1
-fi
-# Set HOME for DuckDB to store extensions/cache
-export HOME=/root
-mkdir -p /root/.duckdb
-log "DuckDB $(duckdb --version) installed"
-log_phase "DuckDB install"
-
-# Install Rust toolchain for maturin/vicinity_native
-log "Installing Rust toolchain..."
 export CARGO_HOME="/root/.cargo"
 export RUSTUP_HOME="/root/.rustup"
-# Pre-add to PATH before installation
 export PATH="${CARGO_HOME}/bin:$PATH"
-if ! curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable >>"${QUIET_LOG}" 2>&1; then
-  error "rustup installation failed (see ${QUIET_LOG})"
-  exit 1
-fi
-# Verify installation
-if [[ ! -f "${CARGO_HOME}/bin/rustc" ]]; then
-  error "rustc binary not found at ${CARGO_HOME}/bin/rustc after installation"
-  ls -la "${CARGO_HOME}/bin/" || error "CARGO_HOME/bin directory doesn't exist"
-  exit 1
-fi
-log "Rust $(${CARGO_HOME}/bin/rustc --version) installed"
-log_phase "Rust toolchain install"
 
-mkdir -p /opt/vicinity/work
+log "Launching background setup tasks (DuckDB CLI, repo download, Rust toolchain)..."
+DUCKDB_START_TIME="$(date +%s)"
+install_duckdb_cli &
+DUCKDB_PID=$!
+
+SOURCE_START_TIME="$(date +%s)"
+download_and_extract_source &
+SOURCE_PID=$!
+
+RUST_START_TIME="$(date +%s)"
+install_rust_toolchain >>"${QUIET_LOG}" 2>&1 &
+RUST_PID=$!
+
+if ! wait "${SOURCE_PID}"; then
+  error "Source download/extract failed"
+  exit 1
+fi
+log_duration_from "Source download/extract" "${SOURCE_START_TIME}"
+
 cd /opt/vicinity/work
 
-log "Downloading source tarball..."
-gsutil cp "gs://${BUCKET}/src/${SRC_TARBALL}" .
-log "Extracting tarball..."
-tar xzf "${SRC_TARBALL}"
-rm -f "${SRC_TARBALL}"
-
-log "unpacked source into $(pwd)"
-
+PHASE_START_TIME="$(date +%s)"
 log "Creating Python virtual environment..."
 python3 -m venv .venv
 . .venv/bin/activate
@@ -248,6 +356,18 @@ fi
 
 log "venv + python deps ready"
 log_phase "Python deps install"
+
+if ! wait "${RUST_PID}"; then
+  error "Rust toolchain install failed (see ${QUIET_LOG})"
+  exit 1
+fi
+log_duration_from "Rust toolchain install" "${RUST_START_TIME}"
+
+if ! wait "${DUCKDB_PID}"; then
+  error "DuckDB CLI install failed"
+  exit 1
+fi
+log_duration_from "DuckDB install" "${DUCKDB_START_TIME}"
 
 log "Building Rust native extension..."
 # Ensure Rust is in PATH for make
@@ -266,7 +386,7 @@ export OMP_NUM_THREADS="${THREADS_VALUE}" \
        NUMEXPR_NUM_THREADS="${THREADS_VALUE}" \
        NUMEXPR_MAX_THREADS="${THREADS_VALUE}"
 
-start_monitors
+restart_monitors "${TELEMETRY_INTERVAL_VALUE}"
 
 if [[ "${TARGET}" == "all" ]]; then
   log "starting make all"

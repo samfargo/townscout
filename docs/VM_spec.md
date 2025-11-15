@@ -82,7 +82,7 @@ The snippet above automatically tails the serial console (port 1) after the VM i
 
 Each of these commands can run in parallel with `make categories_remote`, giving you local visibility into the remote job without waiting for `TERMINATED`.
 
-Every boot also spawns lightweight telemetry loops (`vmstat`/`mpstat`) whose output is prefixed with `[vmstat]` / `[mpstat]` before being mirrored to the serial console and saved log. That means you automatically capture CPU utilization and `%wa` samples for both `categories_remote` and `pipeline_remote` without opening an SSH session; just search the serial transcript for those tags. `[timer]` lines clock the major phases (apt, pip, Rust build, make target, total runtime) so you can compare runs at a glance. Verbose dependency steps (apt/pip/rustup) are muted from the serial stream; the full transcript is uploaded as `${RESULTS_PREFIX}/startup_detail.log` and pulled down to `data/categories_results/<RUN_ID>/startup_detail.log`.
+Every boot also spawns lightweight telemetry loops (`vmstat`/`mpstat`) whose output is summarized as `[telemetry][vmstat]` / `[telemetry][cpu]` and mirrored to the serial console. Feed the resulting serial log into `python scripts/analyze_telemetry.py logs/remote_runs/<RUN_ID>-serial.log --after "starting make d_anchor_category"` to compute average `usr/sys/idle/wa` and run queue depth without opening an SSH session. `[timer]` lines clock the major phases (apt, pip, Rust build, make target, total runtime) so you can compare runs at a glance. Verbose dependency steps (apt/pip/rustup) are muted from the serial stream; the full transcript is uploaded as `${RESULTS_PREFIX}/startup_detail.log` and pulled down to `data/categories_results/<RUN_ID>/startup_detail.log`.
 
 ---
 
